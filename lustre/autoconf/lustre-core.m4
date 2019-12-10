@@ -2093,6 +2093,23 @@ pagevec_init, [
 ]) # LC_PAGEVEC_INIT_ONE_PARAM
 
 #
+# LC_PAGEVEC_LOOKUP_THREE_PARAM
+#
+# 4.14 pagevec_lookup takes three parameters
+#
+AC_DEFUN([LC_PAGEVEC_LOOKUP_THREE_PARAM], [
+LB_CHECK_COMPILE([if 'pagevec_lookup' takes three parameter],
+pagevec_lookup, [
+	#include <linux/pagevec.h>
+],[
+	pagevec_lookup(NULL, NULL, NULL);
+],[
+	AC_DEFINE(HAVE_PAGEVEC_LOOKUP_THREE_PARAM, 1,
+		['pagevec_lookup' takes three parameters])
+])
+]) # LC_PAGEVEC_LOOKUP_THREE_PARAM
+
+#
 # LC_BI_BDEV
 #
 # 4.14 replaced bi_bdev to bi_disk
@@ -2653,6 +2670,7 @@ AC_DEFUN([LC_PROG_LINUX], [
 
 	# 4.14
 	LC_PAGEVEC_INIT_ONE_PARAM
+	LC_PAGEVEC_LOOKUP_THREE_PARAM
 	LC_BI_BDEV
 	LC_INTERVAL_TREE_CACHED
 

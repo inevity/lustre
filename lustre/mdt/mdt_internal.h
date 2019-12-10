@@ -493,10 +493,13 @@ struct mdt_thread_info {
 	/* big_lmm buffer was used and must be used in reply */
 				   mti_big_lmm_used:1,
 				   mti_big_acl_used:1,
-				   mti_som_valid:1,
 	/* Batch processing environment */
 				   mti_batch_env:1,
-				   mti_intent_lock:1;
+				   mti_intent_lock:1,
+				   mti_parent_locked:1,
+	/* Request to grant EX WBC lock to the client for the child. */
+				   mti_exlock_update:1,
+				   mti_som_valid:1;
 
 	/* opdata for mdt_reint_open(), has the same as
 	 * ldlm_reply:lock_policy_res1.  mdt_update_last_rcvd() stores this

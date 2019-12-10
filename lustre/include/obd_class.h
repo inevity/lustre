@@ -1318,6 +1318,7 @@ enum mps_stat_idx {
 	LPROC_MD_ENQUEUE,
 	LPROC_MD_GETATTR,
 	LPROC_MD_INTENT_LOCK,
+	LPROC_MD_INTENT_ASYNC_LOCK,
 	LPROC_MD_LINK,
 	LPROC_MD_RENAME,
 	LPROC_MD_SETATTR,
@@ -1457,6 +1458,22 @@ static inline int md_intent_lock(struct obd_export *exp,
 
 	return MDP(exp->exp_obd, intent_lock)(exp, op_data, it, reqp,
 					      cb_blocking, extra_lock_flags);
+}
+
+static inline int md_intent_lock_async(struct obd_export *exp,
+				       struct md_op_item *item,
+				       struct ptlrpc_request_set *rqset)
+{
+	int rc;
+
+	rc = exp_check_ops(exp);
+	if (rc)
+		RETURN(rc);
+
+	lprocfs_counter_incr(exp->exp_obd->obd_md_stats,
+			     LPROC_MD_INTENT_ASYNC_LOCK);
+
+	return MDP(exp->exp_obd, intent_lock_async)(exp, item, rqset);
 }
 
 static inline int md_link(struct obd_export *exp, struct md_op_data *op_data,

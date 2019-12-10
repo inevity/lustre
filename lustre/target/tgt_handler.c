@@ -1320,11 +1320,11 @@ EXPORT_SYMBOL(tgt_sync);
 int tgt_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *desc,
 		     void *data, int flag)
 {
-	struct lu_env		 env;
-	struct lu_target	*tgt;
-	struct dt_object	*obj = NULL;
-	struct lu_fid		 fid;
-	int			 rc = 0;
+	struct lu_env env;
+	struct lu_target *tgt;
+	struct dt_object *obj = NULL;
+	struct lu_fid fid;
+	int rc = 0;
 
 	ENTRY;
 

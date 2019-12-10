@@ -2285,12 +2285,16 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 			 * return not only a LOOKUP lock, but also an UPDATE
 			 * lock and this might save us RPC on later STAT. For
 			 * directories, it also let negative dentry cache start
-			 * working for this dir. */
+			 * working for this dir.
+			 * In the face of EX locks on the child, make this
+			 * a trylock to avoid preemptive cache flushes unless
+			 * absolutely necessary.
+			 */
 			if (ma->ma_valid & MA_INODE &&
 			    ma->ma_attr.la_valid & LA_CTIME &&
 			    info->mti_mdt->mdt_namespace->ns_ctime_age_limit +
 			    ma->ma_attr.la_ctime < ktime_get_real_seconds())
-				child_bits |= MDS_INODELOCK_UPDATE;
+				try_bits |= MDS_INODELOCK_UPDATE;
 		}
 
 		/* layout lock must be granted in a best-effort way
@@ -4287,6 +4291,8 @@ void mdt_thread_info_init(struct ptlrpc_request *req,
 	info->mti_big_buf = LU_BUF_NULL;
 	info->mti_batch_env = 0;
 	info->mti_object = NULL;
+	info->mti_parent_locked = 0;
+	info->mti_exlock_update = 0;
 
 	mdt_thread_info_reset(info);
 }
@@ -4600,8 +4606,8 @@ static int mdt_intent_getattr(enum ldlm_intent_flags it_opc,
 	rc = mdt_getattr_name_lock(info, lhc, child_bits, ldlm_rep);
 	ldlm_rep->lock_policy_res2 = clear_serious(rc);
 
-        if (mdt_get_disposition(ldlm_rep, DISP_LOOKUP_NEG))
-                ldlm_rep->lock_policy_res2 = 0;
+	if (mdt_get_disposition(ldlm_rep, DISP_LOOKUP_NEG))
+		ldlm_rep->lock_policy_res2 = 0;
         if (!mdt_get_disposition(ldlm_rep, DISP_LOOKUP_POS) ||
             ldlm_rep->lock_policy_res2) {
                 lhc->mlh_reg_lh.cookie = 0ull;
@@ -5007,6 +5013,13 @@ static int mdt_intent_policy(const struct lu_env *env,
 		if (it != NULL) {
 			mdt_ptlrpc_stats_update(req, it->opc);
 			info->mti_intent_lock = 1;
+
+			if (flags & LDLM_FL_INTENT_PARENT_LOCKED)
+				info->mti_parent_locked = 1;
+
+			if (flags & LDLM_FL_INTENT_EXLOCK_UPDATE)
+				info->mti_exlock_update = 1;
+
 			/*
 			 * For intent lock request with policy, the ELC locks
 			 * have been cancelled in ldlm_handle_enqueue0().
@@ -5017,11 +5030,13 @@ static int mdt_intent_policy(const struct lu_env *env,
 			if (rc == 0)
 				rc = ELDLM_OK;
 
-			/* Lock without inodebits makes no sense and will oops
+			/*
+			 * Lock without inodebits makes no sense and will oops
 			 * later in ldlm. Let's check it now to see if we have
 			 * ibits corrupted somewhere in mdt_intent_opc().
 			 * The case for client miss to set ibits has been
-			 * processed by others. */
+			 * processed by others.
+			 */
 			LASSERT(ergo(ldesc->l_resource.lr_type == LDLM_IBITS,
 				ldesc->l_policy_data.l_inodebits.bits != 0));
 		} else {

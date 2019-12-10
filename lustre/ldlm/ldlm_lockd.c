@@ -1242,18 +1242,55 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 	struct ldlm_resource *res = NULL;
 	struct ptlrpc_request *req = pill->rc_req;
 	const struct lu_env *env = req->rq_svc_thread->t_env;
+	int first = LDLM_ENQUEUE_CANCEL_OFF;
 
 	ENTRY;
 
 	LDLM_DEBUG_NOLOCK("server-side enqueue handler START");
 
-	LASSERT(req && req->rq_export);
+	flags = ldlm_flags_from_wire(dlm_req->lock_flags);
+
+	/* The root WBC EX lock is revoking. */
+	if (flags & LDLM_FL_INTENT_PARENT_LOCKED &&
+	    flags & LDLM_FL_INTENT_EXLOCK_UPDATE) {
+		struct ldlm_lock *lock;
+
+		LASSERT(req_capsule_ptlreq(pill));
+
+		if (dlm_req->lock_count < 2)
+			GOTO(out, rc = err_serious(-EPROTO));
+
+		lock = ldlm_handle2lock(&dlm_req->lock_handle[1]);
+		if (!lock)
+			GOTO(out, rc = err_serious(-EPROTO));
+
+		/* TODO: check the export validity too. */
+		/* Granted WBC lock must be LCK_EX mode */
+		if (lock->l_granted_mode != LCK_EX) {
+			LDLM_DEBUG(lock,
+				   "Wrong grented WBC lock mode: %s\n",
+				   ldlm_lockname[lock->l_granted_mode]);
+			LDLM_LOCK_PUT(lock);
+			GOTO(out, rc = err_serious(-EPROTO));
+		}
+
+		/* XXX Check parent resource */
+		/* Prolong the lock in case it is blocked. */
+		if (lock->l_flags & LDLM_FL_AST_SENT) {
+			time64_t timeout;
+
+			timeout = obd_timeout / 2 + /* XXX! */
+				  (ldlm_bl_timeout(lock) >> 1);
+			ldlm_refresh_waiting_lock(lock, timeout);
+		}
+		LDLM_LOCK_PUT(lock);
+		first++;
+	}
 
 	if (req_capsule_ptlreq(pill))
-		ldlm_request_cancel(req, dlm_req, LDLM_ENQUEUE_CANCEL_OFF,
-				    LATF_SKIP);
+		ldlm_request_cancel(req, dlm_req, first, LATF_SKIP);
 
-	flags = ldlm_flags_from_wire(dlm_req->lock_flags);
+	LASSERT(req->rq_export);
 
 	/* for intent enqueue the stat will be updated inside intent policy */
 	if (ptlrpc_req2svc(req)->srv_stats != NULL &&

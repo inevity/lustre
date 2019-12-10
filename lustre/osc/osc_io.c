@@ -379,7 +379,11 @@ int osc_io_commit_async(const struct lu_env *env,
 	/* for sync write, kernel will wait for this page to be flushed before
 	 * osc_io_end() is called, so release it earlier.
 	 * for mkwrite(), it's known there is no further pages. */
-	if (cl_io_is_sync_write(io) && oio->oi_active != NULL) {
+	/* XXX CIT_MISC here means we are asimilating WBC pages in, since
+	 * we currently do it in one go, we know no more pages are coming
+	 */
+	if ((cl_io_is_sync_write(io) && oio->oi_active != NULL) ||
+	    io->ci_type == CIT_MISC) {
 		osc_extent_release(env, oio->oi_active);
 		oio->oi_active = NULL;
 	}

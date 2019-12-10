@@ -53,11 +53,17 @@ static void free_dentry_data(struct rcu_head *head)
 static void ll_release(struct dentry *de)
 {
         struct ll_dentry_data *lld;
+
         ENTRY;
+
         LASSERT(de != NULL);
         lld = ll_d2d(de);
         if (lld == NULL) /* NFS copies the de->d_op methods (bug 4655) */
                 RETURN_EXIT;
+
+	/* Whoa, we are throwing away yet uncommitted change? */
+	if (de->d_inode)
+		LASSERT(!wbc_inode_has_protected(ll_i2wbci(de->d_inode)));
 
 	de->d_fsdata = NULL;
 	call_rcu(&lld->lld_rcu_head, free_dentry_data);
@@ -148,6 +154,7 @@ static int ll_d_init(struct dentry *de)
 	OBD_ALLOC_PTR(lld);
 	lld->lld_invalid = 1;
 	de->d_fsdata = lld;
+	wbc_dentry_init(de);
 	return 0;
 }
 #else /* !HAVE_D_INIT */
@@ -170,6 +177,7 @@ bool ll_d_setup(struct dentry *de, bool do_put)
 		if (!de->d_fsdata) {
 			lld->lld_invalid = 1;
 			de->d_fsdata = lld;
+			wbc_dentry_init(de);
 		}
 		spin_unlock(&de->d_lock);
 		/* See if we lost the race to set d_fsdata. */

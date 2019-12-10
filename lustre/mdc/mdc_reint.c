@@ -233,7 +233,7 @@ rebuild:
          * tgt, for symlinks or lov MD data.
          */
 	mdc_create_pack(&req->rq_pill, op_data, data, datalen, mode, uid,
-			gid, cap_effective, rdev);
+			gid, cap_effective, rdev, 0);
 
         ptlrpc_request_set_replen(req);
 

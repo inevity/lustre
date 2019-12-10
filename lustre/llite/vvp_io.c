@@ -1074,8 +1074,8 @@ void vvp_set_pagevec_dirty(struct pagevec *pvec)
 	EXIT;
 }
 
-static void write_commit_callback(const struct lu_env *env, struct cl_io *io,
-				  struct pagevec *pvec)
+void write_commit_callback(const struct lu_env *env, struct cl_io *io,
+			   struct pagevec *pvec)
 {
 	int count = 0;
 	int i = 0;

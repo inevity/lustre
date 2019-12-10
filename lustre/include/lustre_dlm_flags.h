@@ -73,6 +73,18 @@
 #define ldlm_set_ast_sent(_l)           LDLM_SET_FLAG((  _l), 1ULL <<  5)
 #define ldlm_clear_ast_sent(_l)         LDLM_CLEAR_FLAG((_l), 1ULL <<  5)
 
+/** Intent with parent locked by the client already. Currently used by WBC. */
+#define LDLM_FL_INTENT_PARENT_LOCKED	0x0000000000000040ULL /* bit   6 */
+#define ldlm_is_intent_parent_locked(_l)    LDLM_TEST_FLAG((_l), 1ULL <<  6)
+#define ldlm_set_intent_parent_locked(_l)   LDLM_SET_FLAG((_l), 1ULL <<  6)
+#define ldlm_clear_intent_parent_locked(_l) LDLM_CLEAR_FLAG((_l), 1ULL <<  6)
+
+/** Intent with requesting to grant WBC EX lock to the client for the file. */
+#define LDLM_FL_INTENT_EXLOCK_UPDATE	0x0000000000000080ULL /* bit   7 */
+#define ldlm_is_intent_exlock_update(_l)    LDLM_TEST_FLAG((_l), 1ULL <<  7)
+#define ldlm_set_intent_exlock_update(_l)   LDLM_SET_FLAG((_l), 1ULL <<  7)
+#define ldlm_clear_intent_exlock_update(_l) LDLM_CLEAR_FLAG((_l), 1ULL <<  7)
+
 /**
  * Lock is being replayed.  This could probably be implied by the fact that
  * one of BLOCK_{GRANTED,CONV,WAIT} is set, but that is pretty dangerous. */

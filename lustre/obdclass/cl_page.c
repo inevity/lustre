@@ -320,6 +320,7 @@ struct cl_page *cl_page_alloc(const struct lu_env *env, struct cl_object *o,
 	}
 	RETURN(cl_page);
 }
+EXPORT_SYMBOL(cl_page_alloc);
 
 /**
  * Returns a cl_page with index \a idx at the object \a o, and associated with

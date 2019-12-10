@@ -1309,20 +1309,30 @@ static int mdt_create_unpack(struct mdt_thread_info *info)
 	rc = mdt_name_unpack(pill, &RMF_NAME, &rr->rr_name, 0);
 	if (rc < 0)
 		RETURN(rc);
-
 	if (S_ISLNK(attr->la_mode)) {
 		const char *tgt = NULL;
 		int sz;
 
-		req_capsule_extend(pill, &RQF_MDS_REINT_CREATE_SYM);
-		sz = req_capsule_get_size(pill, &RMF_SYMTGT, RCL_CLIENT);
-		if (sz) {
-			tgt = req_capsule_client_get(pill, &RMF_SYMTGT);
-			sp->u.sp_symname.ln_name = tgt;
-			sp->u.sp_symname.ln_namelen = sz - 1; /* skip NUL */
+		if (info->mti_intent_lock) {
+			/* intent create */
+			sz = req_capsule_get_size(pill, &RMF_EADATA,
+						  RCL_CLIENT);
+			if (sz)
+				tgt = req_capsule_client_get(pill, &RMF_EADATA);
+		} else {
+			/* reguar create */
+			req_capsule_extend(pill, &RQF_MDS_REINT_CREATE_SYM);
+			sz = req_capsule_get_size(pill, &RMF_SYMTGT,
+						  RCL_CLIENT);
+			if (sz)
+				tgt = req_capsule_client_get(pill, &RMF_SYMTGT);
 		}
+
 		if (tgt == NULL)
 			RETURN(-EFAULT);
+
+		sp->u.sp_symname.ln_name = tgt;
+		sp->u.sp_symname.ln_namelen = sz - 1; /* skep NUL */
 	} else {
 		if (!info->mti_intent_lock)
 			req_capsule_extend(pill, &RQF_MDS_REINT_CREATE_ACL);

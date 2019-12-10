@@ -593,3 +593,62 @@ int lmv_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 
 	RETURN(rc);
 }
+
+int lmv_intent_lock_async(struct obd_export *exp,
+			  struct md_op_item *item,
+			  struct ptlrpc_request_set *rqset)
+{
+	struct md_op_data *op_data = &item->mop_data;
+	struct lookup_intent *it = &item->mop_it;
+	struct obd_device *obd = exp->exp_obd;
+	struct lmv_obd *lmv = &obd->u.lmv;
+	struct lmv_tgt_desc *tgt;
+	int rc;
+
+	ENTRY;
+
+	if (it->it_flags & MDS_OPEN_BY_FID) {
+		LASSERT(fid_is_sane(&op_data->op_fid2));
+
+		/* for striped directory, we can't know parent stripe fid
+		 * without name, but we can set it to child fid, and MDT
+		 * will obtain it from linkea in open in such case.
+		 */
+		if (op_data->op_mea1 != NULL)
+			op_data->op_fid1 = op_data->op_fid2;
+
+		tgt = lmv_fid2tgt(lmv, &op_data->op_fid2);
+		if (IS_ERR(tgt))
+			RETURN(PTR_ERR(tgt));
+
+		op_data->op_mds = tgt->ltd_index;
+	} else {
+		LASSERT(fid_is_sane(&op_data->op_fid1));
+		LASSERT(fid_is_zero(&op_data->op_fid2));
+		LASSERT(op_data->op_name != NULL);
+
+		tgt = lmv_locate_tgt(lmv, op_data);
+		if (IS_ERR(tgt))
+			RETURN(PTR_ERR(tgt));
+	}
+
+	/* If it is ready to open the file by FID, do not need
+	 * allocate FID at all, otherwise it will confuse MDT
+	 */
+	if ((it->it_op & IT_CREAT) && !(it->it_flags & MDS_OPEN_BY_FID)) {
+		/*
+		 * For lookup(IT_CREATE) cases allocate new fid and setup FLD
+		 * for it.
+		 */
+		rc = lmv_fid_alloc(NULL, exp, &op_data->op_fid2, op_data);
+		if (rc != 0)
+			RETURN(rc);
+	}
+
+	CDEBUG(D_INODE, "OPEN_INTENT with fid1="DFID", fid2="DFID","
+	       " name='%s' -> mds #%u\n", PFID(&op_data->op_fid1),
+	       PFID(&op_data->op_fid2), op_data->op_name, tgt->ltd_index);
+
+	rc = md_intent_lock_async(tgt->ltd_exp, item, rqset);
+	RETURN(rc);
+}

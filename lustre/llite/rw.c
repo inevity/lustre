@@ -1831,6 +1831,7 @@ int ll_readpage(struct file *file, struct page *vmpage)
 	struct cl_page *page;
 	struct ll_sb_info *sbi = ll_i2sbi(inode);
 	int result;
+
 	ENTRY;
 
 	lcc = ll_cl_find(inode);

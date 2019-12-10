@@ -2264,6 +2264,8 @@ out_detach:
 			return -EOPNOTSUPP;
 		return llcrypt_ioctl_get_key_status(file, (void __user *)arg);
 #endif
+	case LL_IOC_WBC_STATE:
+		RETURN(wbc_ioctl(file, cmd, arg));
 	default:
 		RETURN(obd_iocontrol(cmd, sbi->ll_dt_exp, 0, NULL,
 				     (void __user *)arg));

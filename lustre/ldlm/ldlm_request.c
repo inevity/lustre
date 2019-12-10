@@ -622,7 +622,8 @@ int ldlm_cli_enqueue_fini(struct obd_export *exp, struct req_capsule *pill,
 	if (req_capsule_ptlreq(pill)) {
 		struct ptlrpc_request *req = pill->rc_req;
 
-		if (request_slot)
+		if (request_slot &&
+		    !(*ldlm_flags & LDLM_FL_INTENT_PARENT_LOCKED))
 			obd_put_request_slot(&req->rq_import->imp_obd->u.cli);
 
 		ptlrpc_put_mod_rpc_slot(req);
@@ -1096,7 +1097,8 @@ int ldlm_cli_enqueue(struct obd_export *exp, struct ptlrpc_request **reqp,
 	if (einfo->ei_mod_slot)
 		ptlrpc_get_mod_rpc_slot(req);
 
-	need_req_slot = ldlm_request_slot_needed(einfo);
+	need_req_slot = ldlm_request_slot_needed(einfo) &&
+			!(*flags & LDLM_FL_INTENT_PARENT_LOCKED);
 
 	if (need_req_slot) {
 		rc = obd_get_request_slot(&req->rq_import->imp_obd->u.cli);

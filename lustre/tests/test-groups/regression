@@ -26,4 +26,5 @@ sanity-hsm
 sanity-lsnapshot
 sanity-pfl
 sanity-pcc
+sanity-wbc
 sanity-lnet

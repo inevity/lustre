@@ -89,7 +89,6 @@ static void ll_invalidatepage(struct page *vmpage,
 		/* See the comment in ll_releasepage() */
 		env = cl_env_percpu_get();
 		LASSERT(!IS_ERR(env));
-
 		inode = vmpage->mapping->host;
 		obj = ll_i2info(inode)->lli_clob;
 		if (obj != NULL) {
@@ -864,6 +863,7 @@ static int ll_write_end(struct file *file, struct address_space *mapping,
 	unsigned from = pos & (PAGE_SIZE - 1);
 	bool unplug = false;
 	int result = 0;
+
 	ENTRY;
 
 	put_page(vmpage);

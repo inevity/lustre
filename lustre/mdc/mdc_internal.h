@@ -48,7 +48,8 @@ void mdc_setattr_pack(struct req_capsule *pill, struct md_op_data *op_data,
 		      void *ea, size_t ealen);
 void mdc_create_pack(struct req_capsule *pill, struct md_op_data *op_data,
 		     const void *data, size_t datalen, umode_t mode,
-		     uid_t uid, gid_t gid, kernel_cap_t capability, u64 rdev);
+		     uid_t uid, gid_t gid, kernel_cap_t capability, __u64 rdev,
+		     __u64 flags);
 void mdc_open_pack(struct req_capsule *pill, struct md_op_data *op_data,
 		   umode_t mode, __u64 rdev, __u64 flags,
 		   const void *data, size_t datalen);
@@ -81,6 +82,10 @@ int mdc_intent_lock(struct obd_export *exp,
 		    struct ptlrpc_request **reqp,
 		    ldlm_blocking_callback cb_blocking,
 		    __u64 extra_lock_flags);
+
+int mdc_intent_lock_async(struct obd_export *exp,
+			  struct md_op_item *item,
+			  struct ptlrpc_request_set *rqset);
 
 int mdc_enqueue(struct obd_export *exp, struct ldlm_enqueue_info *einfo,
 		const union ldlm_policy_data *policy,

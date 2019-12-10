@@ -1912,6 +1912,8 @@ int ll_debugfs_register_super(struct super_block *sb, const char *name)
 	debugfs_create_file("offset_stats", 0644, sbi->ll_debugfs_entry, sbi,
 			    &ll_rw_offset_stats_fops);
 
+	wbc_tunables_init(sb);
+
 	/* File operations stats */
 	sbi->ll_stats = lprocfs_alloc_stats(LPROC_LL_FILE_OPCODES,
 					    LPROCFS_STATS_FLAG_NONE);
@@ -1980,6 +1982,7 @@ void ll_debugfs_unregister_super(struct super_block *sb)
 	struct lustre_sb_info *lsi = s2lsi(sb);
 	struct ll_sb_info *sbi = ll_s2sbi(sb);
 
+	wbc_tunables_fini(sb);
 	debugfs_remove_recursive(sbi->ll_debugfs_entry);
 
 	if (sbi->ll_dt_obd)

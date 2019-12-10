@@ -634,6 +634,7 @@ struct ll_ioc_lease_id {
 #define LL_IOC_PCC_DETACH_BY_FID	_IOW('f', 252, struct lu_pcc_detach_fid)
 #define LL_IOC_PCC_STATE		_IOR('f', 252, struct lu_pcc_state)
 #define LL_IOC_PROJECT			_IOW('f', 253, struct lu_project)
+#define LL_IOC_WBC_STATE		_IOR('f', 254, struct lu_wbc_state)
 
 #ifndef	FS_IOC_FSGETXATTR
 /*
@@ -2752,6 +2753,154 @@ struct ll_foreign_symlink_upcall_item {
  * foreign_symlink_upcall_info_store()
  */
 #define MAX_NB_UPCALL_ITEMS 32
+
+enum lu_wbc_flush_mode {
+	WBC_FLUSH_NONE		= 0,
+	/*
+	 * In the lazy flush mode, a client never flushes dirty cache and drops
+	 * the root WBC EX lock actively unless it has to in the following
+	 * cases:
+	 * - The client needs to revoke the cached root WBC EX lock when the
+	 *   directory is Conflict accessing from a remote client or shrink
+	 *   the LRU locks in the client lock namespace;
+	 * - sync(2) or fsync(2) is called on a file or directory under this
+	 *   root WBC EX lock;
+	 * - The capacity of the cache on the client is used out;
+	 * - The capacity limits for the cache on the client is reached;
+	 * - A application or a user wants to cleanup or uncache the cached
+	 *   data on the client manually.
+	 * There are two lazy flush modes:
+	 * - WBC_FLUSH_LAZY_DROP indicates that the root WBC EX lock will be
+	 *   dropped level by level during flush;
+	 * - WBC_FLUSH_LAZY_KEEP indicates that the root WBC EX lock will be
+	 *   kept during flush;
+	 */
+	WBC_FLUSH_LAZY_DROP	= 1,
+	WBC_FLUSH_LAZY_KEEP	= 2,
+	/*
+	 * In this flush mode, it will trigger to flush dirty cache in the
+	 * background periodically when the cache is aged.
+	 * The WBC EX lock will be dropped or converted level by level during
+	 * flushing.
+	 * Hold the root WBC EX lock until:
+	 * - Push all its children directories or files to MDT;
+	 * - Acquire the WBC EX lock back on the next level children
+	 *   directories;
+	 * And then release the root WBC EX lock;
+	 */
+	WBC_FLUSH_AGING_DROP	= 3,
+	/*
+	 * This flush mode is similar to WBC_FLUSH_AGING_DROP. Instead,
+	 * the WBC EX lock for the root WBC directory never drops actively
+	 * unless it has to in the following cases:
+	 * - The client needs to revoke the cached root WBC EX lock when the
+	 *   directory is Conflict accessing from a remote client or shrink
+	 *   the LRU locks in the client lock namespace;
+	 * - A application or a user wants to cleanup or uncache the cached
+	 *   data on the client manually.
+	 */
+	WBC_FLUSH_AGING_KEEP	= 4,
+	/* Default WBC flush mode. */
+	WBC_FLUSH_DEFAULT_MODE	= WBC_FLUSH_LAZY_DROP,
+};
+
+enum lu_wbc_cache_mode {
+	WBC_MODE_NONE,
+	/* Metadata and data are all in MemFS just similar to Linux/tmpfs. */
+	WBC_MODE_MEMFS,
+	/* Metadta in MemFS, data in PCC. */
+	WBC_MODE_PCC_DATA,
+	/* Both metadata and data are all in PCC. */
+	WBC_MODE_PCC_ALL,
+	/* Default WBC cache mode. */
+	WBC_MODE_DEFAULT = WBC_MODE_MEMFS,
+};
+
+enum lu_wbc_state_flags {
+	WBC_STATE_FL_NONE		= 0x0,
+	/*
+	 * The file or directory is under the protection of subtree
+	 * WBC EX lock: Protected(P).
+	 */
+	WBC_STATE_FL_PROTECTED		= (1 << 0),
+	/*
+	 * The file or directory has been flushed to the metadata server
+	 * (MDT): Sync(S).
+	 * All its ancestor directories should be also flushed to MDT.
+	 */
+	WBC_STATE_FL_SYNC		= (1 << 1),
+	/*
+	 * The file or directory is in Complete(P) state:
+	 * - Cached in client-side cache or in Sync(S) state;
+	 * - Under the protection of EX lock: Protected(P) state;
+	 * - Contains the complete sub dirs and files in client-side cache;
+	 * - Results of readdir() and lookup() operations under the directory
+	 *   can directly be obtained from client-side cache. All file
+	 *   operations can be performed on the client-side cache without
+	 *   communication with the server.
+	 * If not in Compelte(P) state, the client must read dentries from MDT.
+	 */
+	WBC_STATE_FL_COMPLETE		= (1 << 2),
+	/* Indicate it is a root WBC directory held the root WBC EX lock. */
+	WBC_STATE_FL_ROOT		= (1 << 3),
+	/* The inode is reserved and pinned in MemFS. */
+	WBC_STATE_FL_INODE_RESERVED	= (1 << 4),
+	/*
+	 * Dirty cache pages for a regular file under the protection of the
+	 * root WBC EX LOCK can be cached in MemFS. They are pinned in memory,
+	 * can not be evicted and reclaimed until they have been assimilated
+	 * from MemFS into main filesystem Lustre. After that, the data pages
+	 * are committed into Lustre CLIO and become reclaimable. Their life
+	 * cycle is managed by main filesystem Lustre instead of the embeded
+	 * memory file system MemFS.
+	 */
+	WBC_STATE_FL_DATA_COMMITTED	= (1 << 5),
+	/* The file is being written back. */
+	__WBC_STATE_FL_WRITEBACK	= 6,
+	WBC_STATE_FL_WRITEBACK		= (1 << __WBC_STATE_FL_WRITEBACK),
+};
+
+struct lu_wbc_state {
+	/* File mode. */
+	mode_t			wbcs_fmode;
+	/* WBC state for the file. */
+	__u32			wbcs_flags;
+	/* WBC cache mode. */
+	enum lu_wbc_cache_mode	wbcs_cache_mode;
+	/*
+	 * Global flush mode on a client or customized flush mode for an
+	 * special root WBC directory.
+	 */
+	enum lu_wbc_flush_mode	wbcs_flush_mode;
+	/* Reserved for local open count. */
+	__u32			wbcs_open_count;
+	/* Reserved for the path on PCC after supported. */
+	char			wbcs_path[PATH_MAX];
+};
+
+static inline const char *wbc_cachemode2string(enum lu_wbc_cache_mode mode)
+{
+	switch (mode) {
+	case WBC_MODE_NONE:
+		return "none";
+	case WBC_MODE_MEMFS:
+		return "memfs";
+	default:
+		return "fault";
+	}
+}
+
+static inline const char *wbc_flushmode2string(enum lu_wbc_flush_mode mode)
+{
+	switch (mode) {
+	case WBC_FLUSH_NONE:
+		return "none";
+	case WBC_FLUSH_LAZY_DROP:
+		return "lazy_drop";
+	default:
+		return "fault";
+	}
+}
 
 #if defined(__cplusplus)
 }

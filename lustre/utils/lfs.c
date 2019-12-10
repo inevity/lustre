@@ -135,6 +135,9 @@ static int lfs_pcc(int argc, char **argv);
 static int lfs_pcc_list_commands(int argc, char **argv);
 static int lfs_migrate_to_dom(int fd, int fdv, char *name,
 			      __u64 migration_flags);
+static int lfs_wbc_state(int argc, char **argv);
+static int lfs_wbc(int argc, char **argv);
+static int lfs_wbc_list_commands(int argc, char **argv);
 
 struct pool_to_id_cbdata {
 	const char *pool;
@@ -305,6 +308,21 @@ command_t pcc_cmdlist[] = {
 		"usage: lfs pcc detach_fid <mntpath> <fid>...\n" },
 	{ .pc_name = "list-commands", .pc_func = lfs_pcc_list_commands,
 	  .pc_help = "list commands supported by lfs pcc"},
+	{ .pc_name = "help", .pc_func = Parser_help, .pc_help = "help" },
+	{ .pc_name = "exit", .pc_func = Parser_quit, .pc_help = "quit" },
+	{ .pc_name = "quit", .pc_func = Parser_quit, .pc_help = "quit" },
+	{ .pc_help = NULL }
+};
+
+/*
+ * command_t pcc_cmdlist - lfs pcc commands.
+ */
+command_t wbc_cmdlist[] = {
+	{ .pc_name = "state", .pc_func = lfs_wbc_state,
+	  .pc_help = "Display the WBC state for given files.\n"
+		"usage: lfs wbc state <file> ...\n"},
+	{ .pc_name = "list-commands", .pc_func = lfs_wbc_list_commands,
+	  .pc_help = "list commands supported by lfs wbc"},
 	{ .pc_name = "help", .pc_func = Parser_help, .pc_help = "help" },
 	{ .pc_name = "exit", .pc_func = Parser_quit, .pc_help = "quit" },
 	{ .pc_name = "quit", .pc_func = Parser_quit, .pc_help = "quit" },
@@ -575,6 +593,9 @@ command_t cmdlist[] = {
 	 "lfs pcc state  - display the PCC state for given files\n"
 	 "lfs pcc detach - detach given files from Persistent Client Cache\n"
 	 "lfs pcc detach_fid - detach given files from PCC by FID(s)\n"},
+	{"wbc", lfs_wbc, wbc_cmdlist,
+	 "lfs commands used to interact with WBC features:\n"
+	 "lfs wbc state	- dislplay the WBC state for given files\n"},
 	{"help", Parser_help, 0, "help"},
 	{"exit", Parser_quit, 0, "quit"},
 	{"quit", Parser_quit, 0, "quit"},
@@ -12651,6 +12672,131 @@ static int lfs_pcc(int argc, char **argv)
 		rc = Parser_commands();
 
 	return rc < 0 ? -rc : rc;
+}
+
+static int lfs_wbc_state(int argc, char **argv)
+{
+	int rc = 0;
+	const char *path;
+	char fullpath[PATH_MAX];
+	struct lu_wbc_state state;
+
+	optind = 1;
+
+	if (argc <= 1) {
+		fprintf(stderr, "%s: must specify one or more file names\n",
+			argv[0]);
+		return CMD_HELP;
+	}
+
+	while (optind < argc) {
+		int rc2;
+
+		path = argv[optind++];
+		if (realpath(path, fullpath) == NULL) {
+			fprintf(stderr, "%s: could not find path '%s': %s\n",
+				argv[0], path, strerror(errno));
+			if (rc == 0)
+				rc = -EINVAL;
+			continue;
+		}
+
+		rc2 = llapi_wbc_state_get(fullpath, &state);
+		if (rc2 < 0) {
+			if (rc == 0)
+				rc = rc2;
+			fprintf(stderr, "%s: cannot get WBC state of '%s': "
+				"%s\n", argv[0], path, strerror(-rc2));
+			continue;
+		}
+
+		printf("%s, state: (0x%08x)", fullpath, state.wbcs_flags);
+		if (state.wbcs_flags == WBC_STATE_FL_NONE) {
+			printf(" none\n");
+			continue;
+		}
+
+		if (state.wbcs_flags & WBC_STATE_FL_ROOT)
+			printf(" root");
+		if (state.wbcs_flags & WBC_STATE_FL_PROTECTED)
+			printf(" protected");
+		if (state.wbcs_flags & WBC_STATE_FL_SYNC)
+			printf(" sync");
+		if (state.wbcs_flags & WBC_STATE_FL_COMPLETE)
+			printf(" complete");
+		if (state.wbcs_flags & WBC_STATE_FL_INODE_RESERVED)
+			printf(" reserved");
+		if (state.wbcs_flags & WBC_STATE_FL_WRITEBACK)
+			printf(" writeback");
+
+		if (S_ISREG(state.wbcs_fmode)) {
+			printf(", data: ");
+			if (state.wbcs_flags & WBC_STATE_FL_DATA_COMMITTED)
+				printf(" lustre");
+			else
+				printf(" ram");
+		} else if (S_ISDIR(state.wbcs_fmode)) {
+			printf(", metadata: ");
+			if (state.wbcs_flags & WBC_STATE_FL_INODE_RESERVED)
+				printf(" ram");
+			else
+				printf(" lustre");
+		}
+
+		printf(", flush_mode: %s",
+		       wbc_flushmode2string(state.wbcs_flush_mode));
+		printf("\n");
+	}
+	return rc;
+}
+
+/**
+ * lfs_wbc() - Parse and execute lfs wbc commands.
+ * @argc: The count of lfs pcc command line arguments.
+ * @argv: Array of strings for lfs wbc command line arguments.
+ *
+ * This function parses lfs wbc commands and performs the
+ * corresponding functions specified in wbc_cmdlist[].
+ *
+ * Return: 0 on success or an error code on failure.
+ */
+static int lfs_wbc(int argc, char **argv)
+{
+	char cmd[PATH_MAX];
+	int rc = 0;
+
+	setlinebuf(stdout);
+
+	Parser_init("lfs-wbc > ", wbc_cmdlist);
+
+	snprintf(cmd, sizeof(cmd), "%s %s", progname, argv[0]);
+	progname = cmd;
+	program_invocation_short_name = cmd;
+	if (argc > 1)
+		rc = Parser_execarg(argc - 1, argv + 1, wbc_cmdlist);
+	else
+		rc = Parser_commands();
+
+	return rc < 0 ? -rc : rc;
+}
+
+/**
+ * lfs_wbc_list_commands() - List lfs wbc commands.
+ * @argc: The count of command line arguments.
+ * @argv: Array of strings for command line arguments.
+ *
+ * This function lists lfs wbc commands defined in wbc_cmdlist[].
+ *
+ * Return: 0 on success.
+ */
+static int lfs_wbc_list_commands(int argc, char **argv)
+{
+	char buffer[81] = "";
+
+	Parser_list_commands(wbc_cmdlist, buffer, sizeof(buffer),
+			     NULL, 0, 4);
+
+	return 0;
 }
 
 static int lfs_list_commands(int argc, char **argv)

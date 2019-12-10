@@ -194,12 +194,12 @@ void mdc_readdir_pack(struct req_capsule *pill, __u64 pgoff, size_t size,
 
 /* packing of MDS records */
 void mdc_create_pack(struct req_capsule *pill, struct md_op_data *op_data,
-		     const void *data, size_t datalen, umode_t mode,
-		     uid_t uid, gid_t gid, kernel_cap_t cap_effective, u64 rdev)
+		     const void *data, size_t datalen, umode_t mode, uid_t uid,
+		     gid_t gid, kernel_cap_t cap_effective, __u64 rdev,
+		     __u64 flags)
 {
 	struct mdt_rec_create *rec;
 	char *tmp;
-	__u64 flags;
 
 	BUILD_BUG_ON(sizeof(struct mdt_rec_reint) !=
 		     sizeof(struct mdt_rec_create));
@@ -216,7 +216,6 @@ void mdc_create_pack(struct req_capsule *pill, struct md_op_data *op_data,
 	rec->cr_time     = op_data->op_mod_time;
 	rec->cr_suppgid1 = op_data->op_suppgids[0];
 	rec->cr_suppgid2 = op_data->op_suppgids[1];
-	flags = 0;
 	if (op_data->op_bias & MDS_CREATE_VOLATILE)
 		flags |= MDS_OPEN_VOLATILE;
 	if (op_data->op_bias & MDS_SETSTRIPE_CREATE)

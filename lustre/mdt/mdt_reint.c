@@ -487,6 +487,79 @@ unlock_parent:
 	return rc;
 }
 
+static int mdt_intent_lock_grant(struct mdt_thread_info *info,
+				 struct mdt_object *child,
+				 struct ldlm_reply *dlmrep,
+				 struct mdt_lock_handle *lhc,
+				 bool cos_incompat)
+{
+	__u64 child_bits;
+	int rc;
+
+	mdt_set_disposition(info, dlmrep, DISP_LOOKUP_NEG);
+	rc = mdt_check_resent_lock(info, child, lhc);
+	/*
+	 * rc < 0 is error and we fall right back through,
+	 * rc == 0 is the open lock might already be gotten in
+	 * ldlm_handle_enqueue due to this being a resend.
+	 */
+	if (rc <= 0)
+		return rc;
+
+	/*
+	 * This is an intent request to grant the EX child lock to the client.
+	 * XXX It actually does not need to return the EX child lockvfor a file
+	 * other than a regular file or a directory. So it could check the file
+	 * mode and skip it if not supported.
+	 */
+	if (info->mti_exlock_update) {
+		struct md_attr *ma = &info->mti_attr;
+
+		/*
+		 * We always return EX UPDATE lock to protect the directory,
+		 * cannot return PW lock since it is compatible with CR.
+		 * It still needs to return LAYOUT bits lock to the client to
+		 * protect the data content for a regular file.
+		 */
+		child_bits = MDS_INODELOCK_UPDATE;
+		if (S_ISREG(ma->ma_attr.la_mode))
+			child_bits |= MDS_INODELOCK_LAYOUT;
+		mdt_lock_reg_init(lhc, LCK_EX);
+		rc = mdt_reint_object_lock(info, child, lhc, child_bits,
+					   cos_incompat);
+	} else {
+		/*
+		 * For normal intent create (mkdir):
+		 * - Grant LOOKUP lock with CR mode to the client at least.
+		 * - Grant the lock similar to getattr();
+		 *   lock mode: PR;
+		 *   inodebits: LOOKUP | UPDATE | PERM [| LAYOUT | DOM];
+		 * - Grant the lock similar to setattr();
+		 *   lock mode: PW;
+		 *   inodebits: LOOKUP | UPDATE | PERM [| LAYOUT | DOM];
+		 *
+		 * However, it can not grant LCK_CR to the client as during the
+		 * setting of LMV layout for a directory from a client, it will
+		 * acquire LCK_PW mode lock which is compat with LCK_CR lock
+		 * mode, this may result that the cached LMV layout on a client
+		 * will not released when set (default) LMV layout on a
+		 * directory.
+		 * The solution may be to change LCK_PW to LCK_EX mode when set
+		 * or change LMV layout on a directory.
+		 * Due to the above reason, it should grant a lock with LCK_PR
+		 * mode at least to the client.
+		 * Currently it grants PR mode LOOKUP | UPDATE | PERM ibits lock
+		 * to the client.
+		 */
+		mdt_lock_reg_init(lhc, LCK_PR);
+		child_bits = MDS_INODELOCK_LOOKUP | MDS_INODELOCK_UPDATE |
+			     MDS_INODELOCK_PERM;
+		rc = mdt_object_lock(info, child, lhc, child_bits);
+	}
+
+	return rc;
+}
+
 /*
  * VBR: we save three versions in reply:
  * 0 - parent. Check that parent version is the same during replay.
@@ -600,15 +673,17 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	OBD_RACE(OBD_FAIL_MDS_CREATE_RACE);
 
 	lh = &info->mti_lh[MDT_LH_PARENT];
-	mdt_lock_pdo_init(lh, LCK_PW, &rr->rr_name);
-	rc = mdt_object_lock(info, parent, lh, MDS_INODELOCK_UPDATE);
-	if (rc)
-		GOTO(put_parent, rc);
-
-	if (!mdt_object_remote(parent)) {
-		rc = mdt_version_get_check_save(info, parent, 0);
+	if (!info->mti_parent_locked) {
+		mdt_lock_pdo_init(lh, LCK_PW, &rr->rr_name);
+		rc = mdt_object_lock(info, parent, lh, MDS_INODELOCK_UPDATE);
 		if (rc)
-			GOTO(unlock_parent, rc);
+			GOTO(put_parent, rc);
+
+		if (!mdt_object_remote(parent)) {
+			rc = mdt_version_get_check_save(info, parent, 0);
+			if (rc)
+				GOTO(unlock_parent, rc);
+		}
 	}
 
 	if (info->mti_intent_lock)
@@ -673,25 +748,42 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 		repbody->mbo_valid |= OBD_MD_FLDIREA | OBD_MD_DEFAULT_MEA;
 	}
 
-	/*
-	 * On DNE, we need to eliminate dependey between 'mkdir a' and
-	 * 'mkdir a/b' if b is a striped directory, to achieve this, two
-	 * things are done below:
-	 * 1. save child and slaves lock.
-	 * 2. if the child is a striped directory, relock parent so to
-	 *    compare against with COS locks to ensure parent was
-	 *    committed to disk.
-	 */
-	if (mdt_slc_is_enabled(mdt) && S_ISDIR(ma->ma_attr.la_mode)) {
+	if (info->mti_intent_lock) {
+		/*
+		 * FIXME: Need to do disk commit to eliminate dependence between
+		 * distributed modify transcations.
+		 * Currently it can not grant MDS_INODELOCK_UPDATE lock to the
+		 * client in DNE environment with 'sync_lock_cancel' enabled as
+		 * the previous obtained LCK_PW lock will keep the lock
+		 * referenced until client ACK.
+		 */
+		rc = mdt_intent_lock_grant(info, child, dlmrep, lhc, false);
+		if (rc)
+			GOTO(put_child, rc);
+	} else if (mdt_slc_is_enabled(mdt) && S_ISDIR(ma->ma_attr.la_mode)) {
 		struct mdt_lock_handle *lhc2;
 		struct ldlm_enqueue_info *einfo = &info->mti_einfo[0];
 		bool cos_incompat;
 
+		/*
+		 * On DNE, we need to eliminate dependey between 'mkdir a' and
+		 * 'mkdir a/b' if b is a striped directory, to achieve this,
+		 * two things are done below:
+		 * 1. save child and slaves lock.
+		 * 2. if the child is a striped directory, relock parent so to
+		 *    compare against with COS locks to ensure parent was
+		 *    committed to disk.
+		 *
+		 * The above operations is unnecessary for mkdir() with intent
+		 * lock as it will grant and return lock to the client issuing
+		 * the intent lock request.
+		 */
 		rc = mdt_object_striped(info, child);
 		if (rc < 0)
 			GOTO(put_child, rc);
 
 		cos_incompat = rc;
+		/* striped object */
 		if (cos_incompat) {
 			if (!mdt_object_remote(parent)) {
 				mdt_object_unlock(info, parent, lh, 1);
@@ -720,48 +812,12 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	if (ma->ma_valid & MA_INODE)
 		mdt_pack_attr2body(info, repbody, &ma->ma_attr,
 				   mdt_object_fid(child));
-
-	if (info->mti_intent_lock) {
-		mdt_set_disposition(info, dlmrep, DISP_LOOKUP_NEG);
-		rc = mdt_check_resent_lock(info, child, lhc);
-		/*
-		 * rc < 0 is error and we fall right back through,
-		 * rc == 0 is the open lock might already be gotten in
-		 * ldlm_handle_enqueue due to this being a resend.
-		 */
-		if (rc <= 0)
-			GOTO(put_child, rc);
-
-		/*
-		 * For the normal intent create (mkdir):
-		 * - Grant LOOKUP lock with CR mode to the client at
-		 *   least.
-		 * - Grant the lock similar to getattr():
-		 *   lock mode: PR;
-		 *   inodebits: LOOK | UPDATE | PERM [| LAYOUT].
-		 * However, it can not grant LCK_CR to the client as during
-		 * the setting of LMV layout for a directory from a client,
-		 * it will acquire LCK_PW mode lock which is compat with LCK_CR
-		 * lock mode, this may result that the cached LMV layout on a
-		 * client will not be released when set (default) LMV layout on
-		 * a directory.
-		 * Due to the above reason, it grants a lock with LCK_PR mode to
-		 * the client.
-		 * Currently it can not grant MDS_INODELOCK_UPDATE lock to the
-		 * client in DNE environment with 'sync_lock_cancel' enabled as
-		 * the previous obtained LCK_PW lock will keep the lock
-		 * referenced until client ACK.
-		 */
-		mdt_lock_reg_init(lhc, LCK_PR);
-		rc = mdt_object_lock(info, child, lhc, MDS_INODELOCK_LOOKUP |
-				     MDS_INODELOCK_PERM);
-	}
-
 	EXIT;
 put_child:
 	mdt_object_put(info->mti_env, child);
 unlock_parent:
-	mdt_object_unlock(info, parent, lh, rc);
+	if (!info->mti_parent_locked)
+		mdt_object_unlock(info, parent, lh, rc);
 	if (rc && dlmrep)
 		mdt_clear_disposition(info, dlmrep, DISP_OPEN_CREATE);
 put_parent:

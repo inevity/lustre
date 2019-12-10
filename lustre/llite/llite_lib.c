@@ -104,6 +104,7 @@ static struct ll_sb_info *ll_init_sbi(void)
 	if (rc < 0)
 		GOTO(out_sbi, rc);
 
+	wbc_super_init(&sbi->ll_wbc_super);
 	spin_lock_init(&sbi->ll_lock);
 	mutex_init(&sbi->ll_lco.lco_lock);
 	spin_lock_init(&sbi->ll_pp_extent_lock);
@@ -1193,6 +1194,7 @@ void ll_lli_init(struct ll_inode_info *lli)
 	memset(lli->lli_jobid, 0, sizeof(lli->lli_jobid));
 	/* ll_cl_context initialize */
 	INIT_LIST_HEAD(&lli->lli_lccs);
+	wbc_inode_init(&lli->lli_wbc_inode);
 }
 
 #define MAX_STRING_SIZE 128
@@ -2812,10 +2814,9 @@ int ll_read_inode2(struct inode *inode, void *opaque)
 
 void ll_delete_inode(struct inode *inode)
 {
-	struct ll_inode_info *lli = ll_i2info(inode);
 	ENTRY;
 
-	if (S_ISREG(inode->i_mode) && lli->lli_clob != NULL) {
+	if (ll_data_in_lustre(inode)) {
 		/* It is last chance to write out dirty pages,
 		 * otherwise we may lose data while umount.
 		 *

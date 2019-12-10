@@ -268,6 +268,7 @@ static void ll_lock_cancel_bits(struct ldlm_lock *lock, __u64 to_cancel)
 		LBUG();
 	}
 
+
 	if (bits & MDS_INODELOCK_XATTR) {
 		ll_xattr_cache_empty(inode);
 		bits &= ~MDS_INODELOCK_XATTR;
@@ -305,6 +306,22 @@ static void ll_lock_cancel_bits(struct ldlm_lock *lock, __u64 to_cancel)
 		    MDS_INODELOCK_LAYOUT | MDS_INODELOCK_PERM |
 		    MDS_INODELOCK_DOM))
 		ll_have_md_lock(inode, &bits, LCK_MINMODE);
+
+	/* root WBC EX lock */
+	if (lock->l_req_mode == LCK_EX && bits & MDS_INODELOCK_UPDATE) {
+		bool cached;
+
+		wbc_inode_lock_callback(inode, lock, &cached);
+
+		/*
+		 * Invalidate the alias dentries of this inode.
+		 * TODO: downgrade the lock mode or drop ibits properly.
+		 */
+		if (cached && !(bits & MDS_INODELOCK_LOOKUP) &&
+		    inode->i_sb->s_root != NULL &&
+		    inode != inode->i_sb->s_root->d_inode)
+			ll_prune_aliases(inode);
+	}
 
 	if (bits & MDS_INODELOCK_DOM) {
 		rc =  ll_dom_lock_cancel(inode, lock);
@@ -1150,26 +1167,6 @@ static struct dentry *ll_lookup_nd(struct inode *parent, struct dentry *dentry,
 	return de;
 }
 
-#ifdef FMODE_CREATED /* added in Linux v4.18-rc1-20-g73a09dd */
-# define ll_is_opened(o, f)		((f)->f_mode & FMODE_OPENED)
-# define ll_finish_open(f, d, o)	finish_open((f), (d), NULL)
-# define ll_last_arg
-# define ll_set_created(o, f)						\
-do {									\
-	(f)->f_mode |= FMODE_CREATED;					\
-} while (0)
-
-#else
-# define ll_is_opened(o, f)		(*(o))
-# define ll_finish_open(f, d, o)	finish_open((f), (d), NULL, (o))
-# define ll_last_arg			, int *opened
-# define ll_set_created(o, f)						\
-do {									\
-	*(o) |= FILE_CREATED;						\
-} while (0)
-
-#endif
-
 /*
  * For cached negative dentry and new dentry, handle lookup/create/open
  * together.
@@ -1189,6 +1186,7 @@ static int ll_atomic_open(struct inode *dir, struct dentry *dentry,
 	struct pcc_create_attach pca = { NULL, NULL };
 	bool encrypt = false;
 	int rc = 0;
+
 	ENTRY;
 
 	CDEBUG(D_VFSTRACE,
@@ -1874,7 +1872,6 @@ static int ll_symlink(struct user_namespace *mnt_userns, struct inode *dir,
 	if (!err)
 		ll_stats_ops_tally(ll_i2sbi(dir), LPROC_LL_SYMLINK,
 				   ktime_us_delta(ktime_get(), kstart));
-
 	RETURN(err);
 }
 
@@ -1927,6 +1924,8 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	struct md_op_data *op_data;
 	struct inode *inode = NULL;
 	ktime_t kstart = ktime_get();
+	enum lu_mkdir_policy pol;
+	__u64 extra_lock_flags;
 	int rc;
 
 	ENTRY;
@@ -1937,7 +1936,14 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	if (!IS_POSIXACL(dir) || !exp_connect_umask(ll_i2mdexp(dir)))
 		mode &= ~current_umask();
 
-	if (!sbi->ll_intent_mkdir_enabled) {
+
+	/*
+	 * TODO: If not want the granted WBC EX lock to be canceled due to
+	 * aging, the lock should not be put into the LRU list via the flag
+	 * LDLM_FL_NO_LRU.
+	 */
+	pol = ll_mkdir_policy_get(sbi, dir, dchild, mode, &extra_lock_flags);
+	if (pol == MKDIR_POL_REINT) {
 		mode = (mode & (S_IRWXUGO | S_ISVTX)) | S_IFDIR;
 		rc = ll_new_node(dir, dchild, NULL, mode, 0, LUSTRE_OPC_MKDIR);
 		GOTO(out_tally, rc);
@@ -1950,7 +1956,8 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	if (IS_ERR(op_data))
 		RETURN(PTR_ERR(op_data));
 
-	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags)) {
+	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
+	    pol == MKDIR_POL_INTENT) {
 		rc = ll_dentry_init_security(dchild, mode, &dchild->d_name,
 					     &op_data->op_file_secctx_name,
 					     &op_data->op_file_secctx,
@@ -1959,8 +1966,9 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 			GOTO(out_fini, rc);
 	}
 
+
 	rc = md_intent_lock(sbi->ll_md_exp, op_data, &mkdir_it,
-			    &request, &ll_md_blocking_ast, 0);
+			    &request, &ll_md_blocking_ast, extra_lock_flags);
 	if (rc)
 		GOTO(out_fini, rc);
 
@@ -1975,7 +1983,8 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	if (rc)
 		GOTO(out_fini, rc);
 
-	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags)) {
+	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
+	    pol == MKDIR_POL_INTENT) {
 		/* must be done before d_instantiate, because it calls
 		 * security_d_instantiate, which means a getxattr if security
 		 * context is not set yet
@@ -1996,7 +2005,8 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 		d_instantiate(dchild, inode);
 	}
 
-	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags)) {
+	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
+	    pol == MKDIR_POL_INTENT) {
 		rc = ll_inode_init_security(dchild, inode, dir);
 		if (rc)
 			GOTO(out_fini, rc);
@@ -2009,13 +2019,19 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 		ll_set_lock_data(sbi->ll_md_exp, inode, &mkdir_it, &bits);
 		if (bits & MDS_INODELOCK_LOOKUP)
 			d_lustre_revalidate(dchild);
+
+		/* Obtain WBC EX lock. */
+		if (mkdir_it.it_lock_mode == LCK_EX && pol == MKDIR_POL_EXCL) {
+			rc = wbc_root_init(dir, inode, dchild);
+			if (!(rc || bits & MDS_INODELOCK_LOOKUP))
+				d_lustre_revalidate(dchild);
+		}
 	}
 
 out_fini:
 	ll_finish_md_op_data(op_data);
 	ll_intent_release(&mkdir_it);
 	ptlrpc_req_finished(request);
-
 out_tally:
 	if (rc == 0)
 		ll_stats_ops_tally(sbi, LPROC_LL_MKDIR,
@@ -2024,6 +2040,10 @@ out_tally:
 	RETURN(rc);
 }
 
+/*
+ * TODO: Same optimization to unlink() if the inode of @dchild is a root
+ * WBC inode.
+ */
 static int ll_rmdir(struct inode *dir, struct dentry *dchild)
 {
 	struct qstr *name = &dchild->d_name;
@@ -2112,6 +2132,16 @@ int ll_rmdir_entry(struct inode *dir, char *name, int namelen)
 	RETURN(rc);
 }
 
+/*
+ * TODO: If the inode of @dchild is a root WBC inode, it can be optimized as
+ * follows:
+ * As the inode of @dchild is under the protection of the root WBC EX lock,
+ * thus it can delete the inode from icache and discard all cache pages
+ * directly upon the last unlink, and then cancel the root WBC EX lock via
+ * early lock cancelation (ELC) when send unlink request to MDT; Otherwise,
+ * the blocking callback of the root WBC EX lock will flush all dirty data
+ * to OSTs unnecessaryly.
+ */
 static int ll_unlink(struct inode *dir, struct dentry *dchild)
 {
 	struct qstr *name = &dchild->d_name;
@@ -2191,6 +2221,7 @@ static int ll_rename(struct user_namespace *mnt_userns,
 	umode_t mode = 0;
 	struct llcrypt_name foldname, fnewname;
 	int err;
+
 	ENTRY;
 
 #if defined(HAVE_USER_NAMESPACE_ARG) || defined(HAVE_IOPS_RENAME_WITH_FLAGS)

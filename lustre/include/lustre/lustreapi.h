@@ -668,6 +668,10 @@ int llapi_pcc_state_get_fd(int fd, struct lu_pcc_state *state);
 int llapi_pcc_state_get(const char *path, struct lu_pcc_state *state);
 int llapi_pccdev_set(const char *mntpath, const char *cmd);
 int llapi_pccdev_get(const char *mntpath);
+
+/* WBC */
+int llapi_wbc_state_get_fd(int fd, struct lu_wbc_state *state);
+int llapi_wbc_state_get(const char *path, struct lu_wbc_state *state);
 /** @} llapi */
 
 /* llapi_layout user interface */

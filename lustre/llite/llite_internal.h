@@ -49,6 +49,7 @@
 
 #include "vvp_internal.h"
 #include "pcc.h"
+#include "wbc.h"
 #include "foreign_symlink.h"
 
 #ifndef FMODE_EXEC
@@ -81,6 +82,8 @@ struct ll_dentry_data {
 	unsigned int			lld_invalid:1;
 	unsigned int			lld_nfs_dentry:1;
 	struct rcu_head			lld_rcu_head;
+	struct dentry			*lld_dentry; /* pointer back at dentry*/
+	struct wbc_dentry		lld_wbc_dentry;
 };
 
 #define ll_d2d(de) ((struct ll_dentry_data*)((de)->d_fsdata))
@@ -271,6 +274,8 @@ struct ll_inode_info {
 	struct mutex			lli_xattrs_enq_lock;
 	struct list_head		lli_xattrs; /* ll_xattr_entry->xe_list */
 	struct list_head		lli_lccs; /* list of ll_cl_context */
+
+	struct wbc_inode		lli_wbc_inode;
 };
 
 #ifndef HAVE_USER_NAMESPACE_ARG
@@ -777,6 +782,9 @@ struct ll_sb_info {
 	/* Persistent Client Cache */
 	struct pcc_super	  ll_pcc_super;
 
+	/* Metadata Writeback Caching */
+	struct wbc_super	 ll_wbc_super;
+
 	/* to protect vs updates in all following foreign symlink fields */
 	struct rw_semaphore	  ll_foreign_symlink_sem;
 	/* foreign symlink path prefix */
@@ -1085,7 +1093,6 @@ int ll_readpage(struct file *file, struct page *page);
 int ll_io_read_page(const struct lu_env *env, struct cl_io *io,
 			   struct cl_page *page, struct file *file);
 void ll_readahead_init(struct inode *inode, struct ll_readahead_state *ras);
-int vvp_io_write_commit(const struct lu_env *env, struct cl_io *io);
 
 enum lcc_type;
 void ll_cl_add(struct inode *inode, const struct lu_env *env, struct cl_io *io,
@@ -1095,9 +1102,16 @@ struct ll_cl_context *ll_cl_find(struct inode *inode);
 
 extern const struct address_space_operations ll_aops;
 
+/* llite/vvp_io.c */
+void write_commit_callback(const struct lu_env *env, struct cl_io *io,
+			   struct pagevec *pvec);
+int vvp_io_write_commit(const struct lu_env *env, struct cl_io *io);
+
 /* llite/file.c */
 extern const struct inode_operations ll_file_inode_operations;
 const struct file_operations *ll_select_file_operations(struct ll_sb_info *sbi);
+extern struct ll_file_data *ll_file_data_get(void);
+extern void ll_file_data_put(struct ll_file_data *fd);
 extern int ll_have_md_lock(struct inode *inode, __u64 *bits,
 			   enum ldlm_mode l_req_mode);
 extern enum ldlm_mode ll_take_md_lock(struct inode *inode, __u64 bits,
@@ -1756,5 +1770,48 @@ extern const struct llcrypt_operations lustre_cryptops;
 int ll_manage_foreign(struct inode *inode, struct lustre_md *lmd);
 bool ll_foreign_is_openable(struct dentry *dentry, unsigned int flags);
 bool ll_foreign_is_removable(struct dentry *dentry, bool unset);
+
+static inline struct wbc_inode *ll_i2wbci(struct inode *inode)
+{
+	return &ll_i2info(inode)->lli_wbc_inode;
+}
+
+static inline struct wbc_dentry *ll_d2wbcd(struct dentry *dentry)
+{
+	return &ll_d2d(dentry)->lld_wbc_dentry;
+}
+
+static inline struct wbc_super *ll_i2wbcs(struct inode *inode)
+{
+	return &ll_i2sbi(inode)->ll_wbc_super;
+}
+
+static inline struct wbc_super *ll_s2wbcs(struct super_block *sb)
+{
+	return &ll_s2sbi(sb)->ll_wbc_super;
+}
+
+static inline struct wbc_conf *ll_s2wbcc(struct super_block *sb)
+{
+	return &ll_s2wbcs(sb)->wbcs_conf;
+}
+
+static inline bool ll_data_in_lustre(struct inode *inode)
+{
+	struct ll_inode_info *lli = ll_i2info(inode);
+	struct wbc_inode *wbci = &lli->lli_wbc_inode;
+
+	if (S_ISREG(inode->i_mode) && lli->lli_clob != NULL) {
+		if (wbci->wbci_flags == WBC_STATE_FL_NONE)
+			return true;
+
+		if (wbci->wbci_flags & WBC_STATE_FL_DATA_COMMITTED) {
+			LASSERT(wbc_inode_has_protected(wbci));
+			return true;
+		}
+	}
+
+	return false;
+}
 
 #endif /* LLITE_INTERNAL_H */

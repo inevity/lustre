@@ -4080,6 +4080,7 @@ static const struct md_ops lmv_md_ops = {
         .m_getxattr             = lmv_getxattr,
         .m_getattr_name         = lmv_getattr_name,
         .m_intent_lock          = lmv_intent_lock,
+	.m_intent_lock_async    = lmv_intent_lock_async,
         .m_link                 = lmv_link,
         .m_rename               = lmv_rename,
         .m_setattr              = lmv_setattr,

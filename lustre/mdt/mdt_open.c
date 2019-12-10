@@ -108,7 +108,7 @@ void mdt_mfd_free(struct mdt_file_data *mfd)
 }
 
 static int mdt_create_data(struct mdt_thread_info *info,
-                           struct mdt_object *p, struct mdt_object *o)
+			   struct mdt_object *p, struct mdt_object *o)
 {
 	struct md_op_spec     *spec = &info->mti_spec;
 	struct md_attr        *ma   = &info->mti_attr;
@@ -1018,6 +1018,8 @@ static void mdt_object_open_unlock(struct mdt_thread_info *info,
 	if (rc != 0 || !lustre_handle_is_used(&lhc->mlh_reg_lh)) {
 		struct ldlm_reply       *ldlm_rep;
 
+		LASSERT(!info->mti_parent_locked);
+
 		ldlm_rep = req_capsule_server_get(info->mti_pill, &RMF_DLM_REP);
 		mdt_clear_disposition(info, ldlm_rep, DISP_OPEN_LOCK);
 		if (lustre_handle_is_used(&lhc->mlh_reg_lh))
@@ -1306,7 +1308,8 @@ int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	ma->ma_need = MA_INODE;
 	ma->ma_valid = 0;
 
-	LASSERT(info->mti_pill->rc_fmt == &RQF_LDLM_INTENT_OPEN);
+	LASSERT(info->mti_pill->rc_fmt == &RQF_LDLM_INTENT_OPEN &&
+		!info->mti_parent_locked);
 	ldlm_rep = req_capsule_server_get(info->mti_pill, &RMF_DLM_REP);
 
 	if (unlikely(open_flags & MDS_OPEN_JOIN_FILE)) {
@@ -1350,7 +1353,7 @@ int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 			GOTO(out, result = -EFAULT);
 		}
 		CDEBUG(D_INFO, "No object(1), continue as regular open.\n");
-	} else if (open_flags & MDS_OPEN_BY_FID) {
+	} else if ((open_flags & MDS_OPEN_BY_FID)) {
 		result = mdt_open_by_fid_lock(info, ldlm_rep, lhc);
 		if (result < 0)
 			CDEBUG(D_INFO, "no object for "DFID": %d\n",

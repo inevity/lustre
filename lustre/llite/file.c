@@ -70,7 +70,7 @@ ll_put_grouplock(struct inode *inode, struct file *file, unsigned long arg);
 static int ll_lease_close(struct obd_client_handle *och, struct inode *inode,
 			  bool *lease_broken);
 
-static struct ll_file_data *ll_file_data_get(void)
+struct ll_file_data *ll_file_data_get(void)
 {
 	struct ll_file_data *fd;
 
@@ -84,7 +84,7 @@ static struct ll_file_data *ll_file_data_get(void)
 	return fd;
 }
 
-static void ll_file_data_put(struct ll_file_data *fd)
+void ll_file_data_put(struct ll_file_data *fd)
 {
         if (fd != NULL)
                 OBD_SLAB_FREE_PTR(fd, ll_file_data_slab);
@@ -813,7 +813,8 @@ int ll_file_open(struct inode *inode, struct file *file)
 	__u64 *och_usecount = NULL;
 	struct ll_file_data *fd;
 	ktime_t kstart = ktime_get();
-	int rc = 0;
+	int rc;
+
 	ENTRY;
 
 	CDEBUG(D_VFSTRACE, "VFS Op:inode="DFID"(%p), flags %o\n",
@@ -2181,6 +2182,7 @@ static ssize_t ll_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 	struct iov_iter	to;
 	size_t iov_count;
 	ssize_t result;
+
 	ENTRY;
 
 	result = ll_file_get_iov_count(iov, &nr_segs, &iov_count, VERIFY_READ);
@@ -2204,9 +2206,9 @@ static ssize_t ll_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 static ssize_t ll_file_read(struct file *file, char __user *buf, size_t count,
 			    loff_t *ppos)
 {
-	struct iovec   iov = { .iov_base = buf, .iov_len = count };
-	struct kiocb   kiocb;
-	ssize_t        result;
+	struct iovec iov = { .iov_base = buf, .iov_len = count };
+	struct kiocb kiocb;
+	ssize_t result;
 
 	ENTRY;
 
@@ -2237,6 +2239,7 @@ static ssize_t ll_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	struct iov_iter from;
 	size_t iov_count;
 	ssize_t result;
+
 	ENTRY;
 
 	result = ll_file_get_iov_count(iov, &nr_segs, &iov_count, VERIFY_WRITE);
@@ -2260,10 +2263,10 @@ static ssize_t ll_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 static ssize_t ll_file_write(struct file *file, const char __user *buf,
 			     size_t count, loff_t *ppos)
 {
-	struct iovec   iov = { .iov_base = (void __user *)buf,
-			       .iov_len = count };
-	struct kiocb   kiocb;
-	ssize_t        result;
+	struct iovec iov = { .iov_base = (void __user *)buf,
+			     .iov_len = count };
+	struct kiocb kiocb;
+	ssize_t result;
 
 	ENTRY;
 
@@ -4405,6 +4408,8 @@ out_state:
 		RETURN(0);
 	}
 
+	case LL_IOC_WBC_STATE:
+		RETURN(wbc_ioctl(file, cmd, arg));
 	default:
 		RETURN(obd_iocontrol(cmd, ll_i2dtexp(inode), 0, NULL,
 				     (void __user *)arg));
@@ -4598,11 +4603,13 @@ int ll_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	       PFID(ll_inode2fid(inode)), inode, start, end, datasync);
 
 	/* fsync's caller has already called _fdata{sync,write}, we want
-	 * that IO to finish before calling the osc and mdc sync methods */
+	 * that IO to finish before calling the osc and mdc sync methods
+	 */
 	rc = filemap_write_and_wait_range(inode->i_mapping, start, end);
 
 	/* catch async errors that were recorded back when async writeback
-	 * failed for pages in this mapping. */
+	 * failed for pages in this mapping.
+	 */
 	if (!S_ISDIR(inode->i_mode)) {
 		err = lli->lli_async_rc;
 		lli->lli_async_rc = 0;
@@ -5125,6 +5132,7 @@ static int ll_inode_revalidate(struct dentry *dentry, enum ldlm_intent_flags op)
 	const char *name = NULL;
 	size_t namelen = 0;
 	int rc = 0;
+
 	ENTRY;
 
 	CDEBUG(D_VFSTRACE, "VFS Op:inode="DFID"(%p),name=%s\n",
