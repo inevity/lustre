@@ -118,7 +118,6 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 	struct inode *inode;
 	struct qstr *name = &dchild->d_name;
 	struct md_op_data *op_data;
-	struct ll_inode_info *lli;
 	int tgt_len = 0;
 	int rc;
 
@@ -138,8 +137,17 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 	if (IS_ERR(inode))
 		GOTO(out_exit, rc = PTR_ERR(inode));
 
-	lli = ll_i2info(dchild->d_inode);
+	rc = wbcfs_d_init(dchild);
+	if (rc)
+		GOTO(out_iput, rc);
+
+	d_instantiate(dchild, inode);
+	dget(dchild); /* Extra count - pin the dentry in core. */
+	/* Mark @dir as dirty to update the mtime/ctime for @dir on MDT? */
+	dir->i_mtime = dir->i_ctime = current_time(dir);
+
 	if (opc == LUSTRE_OPC_SYMLINK) {
+		struct ll_inode_info *lli;
 		int len = strlen(tgt) + 1;
 
 		rc = page_symlink(dchild->d_inode, tgt, len);
@@ -152,6 +160,7 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 		 * time where we would need to get the name somehow. but we
 		 * might need to get rid of this and convert wcwnrully.
 		 */
+		lli = ll_i2info(inode);
 		OBD_ALLOC(lli->lli_symlink_name, len);
 		if (lli->lli_symlink_name == NULL)
 			GOTO(out_iput, rc = -ENOMEM);
@@ -159,13 +168,16 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 		memcpy(lli->lli_symlink_name, tgt, len);
 	}
 
-	rc = wbcfs_d_init(dchild);
-	if (rc)
-		GOTO(out_iput, rc);
+	switch (ll_i2wbci(inode)->wbci_flush_mode) {
+	case WBC_FLUSH_AGING_DROP:
+		mark_inode_dirty(dir);
+		mark_inode_dirty(inode);
+		break;
+	case WBC_FLUSH_LAZY_DROP:
+	default:
+		break;
+	}
 
-	d_instantiate(dchild, inode);
-	dget(dchild); /* Extra count - pin the dentry in core. */
-	dir->i_mtime = dir->i_ctime = current_time(dir);
 out_iput:
 	if (rc)
 		iput(inode);

@@ -81,12 +81,18 @@ static int ll_drop_inode(struct inode *inode)
 	return drop;
 }
 
+static int ll_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	return wbc_write_inode(inode, wbc);
+}
+
 /* exported operations */
 const struct super_operations lustre_super_operations =
 {
 	.alloc_inode   = ll_alloc_inode,
 	.destroy_inode = ll_destroy_inode,
 	.drop_inode    = ll_drop_inode,
+	.write_inode   = ll_write_inode,
 	.evict_inode   = ll_delete_inode,
 	.put_super     = ll_put_super,
 	.statfs        = ll_statfs,

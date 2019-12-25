@@ -124,6 +124,40 @@ void wbc_dentry_init(struct dentry *dentry)
 	INIT_LIST_HEAD(&lld->lld_wbc_dentry.wbcd_flush_item);
 }
 
+int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	struct ldlm_lock *lock;
+	bool cached;
+
+	ENTRY;
+
+	/* The inode was flush to MDT due to LRU lock shrinking. */
+	cached = wbc_inode_has_protected(wbci);
+	if (!cached)
+		RETURN(0);
+
+	/* TODO: Handle WB_SYNC_ALL. */
+	switch (wbci->wbci_flush_mode) {
+	case WBC_FLUSH_AGING_DROP:
+		lock = ldlm_handle2lock(&wbci->wbci_lock_handle);
+		if (lock == NULL) {
+			LASSERT(!wbc_inode_has_protected(wbci));
+			RETURN(0);
+		}
+
+		wbc_inode_lock_callback(inode, lock, &cached);
+		LDLM_LOCK_PUT(lock);
+		/* TODO: Convert the EX WBC lock to PR or CR lock. */
+		break;
+	case WBC_FLUSH_LAZY_DROP:
+	default:
+		RETURN(0);
+	}
+
+	RETURN(0);
+}
+
 static void wbc_super_conf_disable(struct wbc_conf *conf)
 {
 	memset(conf, 0, sizeof(*conf));
@@ -156,6 +190,7 @@ void wbc_super_init(struct wbc_super *super)
 
 static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 {
+	struct wbc_conf *conf = &cmd->wbcc_conf;
 	char *key, *val;
 	unsigned long num;
 	int rc;
@@ -168,14 +203,16 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 	/* Key of the value pair */
 	if (strcmp(key, "cache_mode") == 0) {
 		if (strcmp(val, "memfs") == 0)
-			cmd->wbcc_conf.wbcc_cache_mode = WBC_MODE_MEMFS;
+			conf->wbcc_cache_mode = WBC_MODE_MEMFS;
 		else
 			return -EINVAL;
 
 		cmd->wbcc_flags |= WBC_CMD_OP_CACHE_MODE;
 	} else if (strcmp(key, "flush_mode") == 0) {
 		if (strcmp(val, "lazy_drop") == 0)
-			cmd->wbcc_conf.wbcc_flush_mode = WBC_FLUSH_LAZY_DROP;
+			conf->wbcc_flush_mode = WBC_FLUSH_LAZY_DROP;
+		else if (strcmp(val, "aging_drop") == 0)
+			conf->wbcc_flush_mode = WBC_FLUSH_AGING_DROP;
 		else
 			return -EINVAL;
 
@@ -185,7 +222,7 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 		if (rc)
 			return rc;
 
-		cmd->wbcc_conf.wbcc_max_rpcs = num;
+		conf->wbcc_max_rpcs = num;
 		cmd->wbcc_flags |= WBC_CMD_OP_MAX_RPCS;
 	} else {
 		return -EINVAL;

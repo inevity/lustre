@@ -215,6 +215,7 @@ rebuild:
 	/* get SELinux policy info if any */
 	rc = sptlrpc_get_sepol(req);
 	if (rc < 0) {
+		ldlm_lock_list_put(&cancels, l_bl_ast, count);
 		ptlrpc_request_free(req);
 		RETURN(rc);
 	}
@@ -316,6 +317,7 @@ int mdc_unlink(struct obd_export *exp, struct md_op_data *op_data,
 	/* get SELinux policy info if any */
 	rc = sptlrpc_get_sepol(req);
 	if (rc < 0) {
+		ldlm_lock_list_put(&cancels, l_bl_ast, count);
 		ptlrpc_request_free(req);
 		RETURN(rc);
 	}
@@ -374,6 +376,7 @@ int mdc_link(struct obd_export *exp, struct md_op_data *op_data,
 	/* get SELinux policy info if any */
 	rc = sptlrpc_get_sepol(req);
 	if (rc < 0) {
+		ldlm_lock_list_put(&cancels, l_bl_ast, count);
 		ptlrpc_request_free(req);
 		RETURN(rc);
 	}
@@ -447,6 +450,7 @@ int mdc_rename(struct obd_export *exp, struct md_op_data *op_data,
 	/* get SELinux policy info if any */
 	rc = sptlrpc_get_sepol(req);
 	if (rc < 0) {
+		ldlm_lock_list_put(&cancels, l_bl_ast, count);
 		ptlrpc_request_free(req);
 		RETURN(rc);
 	}

@@ -79,10 +79,16 @@ wbc_conf_show()
 
 setup_wbc()
 {
-	stack_trap "cleanup_wbc" EXIT
-	$LCTL set_param llite.*.wbc.conf=enable ||
-		error "failed to enable WBC"
+	local conf="$1"
 
+	stack_trap "cleanup_wbc" EXIT
+	if [ -n "$conf" ]; then
+		$LCTL set_param llite.*.wbc.conf="conf $conf" ||
+			error "failed to conf WBC: conf $conf"
+	else
+		$LCTL set_param llite.*.wbc.conf=enable ||
+			error "failed to enable WBC"
+	fi
 	wbc_conf_show
 }
 
@@ -136,6 +142,19 @@ for file in $fileset; do
 done;
 exit 0;"
 	return $?
+}
+
+wait_wbc_sync_state() {
+	local file=$1
+	local client=${2:-$HOSTNAME}\
+	local cmd="$LFS wbc state $file"
+
+	sleep 6
+	$cmd
+	cmd+=" | grep -E -c 'state: .*(none|sync)'"
+	echo $cmd
+	wait_update --verbose $client "$cmd" "1" 10 ||
+		error "$file is not synced"
 }
 
 test_1() {
@@ -392,6 +411,50 @@ test_5() {
 	mkdir $path || error "mkdir $dir/$path failed"
 }
 run_test 5 "Hanle -ENOENT lookup failure correctly"
+
+test_6() {
+	local file1="$tdir/file1"
+	local dir1="$tdir/dir1"
+	local file2="$dir1/file2"
+	local dir2="$dir1/dir2"
+	local file3="$dir2/file3"
+	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
+	local expire=$(sysctl -n vm.dirty_expire_centisecs)
+	local oldmd5
+	local newmd5
+
+	setup_wbc "cache_mode=memfs flush_mode=aging_drop"
+	echo "dirty_writeback_centisecs: $interval"
+	interval=$((interval + 100))
+	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
+	sysctl -w vm.dirty_expire_centisecs=$interval
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	$LFS wbc state $DIR/$tdir
+	mkdir $DIR/$dir1 || error "mkdir $DIR/$dir1 failed"
+	mkdir $DIR/$dir2 || error "mkdir $DIR/$dir2 failed"
+	echo "QQQQQ" > $DIR/$file1 || error "write $DIR/$file1 failed"
+	dd if=/dev/zero of=$DIR/$file2 seek=1k bs=1k count=1 ||
+		error "failed to write $DIR/$file2"
+	oldmd5=$(md5sum $DIR/$file2 | awk '{print $1}')
+	echo "KKKKK" > $DIR/$file3 || error "write  $DIR/$file3 failed"
+
+	local fileset="$file1 $dir1 $file2 $dir2 $file3"
+
+	ls -R $DIR/$tdir
+	check_fileset_wbc_flags "$fileset" "0x00000005" $DIR
+	sleep $((interval / 100))
+
+	wait_wbc_sync_state $DIR/$file3
+	check_fileset_wbc_flags "$fileset" "0x00000000" $DIR
+	check_mdt_fileset_exist "$fileset" 0 ||
+		error "'$fileset' should exist on MDT"
+
+	remount_client $MOUNT || error "failed to remount client $MOUNT"
+	newmd5=$(md5sum $DIR/$file2 | awk '{print $1}')
+	[ "$newmd5" == "$oldmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+}
+run_test 6 "Verify aging flush mode"
 
 log "cleanup: ======================================================"
 

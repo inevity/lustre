@@ -194,6 +194,7 @@ static int wbc_create_exlock_cb(struct req_capsule *pill,
 	LASSERT((wbci->wbci_flags & WBC_STATE_FL_PROTECTED) &&
 		(wbci->wbci_flags & WBC_STATE_FL_COMPLETE));
 	wbci->wbci_flags |= WBC_STATE_FL_ROOT | WBC_STATE_FL_SYNC;
+	wbci->wbci_lock_handle.cookie = it->it_lock_handle;
 
 	/*
 	 * We got a lock handle from this intent, and potentially
@@ -746,6 +747,8 @@ static ssize_t wbc_flush_mode_seq_write(struct file *file,
 	memset(&cmd, 0, sizeof(cmd));
 	if (strncmp(kernbuf, "lazy_drop", 9) == 0)
 		cmd.wbcc_conf.wbcc_flush_mode = WBC_FLUSH_LAZY_DROP;
+	else if (strncmp(kernbuf, "aging_drop", 10) == 0)
+		cmd.wbcc_conf.wbcc_flush_mode = WBC_FLUSH_AGING_DROP;
 	else
 		RETURN(-EINVAL);
 
