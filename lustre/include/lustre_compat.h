@@ -621,4 +621,8 @@ static inline void ll_security_release_secctx(char *secdata, u32 seclen)
 #define ll_set_acl(ns, inode, acl, type)	ll_set_acl(inode, acl, type)
 #endif
 
+#ifndef HAVE_SETATTR_PREPARE
+#define setattr_prepare(de, attr)	inode_change_ok((de)->d_inode, attr)
+#endif
+
 #endif /* _LUSTRE_COMPAT_H */

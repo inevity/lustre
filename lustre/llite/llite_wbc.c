@@ -356,6 +356,140 @@ wbc_prep_op_item(enum md_item_opcode opc, struct inode *dir,
 	return item;
 }
 
+int wbc_do_setattr(struct dentry *dentry, struct iattr *attr)
+{
+	struct ptlrpc_request *request = NULL;
+	struct inode *inode = dentry->d_inode;
+	struct ll_sb_info *sbi = ll_i2sbi(inode);
+	enum op_xvalid xvalid = 0;
+	struct md_op_data *op_data;
+	int mode = inode->i_mode;
+	int rc;
+
+	ENTRY;
+
+	if ((attr->ia_valid & (ATTR_CTIME|ATTR_SIZE|ATTR_MODE)) ==
+			      (ATTR_CTIME|ATTR_SIZE|ATTR_MODE))
+		xvalid |= OP_XVALID_OWNEROVERRIDE;
+
+	if (((attr->ia_valid & (ATTR_MODE|ATTR_FORCE|ATTR_SIZE)) ==
+			       (ATTR_SIZE|ATTR_MODE)) &&
+	    (((mode & S_ISUID) && !(attr->ia_mode & S_ISUID)) ||
+	     (((mode & (S_ISGID|S_IXGRP)) == (S_ISGID|S_IXGRP)) &&
+	      !(attr->ia_mode & S_ISGID))))
+		attr->ia_valid |= ATTR_FORCE;
+
+	if ((attr->ia_valid & ATTR_MODE) &&
+	    (mode & S_ISUID) &&
+	    !(attr->ia_mode & S_ISUID) &&
+	    !(attr->ia_valid & ATTR_KILL_SUID))
+		attr->ia_valid |= ATTR_KILL_SUID;
+
+	if ((attr->ia_valid & ATTR_MODE) &&
+	    ((mode & (S_ISGID|S_IXGRP)) == (S_ISGID|S_IXGRP)) &&
+	    !(attr->ia_mode & S_ISGID) &&
+	    !(attr->ia_valid & ATTR_KILL_SGID))
+		attr->ia_valid |= ATTR_KILL_SGID;
+
+	if (attr->ia_valid & ATTR_SIZE) {
+		struct ll_inode_info *lli = ll_i2info(inode);
+
+		/* Check new size against VFS/VM file size limit and rlimit */
+		rc = inode_newsize_ok(inode, attr->ia_size);
+		if (rc)
+			RETURN(rc);
+
+		/* The maximum Lustre file size is variable, based on the
+		 * OST maximum object size and number of stripes.  This
+		 * needs another check in addition to the VFS check above.
+		 */
+		if (attr->ia_size > ll_file_maxbytes(inode)) {
+			CDEBUG(D_INODE, "file "DFID" too large %llu > %llu\n",
+			       PFID(&lli->lli_fid), attr->ia_size,
+			       ll_file_maxbytes(inode));
+			RETURN(-EFBIG);
+		}
+
+		attr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
+	}
+
+	/* POSIX: check before ATTR_*TIME_SET set (from inode_change_ok) */
+	if (attr->ia_valid & TIMES_SET_FLAGS) {
+		if ((!uid_eq(current_fsuid(), inode->i_uid)) &&
+		    !capable(CAP_FOWNER))
+			RETURN(-EPERM);
+	}
+
+	/* We mark all of the fields "set" so MDS/OST does not re-set them */
+	if ((attr->ia_valid & ATTR_CTIME)) {
+		attr->ia_ctime = current_time(inode);
+		xvalid |= OP_XVALID_CTIME_SET;
+	}
+	if (!(attr->ia_valid & ATTR_ATIME_SET) &&
+	    (attr->ia_valid & ATTR_ATIME)) {
+		attr->ia_atime = current_time(inode);
+		attr->ia_valid |= ATTR_ATIME_SET;
+	}
+	if (!(attr->ia_valid & ATTR_MTIME_SET) &&
+	    (attr->ia_valid & ATTR_MTIME)) {
+		attr->ia_mtime = current_time(inode);
+		attr->ia_valid |= ATTR_MTIME_SET;
+	}
+
+	if (attr->ia_valid & (ATTR_MTIME | ATTR_CTIME))
+		CDEBUG(D_INODE, "setting mtime %lld, ctime %lld, now = %lld\n",
+		       (s64)attr->ia_mtime.tv_sec, (s64)attr->ia_ctime.tv_sec,
+		       ktime_get_real_seconds());
+
+	if (S_ISREG(inode->i_mode))
+		inode_unlock(inode);
+
+	OBD_ALLOC_PTR(op_data);
+	if (op_data == NULL)
+		GOTO(out, rc = -ENOMEM);
+
+	if (attr->ia_valid & ATTR_FILE) {
+		struct ll_file_data *fd = attr->ia_file->private_data;
+
+		if (fd->fd_lease_och)
+			op_data->op_bias |= MDS_TRUNC_KEEP_LEASE;
+	}
+
+	op_data->op_attr = *attr;
+	op_data->op_xvalid = xvalid;
+
+	ll_prep_md_op_data(op_data, inode, NULL, NULL, 0, 0,
+			   LUSTRE_OPC_ANY, NULL);
+	op_data->op_bias |= MDS_WBC_LOCKLESS;
+
+	rc = md_setattr(sbi->ll_md_exp, op_data, NULL, 0, &request);
+	if (rc) {
+		if (rc == -ENOENT)
+			clear_nlink(inode);
+		else if (rc != -EPERM && rc != -EACCES && rc != -ETXTBSY)
+			CERROR("md_setattr fails: rc = %d\n", rc);
+	}
+
+	ptlrpc_req_finished(request);
+	ll_finish_md_op_data(op_data);
+out:
+	if (S_ISREG(inode->i_mode)) {
+		inode_lock(inode);
+		if (attr->ia_valid & ATTR_SIZE)
+			inode_dio_wait(inode);
+		/*
+		 * Once we've got the i_mutex, it's safe to set the S_NOSEC
+		 * flag.  ll_update_inode (called from ll_md_setattr), clears
+		 * inode flags, so there is a gap where S_NOSEC is not set.
+		 * This can cause a writer to take the i_mutex unnecessarily,
+		 * but this is safe to do and should be rare.
+		 */
+		inode_has_no_xattr(inode);
+	}
+
+	RETURN(rc);
+}
+
 /*
  * Write the cached data in MemFS into Lustre clio for an inode.
  * TODO: It need to ensure that generic IO must be blocked in this phase until

@@ -1965,6 +1965,7 @@ enum mds_op_bias {
 	MDS_FID_OP		= 1 << 22,
 	/* migrate dirent only */
 	MDS_MIGRATE_NSONLY	= 1 << 23,
+	MDS_WBC_LOCKLESS	= 1 << 24,
 };
 
 #define MDS_CLOSE_INTENT (MDS_HSM_RELEASE | MDS_CLOSE_LAYOUT_SWAP |         \

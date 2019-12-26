@@ -149,8 +149,6 @@ wait_wbc_sync_state() {
 	local client=${2:-$HOSTNAME}\
 	local cmd="$LFS wbc state $file"
 
-	sleep 6
-	$cmd
 	cmd+=" | grep -E -c 'state: .*(none|sync)'"
 	echo $cmd
 	wait_update --verbose $client "$cmd" "1" 10 ||
@@ -455,6 +453,53 @@ test_6() {
 	[ "$newmd5" == "$oldmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
 }
 run_test 6 "Verify aging flush mode"
+
+test_7() {
+	local dir="$DIR/$tdir"
+	local dir1="$dir/dir1"
+	local file1="$dir/file1"
+	local fileset="$dir1 $file1"
+	local expected="400"
+	local accd
+	local accf
+
+	setup_wbc
+
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	echo "QQQQQ" > $file1 || error "write $file1 failed"
+	check_fileset_wbc_flags "$fileset" "0x00000005"
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	check_fileset_wbc_flags "$fileset" "0x0000000f"
+	chmod $expected $dir1 || error "chmod $expected $dir1 failed"
+	chmod $expected $file1 || error "chmod $expected $file1 failed"
+	check_fileset_wbc_flags "$fileset" "0x0000000f"
+	rm -rf $dir || error "rm $dir failed"
+
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	echo "QQQQQ" > $file1 || error "write $file1 failed"
+	check_fileset_wbc_flags "$fileset" "0x00000005"
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	check_fileset_wbc_flags "$fileset" "0x0000000f"
+	accd=$(stat -c %a $dir1)
+	accf=$(stat -c %a $file1)
+	echo "$dir1 access rights: $accd"
+	echo "$file1 access rights: $accf"
+	chmod $expected $dir1 || error "chmod $expected $dir1 failed"
+	chmod $expected $file1 || error "chmod $expected $file1 failed"
+	stat $DIR2/$tdir/dir1 || error "stat $DIR2/$tdir/dir1 failed"
+	stat $DIR2/$tdir/file1 || error "stat $DIR2/$tdir/file1 failed"
+	accd=$(stat -c %a $dir1)
+	accf=$(stat -c %a $file1)
+	echo "$dir1 access rights: $accd"
+	echo "$file1 access rights: $accf"
+	[ $accd == $expected ] ||
+		error "$dir1 access rights: $accd, expect $expected"
+	[ $accf == $expected ] ||
+		error "$file1 access rights: $accf, expect $expected"
+}
+run_test 7 "setattr() on the root WBC file"
 
 log "cleanup: ======================================================"
 

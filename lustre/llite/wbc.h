@@ -132,6 +132,7 @@ void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);
 /* llite_wbc.c */
 void wbcfs_inode_operations_switch(struct inode *inode);
 int wbcfs_d_init(struct dentry *de);
+int wbc_do_setattr(struct dentry *dentry, struct iattr *attr);
 int wbcfs_commit_cache_pages(struct inode *inode);
 int wbcfs_flush_dir_children(struct inode *dir,
 			     struct list_head *childlist,

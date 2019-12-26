@@ -1868,6 +1868,24 @@ posix_acl_update_mode, [
 ]) # LC_POSIX_ACL_UPDATE_MODE
 
 #
+# LC_SETATTR_PREPARE
+#
+# Kernel version 4.9 commit 31051c85b5e2aaaf6315f74c72a732673632a905
+# replace inode_change_ok with setattr_prepare
+#
+AC_DEFUN([LC_SETATTR_PREPARE], [
+LB_CHECK_COMPILE([if 'inode_change_ok' is replaced with 'setattr_prepare'],
+setattr_prepare, [
+	#include <linux/fs.h>
+],[
+	setattr_prepare(NULL, NULL);
+],[
+	AC_DEFINE(HAVE_SETATTR_PREPARE, 1,
+	['inode_change_ok' is replaces with 'setattr_prepare'])
+])
+]) # LC_SETATTR_PREPARE
+
+#
 # LC_IOP_GENERIC_READLINK
 #
 # Kernel version 4.10 commit dfeef68862edd7d4bafe68ef7aeb5f658ef24bb5
@@ -2646,6 +2664,7 @@ AC_DEFUN([LC_PROG_LINUX], [
 	LC_GROUP_INFO_GID
 	LC_VFS_SETXATTR
 	LC_POSIX_ACL_UPDATE_MODE
+	LC_SETATTR_PREPARE
 
 	# 4.10
 	LC_IOP_GENERIC_READLINK

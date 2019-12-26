@@ -825,18 +825,51 @@ put_parent:
 	return rc;
 }
 
+static int mdt_attr_set_locked(struct mdt_thread_info *info,
+			       struct mdt_object *mo, struct md_attr *ma)
+{
+	int do_vbr = ma->ma_attr.la_valid &
+			(LA_MODE | LA_UID | LA_GID | LA_PROJID | LA_FLAGS);
+	int rc;
+
+	ENTRY;
+
+	/* VBR: update version if attr changed are important for recovery */
+	if (do_vbr) {
+		/* update on-disk version of changed object */
+		tgt_vbr_obj_set(info->mti_env, mdt_obj2dt(mo));
+		rc = mdt_version_get_check_save(info, mo, 0);
+		if (rc)
+			RETURN(rc);
+	}
+
+	/* Ensure constant striping during chown(). See LU-2789. */
+	if (ma->ma_attr.la_valid & (LA_UID|LA_GID|LA_PROJID))
+		mutex_lock(&mo->mot_lov_mutex);
+
+	/* all attrs are packed into mti_attr in unpack_setattr */
+	rc = mo_attr_set(info->mti_env, mdt_object_child(mo), ma);
+
+	if (ma->ma_attr.la_valid & (LA_UID|LA_GID|LA_PROJID))
+		mutex_unlock(&mo->mot_lov_mutex);
+
+	RETURN(rc);
+}
+
 static int mdt_attr_set(struct mdt_thread_info *info, struct mdt_object *mo,
 			struct md_attr *ma)
 {
 	struct mdt_lock_handle  *lh;
-	int do_vbr = ma->ma_attr.la_valid &
-			(LA_MODE | LA_UID | LA_GID | LA_PROJID | LA_FLAGS);
 	__u64 lockpart = MDS_INODELOCK_UPDATE;
 	struct ldlm_enqueue_info *einfo = &info->mti_einfo[0];
 	bool cos_incompat;
 	int rc;
 
 	ENTRY;
+
+	if (ma->ma_attr_flags & MDS_WBC_LOCKLESS)
+		RETURN(mdt_attr_set_locked(info, mo, ma));
+
 	rc = mdt_object_striped(info, mo);
 	if (rc < 0)
 		RETURN(rc);
@@ -872,25 +905,7 @@ static int mdt_attr_set(struct mdt_thread_info *info, struct mdt_object *mo,
 	mdt_fail_write(info->mti_env, info->mti_mdt->mdt_bottom,
 		       OBD_FAIL_MDS_REINT_SETATTR_WRITE);
 
-	/* VBR: update version if attr changed are important for recovery */
-	if (do_vbr) {
-		/* update on-disk version of changed object */
-		tgt_vbr_obj_set(info->mti_env, mdt_obj2dt(mo));
-		rc = mdt_version_get_check_save(info, mo, 0);
-		if (rc)
-			GOTO(out_unlock, rc);
-	}
-
-	/* Ensure constant striping during chown(). See LU-2789. */
-	if (ma->ma_attr.la_valid & (LA_UID|LA_GID|LA_PROJID))
-		mutex_lock(&mo->mot_lov_mutex);
-
-	/* all attrs are packed into mti_attr in unpack_setattr */
-	rc = mo_attr_set(info->mti_env, mdt_object_child(mo), ma);
-
-	if (ma->ma_attr.la_valid & (LA_UID|LA_GID|LA_PROJID))
-		mutex_unlock(&mo->mot_lov_mutex);
-
+	rc = mdt_attr_set_locked(info, mo, ma);
 	if (rc != 0)
 		GOTO(out_unlock, rc);
 	mdt_dom_obj_lvb_update(info->mti_env, mo, NULL, false);
@@ -950,6 +965,7 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 	struct md_attr *ma = &info->mti_attr;
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct ptlrpc_request *req = mdt_info_req(info);
+	bool lockless = ma->ma_attr_flags & MDS_WBC_LOCKLESS;
 	struct mdt_object *mo;
 	struct mdt_body *repbody;
 	ktime_t kstart = ktime_get();
@@ -982,6 +998,7 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 		     atomic_read(&mo->mot_lease_count) > 0)) {
 		down_read(&mo->mot_open_sem);
 
+		/* TODO: WBC lockless handling. */
 		if (atomic_read(&mo->mot_lease_count) > 0) { /* lease exists */
 			lhc = &info->mti_lh[MDT_LH_LOCAL];
 			mdt_lock_reg_init(lhc, LCK_CW);
@@ -1059,7 +1076,7 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 		   (ma->ma_valid & MA_INODE)) {
 		struct lu_buf *buf = &info->mti_buf;
 		struct lu_ucred *uc = mdt_ucred(info);
-		struct mdt_lock_handle *lh;
+		struct mdt_lock_handle *lh = &info->mti_lh[MDT_LH_PARENT];
 		const char *name;
 		__u64 lockpart = MDS_INODELOCK_XATTR;
 
@@ -1132,14 +1149,18 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 			}
 		}
 
-		rc = mdt_object_lock(info, mo, lh, lockpart);
-		if (rc != 0)
-			GOTO(out_put, rc);
+		/* FIXME: LU-15070 revoke remote LOOKUP lock for default LMV. */
+		if (!lockless) {
+			rc = mdt_object_lock(info, mo, lh, lockpart);
+			if (rc != 0)
+				GOTO(out_put, rc);
+		}
 
 		rc = mo_xattr_set(info->mti_env, mdt_object_child(mo), buf,
 				  name, 0);
 
-		mdt_object_unlock(info, mo, lh, rc);
+		if (!lockless)
+			mdt_object_unlock(info, mo, lh, rc);
 		if (rc)
 			GOTO(out_put, rc);
 	} else {

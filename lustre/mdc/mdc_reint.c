@@ -110,6 +110,7 @@ int mdc_setattr(struct obd_export *exp, struct md_op_data *op_data,
         struct ptlrpc_request *req;
         int count = 0, rc;
         __u64 bits;
+
         ENTRY;
 
         LASSERT(op_data != NULL);
@@ -117,7 +118,8 @@ int mdc_setattr(struct obd_export *exp, struct md_op_data *op_data,
         bits = MDS_INODELOCK_UPDATE;
         if (op_data->op_attr.ia_valid & (ATTR_MODE|ATTR_UID|ATTR_GID))
                 bits |= MDS_INODELOCK_LOOKUP;
-	if ((op_data->op_flags & MF_MDC_CANCEL_FID1) &&
+	if (!(op_data->op_bias & MDS_WBC_LOCKLESS) &&
+	    (op_data->op_flags & MF_MDC_CANCEL_FID1) &&
 	    (fid_is_sane(&op_data->op_fid1)))
 		count = mdc_resource_get_unused(exp, &op_data->op_fid1,
 						&cancels, LCK_EX, bits);

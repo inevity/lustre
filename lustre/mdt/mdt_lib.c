@@ -1153,7 +1153,7 @@ static int mdt_setattr_unpack_rec(struct mdt_thread_info *info)
 
 	ma->ma_attr_flags |= rec->sa_bias & (MDS_CLOSE_INTENT |
 				MDS_DATA_MODIFIED | MDS_TRUNC_KEEP_LEASE |
-				MDS_PCC_ATTACH);
+				MDS_PCC_ATTACH | MDS_WBC_LOCKLESS);
 	RETURN(0);
 }
 

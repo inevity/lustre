@@ -846,15 +846,40 @@ static int memfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 	RETURN(generic_file_mmap(file, vma));
 }
 
-static int memfs_setattr(struct dentry *de, struct iattr *attr)
+static int memfs_setattr_no_dirty(struct dentry *dentry, struct iattr *attr)
 {
-	struct inode *inode = de->d_inode;
+	struct inode *inode = d_inode(dentry);
+	int rc;
+
+	rc = setattr_prepare(dentry, attr);
+	if (rc)
+		return rc;
+
+	if (attr->ia_valid & ATTR_SIZE)
+		truncate_setsize(inode, attr->ia_size);
+	setattr_copy(inode, attr);
+	return 0;
+}
+
+static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
+{
+	struct inode *inode = dentry->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	LASSERT(wbc_inode_has_protected(wbci));
 
-	RETURN(simple_setattr(&init_user_ns, de, attr));
+	if (wbci->wbci_flags & WBC_STATE_FL_ROOT) {
+		rc = wbc_do_setattr(dentry, attr);
+		if (rc)
+			RETURN(rc);
+	}
+
+	rc = memfs_setattr_no_dirty(dentry, attr);
+
+	RETURN(rc);
 }
 
 static int memfs_mknod(struct inode *dir, struct dentry *dchild,
