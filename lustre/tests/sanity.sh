@@ -170,6 +170,12 @@ assert_DIR
 
 MAXFREE=${MAXFREE:-$((300000 * $OSTCOUNT))}
 
+if [ "x$WBC" = "xyes" ] ; then
+	stack_trap "$LCTL wbc disable $MOUNT" EXIT
+	eval $CONF || error "failed to setup WBC: $CONF"
+	$LCTL wbc conf $MOUNT
+fi
+
 [ -f $DIR/d52a/foo ] && chattr -a $DIR/d52a/foo
 [ -f $DIR/d52b/foo ] && chattr -i $DIR/d52b/foo
 rm -rf $DIR/[Rdfs][0-9]*

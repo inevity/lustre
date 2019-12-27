@@ -501,6 +501,44 @@ test_7() {
 }
 run_test 7 "setattr() on the root WBC file"
 
+test_8() {
+	local fileset="$DIR/$tdir/$tfile $DIR/$tdir/l-exist"
+
+	setup_wbc
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	touch $DIR/$tdir/$tfile || error "touch $DIR/$tdir/$tfile failed"
+	ln -s $DIR/$tdir/$tfile $DIR/$tdir/l-exist
+	check_fileset_wbc_flags "$fileset" "0x00000005"
+	ls -l $DIR/$tdir
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	check_fileset_wbc_flags "$fileset" "0x0000000f"
+	$CHECKSTAT -l $DIR/$tdir/$tfile $DIR/$tdir/l-exist ||
+		error "$tdir/l-exist not a symlink"
+	$CHECKSTAT -f -t f $DIR/$tdir/l-exist ||
+		error "$tdir/l-exist not referencing a file"
+	ls -l $DIR2/$tdir
+	check_fileset_wbc_flags "$fileset" "0x00000000"
+	$LFS wbc state $fileset
+	$CHECKSTAT -l $DIR/$tdir/$tfile $DIR/$tdir/l-exist ||
+		error "$tdir/l-exist not a symlink"
+	$CHECKSTAT -f -t f $DIR/$tdir/l-exist ||
+		error "$tdir/l-exist not referencing a file"
+	rm -f $DIR/$tdir/l-exist
+	$CHECKSTAT -a $DIR/$tdir/l-exist || error "$tdir/l-exist not removed"
+}
+run_test 8 "Verify symlink works correctly"
+
+test_sanity() {
+	local cmd="$LCTL wbc enable $MOUNT"
+
+	ONLY="17a 17b 17c 17d 17e 17f 25a 25b 26a 26b 26c 26d 26e 26f 32e 32f \
+		32g 32h 32m 32n 32o 32p" WBC="yes" CONF="$cmd" bash sanity.sh
+
+	return 0
+}
+#run_test sanity "Run sanity with WBC files"
+
 log "cleanup: ======================================================"
 
 # kill and wait in each test only guarentee script finish, but command in script

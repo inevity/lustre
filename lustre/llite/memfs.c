@@ -148,24 +148,22 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 
 	if (opc == LUSTRE_OPC_SYMLINK) {
 		struct ll_inode_info *lli;
-		int len = strlen(tgt) + 1;
-
-		rc = page_symlink(dchild->d_inode, tgt, len);
-		if (rc)
-			GOTO(out_iput, rc);
+		int tgt_len = strlen(tgt) + 1;
 
 		/*
-		 * Create local cache - it is easier like this for now than
-		 * using many different kernel APIs to readlink as async create
-		 * time where we would need to get the name somehow. but we
-		 * might need to get rid of this and convert wcwnrully.
+		 * Create local cache for symlink name - it is easier like this
+		 * for now than using many different kernel APIs to readlink
+		 * as async create time where we would need to get the name
+		 * somehow. But we might need to get rid of this and convert
+		 * finally.
 		 */
 		lli = ll_i2info(inode);
-		OBD_ALLOC(lli->lli_symlink_name, len);
+		OBD_ALLOC(lli->lli_symlink_name, tgt_len);
 		if (lli->lli_symlink_name == NULL)
 			GOTO(out_iput, rc = -ENOMEM);
 
-		memcpy(lli->lli_symlink_name, tgt, len);
+		memcpy(lli->lli_symlink_name, tgt, tgt_len);
+		inode->i_size = tgt_len;
 	}
 
 	switch (ll_i2wbci(inode)->wbci_flush_mode) {
@@ -929,6 +927,22 @@ static int memfs_symlink(struct inode *dir, struct dentry *dchild,
 			    LUSTRE_OPC_SYMLINK);
 }
 
+#ifdef HAVE_IOP_GET_LINK
+const char *memfs_get_link(struct dentry *dentry, struct inode *inode,
+			   struct delayed_call *done)
+{
+	return ll_i2info(inode)->lli_symlink_name;
+}
+
+#else
+
+static void *memfs_follow_link(struct dentry *dentry, struct nameidata *nd)
+{
+	nd_set_link(nd, ll_i2info(dentry->d_inode)->lli_symlink_name);
+	return NULL;
+}
+#endif /* HAVE_IOP_GET_LINK */
+
 static const struct file_operations memfs_dir_operations = {
 	.open		= dcache_dir_open,
 	.release	= dcache_dir_close,
@@ -986,6 +1000,20 @@ static const struct file_operations memfs_file_operations = {
 	.flush		= memfs_flush
 };
 
+/*
+ * TODO: using page_symlink() to store long symlink name.
+ */
+static const struct inode_operations memfs_fast_symlink_inode_operations = {
+#ifdef HAVE_IOP_GENERIC_READLINK
+	.readlink	= generic_readlink,
+#endif
+#ifdef HAVE_IOP_GET_LINK
+	.get_link	= memfs_get_link,
+#else
+	.follow_link	= memfs_follow_link,
+#endif
+};
+
 static const struct address_space_operations memfs_aops = {
 	/*
 	 * TODO: reimplemet ->set_page_dirty() interface.
@@ -1018,7 +1046,7 @@ void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev)
 		inode->i_fop = &memfs_dir_operations;
 		break;
 	case S_IFLNK:
-		inode->i_op = &page_symlink_inode_operations;
+		inode->i_op = &memfs_fast_symlink_inode_operations;
 		break;
 	}
 }
