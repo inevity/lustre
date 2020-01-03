@@ -4844,6 +4844,50 @@ static int mdt_intent_open(enum ldlm_intent_flags it_opc,
 	RETURN(ELDLM_LOCK_ABORTED);
 }
 
+static int mdt_intent_setattr(enum ldlm_intent_flags it_opc,
+			      struct mdt_thread_info *info,
+			      struct ldlm_lock **lockp,
+			      __u64 flags)
+{
+	struct mdt_lock_handle *lhc = &info->mti_lh[MDT_LH_RMT];
+	static const struct req_format *intent_fmts[REINT_MAX] = {
+		[REINT_SETATTR]	= &RQF_LDLM_INTENT_SETATTR,
+	};
+	struct ldlm_reply *rep = NULL;
+	long opc;
+	int rc;
+
+	ENTRY;
+
+	opc = mdt_reint_opcode(mdt_info_req(info), intent_fmts);
+	if (opc < 0)
+		RETURN(opc);
+
+	/* Get lock from request for possible resent case. */
+	mdt_intent_fixup_resent(info, *lockp, lhc, flags);
+
+	rc = mdt_reint_internal(info, lhc, opc);
+
+	/* Check whether the reply has been packed successfully. */
+	if (mdt_info_req(info)->rq_repmsg != NULL)
+		rep = req_capsule_server_get(info->mti_pill, &RMF_DLM_REP);
+	if (rep == NULL) {
+		if (is_serious(rc))
+			RETURN(rc);
+		else
+			RETURN(err_serious(-EFAULT));
+	}
+
+	rep->lock_policy_res2 = clear_serious(rc);
+	if (lustre_handle_is_used(&lhc->mlh_reg_lh) && rc == 0) {
+		rc = mdt_intent_lock_replace(info, lockp, lhc, flags, rc);
+		RETURN(rc);
+	}
+
+	lhc->mlh_reg_lh.cookie = 0ull;
+	RETURN(ELDLM_LOCK_ABORTED);
+}
+
 static int mdt_intent_opc(enum ldlm_intent_flags it_opc,
 			  struct mdt_thread_info *info,
 			  struct ldlm_lock **lockp,
@@ -4918,6 +4962,10 @@ static int mdt_intent_opc(enum ldlm_intent_flags it_opc,
 						 flags);
 		RETURN(rc);
 	}
+	case IT_SETATTR:
+		it_format = &RQF_LDLM_INTENT_SETATTR;
+		it_handler = &mdt_intent_setattr;
+		break;
 	default:
 		CERROR("%s: unknown intent code %#x\n",
 		       mdt_obd_name(info->mti_mdt), it_opc);

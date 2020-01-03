@@ -1302,9 +1302,10 @@ static int mdt_create_unpack(struct mdt_thread_info *info)
 	attr->la_mtime = rec->cr_time;
 	attr->la_atime = rec->cr_time;
 	attr->la_valid = LA_MODE | LA_RDEV | LA_UID | LA_GID | LA_TYPE |
-		LA_CTIME | LA_MTIME | LA_ATIME;
+			 LA_CTIME | LA_MTIME | LA_ATIME;
 	memset(&sp->u, 0, sizeof(sp->u));
 	sp->sp_cr_flags = get_mrc_cr_flags(rec);
+	info->mti_attr.ma_attr_flags |= rec->cr_bias & MDS_WBC_LOCKLESS;
 
 	rc = mdt_name_unpack(pill, &RMF_NAME, &rr->rr_name, 0);
 	if (rc < 0)
@@ -1334,13 +1335,20 @@ static int mdt_create_unpack(struct mdt_thread_info *info)
 		sp->u.sp_symname.ln_name = tgt;
 		sp->u.sp_symname.ln_namelen = sz - 1; /* skep NUL */
 	} else {
-		if (!info->mti_intent_lock)
-			req_capsule_extend(pill, &RQF_MDS_REINT_CREATE_ACL);
+		if (!info->mti_intent_lock) {
+			if (sp->sp_cr_flags & MDS_FMODE_WRITE &&
+			    S_ISREG(attr->la_mode))
+				req_capsule_extend(pill,
+						   &RQF_MDS_REINT_CREATE_REG);
+			else
+				req_capsule_extend(pill,
+						   &RQF_MDS_REINT_CREATE_ACL);
+		}
 		rr->rr_eadatalen = req_capsule_get_size(pill, &RMF_EADATA,
 							RCL_CLIENT);
 		if (rr->rr_eadatalen > 0) {
 			sp->no_create = !!req_is_replay(mdt_info_req(info));
-			if (S_ISDIR(attr->la_mode) > 0) {
+			if (S_ISDIR(attr->la_mode)) {
 				sp->u.sp_ea.eadata =
 					req_capsule_client_get(pill,
 							       &RMF_EADATA);
@@ -1450,6 +1458,7 @@ static int mdt_unlink_unpack(struct mdt_thread_info *info)
 		info->mti_spec.sp_cr_flags |= MDS_OP_WITH_FID;
 	else
 		info->mti_spec.sp_cr_flags &= ~MDS_OP_WITH_FID;
+	info->mti_attr.ma_attr_flags |= rec->ul_bias & MDS_WBC_LOCKLESS;
 
 	rc = mdt_name_unpack(pill, &RMF_NAME, &rr->rr_name, 0);
 	if (rc < 0)

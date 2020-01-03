@@ -833,6 +833,10 @@ static inline int it_to_lock_mode(struct lookup_intent *it)
 		return LCK_PR;
 	else if (it->it_op &  IT_GETXATTR)
 		return LCK_PR;
+	else if (it->it_op & IT_SETATTR)
+		return LCK_PR;
+	else if (it->it_op & IT_WBC_EXLOCK)
+		return LCK_EX;
 
 	LASSERTF(0, "Invalid it_op: %d\n", it->it_op);
 	return -EINVAL;
@@ -980,6 +984,8 @@ enum md_item_opcode {
 	MD_OP_NONE		= 0,
 	MD_OP_GETATTR		= 1,
 	MD_OP_CREATE_EXLOCK	= 2,
+	MD_OP_SETATTR_EXLOCK	= 3,
+	MD_OP_EXLOCK_ONLY	= 4,
 	MD_OP_MAX,
 };
 
@@ -1214,7 +1220,7 @@ struct md_ops {
 
 	int (*m_create)(struct obd_export *, struct md_op_data *,
 			const void *, size_t, umode_t, uid_t, gid_t,
-			kernel_cap_t, __u64, struct ptlrpc_request **);
+			kernel_cap_t, __u64, __u64, struct ptlrpc_request **);
 
 	int (*m_enqueue)(struct obd_export *, struct ldlm_enqueue_info *,
 			 const union ldlm_policy_data *, struct md_op_data *,

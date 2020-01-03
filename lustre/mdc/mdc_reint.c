@@ -162,15 +162,17 @@ int mdc_setattr(struct obd_export *exp, struct md_op_data *op_data,
 int mdc_create(struct obd_export *exp, struct md_op_data *op_data,
 		const void *data, size_t datalen,
 		umode_t mode, uid_t uid, gid_t gid,
-		kernel_cap_t cap_effective, __u64 rdev,
+		kernel_cap_t cap_effective, __u64 rdev, __u64 cr_flags,
 		struct ptlrpc_request **request)
 {
         struct ptlrpc_request *req;
+	struct obd_device *obd = class_exp2obd(exp);
         int level, rc;
         int count, resends = 0;
         struct obd_import *import = exp->exp_obd->u.cli.cl_import;
         int generation = import->imp_generation;
 	LIST_HEAD(cancels);
+
         ENTRY;
 
 	/* For case if upper layer did not alloc fid, do it now. */
@@ -186,14 +188,24 @@ int mdc_create(struct obd_export *exp, struct md_op_data *op_data,
 
 rebuild:
         count = 0;
-        if ((op_data->op_flags & MF_MDC_CANCEL_FID1) &&
-            (fid_is_sane(&op_data->op_fid1)))
-                count = mdc_resource_get_unused(exp, &op_data->op_fid1,
-                                                &cancels, LCK_EX,
-                                                MDS_INODELOCK_UPDATE);
+	if (!(op_data->op_bias & MDS_WBC_LOCKLESS) &&
+	    op_data->op_flags & MF_MDC_CANCEL_FID1 &&
+	    fid_is_sane(&op_data->op_fid1))
+		count = mdc_resource_get_unused(exp, &op_data->op_fid1,
+						&cancels, LCK_EX,
+						MDS_INODELOCK_UPDATE);
 
-        req = ptlrpc_request_alloc(class_exp2cliimp(exp),
-				   &RQF_MDS_REINT_CREATE_ACL);
+	if (cr_flags & MDS_FMODE_WRITE) {
+		if (!S_ISREG(mode)) {
+			ldlm_lock_list_put(&cancels, l_bl_ast, count);
+			RETURN(-EPROTO);
+		}
+		req = ptlrpc_request_alloc(class_exp2cliimp(exp),
+					   &RQF_MDS_REINT_CREATE_REG);
+	} else {
+		req = ptlrpc_request_alloc(class_exp2cliimp(exp),
+					   &RQF_MDS_REINT_CREATE_ACL);
+	}
         if (req == NULL) {
                 ldlm_lock_list_put(&cancels, l_bl_ast, count);
                 RETURN(-ENOMEM);
@@ -236,7 +248,11 @@ rebuild:
          * tgt, for symlinks or lov MD data.
          */
 	mdc_create_pack(&req->rq_pill, op_data, data, datalen, mode, uid,
-			gid, cap_effective, rdev, 0);
+			gid, cap_effective, rdev, cr_flags);
+
+	if (cr_flags & MDS_FMODE_WRITE)
+		req_capsule_set_size(&req->rq_pill, &RMF_MDT_MD, RCL_SERVER,
+				     obd->u.cli.cl_default_mds_easize);
 
         ptlrpc_request_set_replen(req);
 
@@ -285,6 +301,7 @@ int mdc_unlink(struct obd_export *exp, struct md_op_data *op_data,
                struct ptlrpc_request **request)
 {
 	LIST_HEAD(cancels);
+	bool lockless = op_data->op_bias & MDS_WBC_LOCKLESS;
         struct obd_device *obd = class_exp2obd(exp);
         struct ptlrpc_request *req = *request;
         int count = 0, rc;
@@ -293,12 +310,12 @@ int mdc_unlink(struct obd_export *exp, struct md_op_data *op_data,
         LASSERT(req == NULL);
 
 	if ((op_data->op_flags & MF_MDC_CANCEL_FID1) &&
-	    (fid_is_sane(&op_data->op_fid1)))
+	    (fid_is_sane(&op_data->op_fid1)) && !lockless)
 		count = mdc_resource_get_unused(exp, &op_data->op_fid1,
 						&cancels, LCK_EX,
 						MDS_INODELOCK_UPDATE);
 	if ((op_data->op_flags & MF_MDC_CANCEL_FID3) &&
-	    (fid_is_sane(&op_data->op_fid3)))
+	    (fid_is_sane(&op_data->op_fid3)) && !lockless)
 		/* cancel DOM lock only if it has no data to flush */
 		count += mdc_resource_get_unused(exp, &op_data->op_fid3,
 						 &cancels, LCK_EX,

@@ -625,7 +625,8 @@ int lmv_intent_lock_async(struct obd_export *exp,
 	} else {
 		LASSERT(fid_is_sane(&op_data->op_fid1));
 		LASSERT(fid_is_zero(&op_data->op_fid2));
-		LASSERT(op_data->op_name != NULL);
+		LASSERT(it->it_op & IT_SETATTR || it->it_op & IT_WBC_EXLOCK ||
+			(it->it_op & IT_CREAT && op_data->op_name != NULL));
 
 		tgt = lmv_locate_tgt(lmv, op_data);
 		if (IS_ERR(tgt))

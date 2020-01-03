@@ -171,6 +171,9 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 		mark_inode_dirty(dir);
 		mark_inode_dirty(inode);
 		break;
+	case WBC_FLUSH_AGING_KEEP:
+		mark_inode_dirty(inode);
+		break;
 	case WBC_FLUSH_LAZY_DROP:
 	default:
 		break;
@@ -254,17 +257,26 @@ static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 {
 	struct inode *inode = dchild->d_inode;
 	struct wbc_inode *wbci = ll_i2wbci(inode);
+	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
+	int rc;
 
 	ENTRY;
 
 	LASSERT(wbc_inode_has_protected(wbci) &&
 		wbc_inode_has_protected(ll_i2wbci(dir)));
 
-	/* Must be positive dentry
-	 * For hardlinked "virtual" names don't drop the flag,
-	 * since the other name is also by definition virtual,
-	 * at least for now. XXX?
-	 */
+	if (wbci->wbci_flags & WBC_STATE_FL_SYNC &&
+	    wbci->wbci_flush_mode == WBC_FLUSH_AGING_KEEP) {
+		switch (conf->wbcc_rmpol) {
+		case WBC_RMPOL_SYNC:
+			rc = wbc_do_unlink(dir, dchild);
+			if (rc)
+				RETURN(rc);
+		default:
+			break;
+		}
+	}
+
 	RETURN(simple_unlink(dir, dchild));
 }
 
@@ -870,12 +882,20 @@ static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
 	LASSERT(wbc_inode_has_protected(wbci));
 
 	if (wbci->wbci_flags & WBC_STATE_FL_ROOT) {
-		rc = wbc_do_setattr(dentry, attr);
+		rc = wbc_do_setattr(inode, attr);
 		if (rc)
 			RETURN(rc);
 	}
 
 	rc = memfs_setattr_no_dirty(dentry, attr);
+	if (rc)
+		RETURN(rc);
+
+	wbci->wbci_dirty_flags |= WBC_DIRTY_ATTR;
+	wbci->wbci_dirty_attr |= attr->ia_valid;
+	if (wbci->wbci_flush_mode == WBC_FLUSH_AGING_KEEP &&
+	    !(wbci->wbci_flags & WBC_STATE_FL_SYNC))
+		mark_inode_dirty(inode);
 
 	RETURN(rc);
 }

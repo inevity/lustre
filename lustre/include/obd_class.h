@@ -1391,7 +1391,8 @@ static inline int md_close(struct obd_export *exp, struct md_op_data *op_data,
 static inline int md_create(struct obd_export *exp, struct md_op_data *op_data,
 			    const void *data, size_t datalen, umode_t mode,
 			    uid_t uid, gid_t gid, kernel_cap_t cap_effective,
-			    __u64 rdev, struct ptlrpc_request **request)
+			    __u64 rdev, __u64 cr_flags,
+			    struct ptlrpc_request **request)
 {
 	int rc;
 
@@ -1404,7 +1405,7 @@ static inline int md_create(struct obd_export *exp, struct md_op_data *op_data,
 
 	return MDP(exp->exp_obd, create)(exp, op_data, data, datalen, mode,
 					 uid, gid, cap_effective, rdev,
-					 request);
+					 cr_flags, request);
 }
 
 static inline int md_enqueue(struct obd_export *exp,

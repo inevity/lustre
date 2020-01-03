@@ -151,11 +151,11 @@ wait_wbc_sync_state() {
 
 	cmd+=" | grep -E -c 'state: .*(none|sync)'"
 	echo $cmd
-	wait_update --verbose $client "$cmd" "1" 10 ||
+	wait_update --verbose $client "$cmd" "1" 50 ||
 		error "$file is not synced"
 }
 
-test_1() {
+test_1_base() {
 	local file1="$tdir/file1"
 	local dir1="$tdir/dir1"
 	local file2="$dir1/file2"
@@ -164,8 +164,6 @@ test_1() {
 	local file4="$tdir/file4"
 	local file5="$tdir/file5"
 	local file6="$tdir/file6"
-
-	setup_wbc
 
 	# WBC flags:
 	# 0x00000000: not in WBC
@@ -192,7 +190,7 @@ test_1() {
 	local fileset="$file1 $file2 $dr1 $dir2 $file3 $file4 $file5 $file6"
 
 	check_mdt_fileset_exist "$fileset" 1 ||
-		error "'$filelist' should not exist under ROOT on MDT "
+		error "'$filelist' should not exist under ROOT on MDT"
 	check_fileset_wbc_flags "$fileset" "0x00000005" $DIR
 
 	# Flush directories level by level when WBC EX lock is revoking
@@ -235,69 +233,91 @@ test_1() {
 		error "$DIR2/$file5 size wrong, expected 2097152"
 	$CHECKSTAT -s 2097158 $DIR2/$file6 ||
 		error "$DIR2/$file6 size wrong, expected 2097158"
+
+	rm -rf $DIR/$tdir || error "rm $DIR/$tdir failed"
+}
+
+test_1() {
+	setup_wbc
+	test_1_base
+
+	setup_wbc "flush_mode=aging_drop"
+	test_1_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_1_base
 }
 run_test 1 "Basic test for WBC with LAZY flush mode"
 
-test_2() {
+test_2_base() {
 	local dir="$DIR/$tdir"
 	local file="$dir/$tfile"
 	local file2="$DIR2/$tdir/$tfile"
 	local oldmd5
 	local newmd5
 
+	mkdir $dir || error "mkdir $dir failed"
+	check_wbc_flags $dir "0x0000000f"
+	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
+		error "failed to write $file"
+	check_wbc_flags $file "0x00000005"
+	oldmd5=$(md5sum $file | awk '{print $1}')
+	newmd5=$(md5sum $file2 | awk '{print $1}')
+	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+	check_fileset_wbc_flags "$dir $file" "0x00000000"
+
+	rm -rf $dir || error "rm $dir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	check_wbc_flags $dir "0x0000000f"
+	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
+		error "failed to write $file"
+	check_wbc_flags $file "0x00000005"
+	oldmd5=$(md5sum $file | awk '{print $1}')
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	check_wbc_flags $dir "0x00000000"
+	check_wbc_flags $file "0x0000000f"
+	newmd5=$(md5sum $file2 | awk '{print $1}')
+	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+	check_fileset_wbc_flags "$dir $file" "0x00000000"
+
+	rm -rf $dir || error "rm $dir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	check_wbc_flags $dir "0x0000000f"
+	echo "QQQQQ" > $file || error "write $file failed"
+	check_wbc_flags $file "0x00000005"
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	check_wbc_flags $dir "0x00000000"
+	check_wbc_flags $file "0x0000000f"
+	$MULTIOP $file2 or1c || error "read $file2 failed"
+	rm -rf $dir || error "rm $dir failed"
+
+	mkdir $dir || error "mkdir $dir failed"
+	check_wbc_flags $dir "0x0000000f"
+	echo "QQQQQ" > $file || error "write $file failed"
+	check_wbc_flags $file "0x00000005"
+	$MULTIOP $file2 or1c || error "read $file2 failed"
+
+	rm -rf $dir || error "rm $dir failed"
+}
+
+test_2() {
 	setup_wbc
+	test_2_base
 
-	mkdir $dir || error "mkdir $dir failed"
-	check_wbc_flags $dir "0x0000000f"
-	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
-		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
-	oldmd5=$(md5sum $file | awk '{print $1}')
-	newmd5=$(md5sum $file2 | awk '{print $1}')
-	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
-	check_fileset_wbc_flags "$dir $file" "0x00000000"
+	setup_wbc "flush_mode=aging_drop"
+	test_2_base
 
-	rm -rf $dir || error "rm $dir failed"
-	mkdir $dir || error "mkdir $dir failed"
-	check_wbc_flags $dir "0x0000000f"
-	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
-		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
-	oldmd5=$(md5sum $file | awk '{print $1}')
-	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
-	check_wbc_flags $dir "0x00000000"
-	check_wbc_flags $file "0x0000000f"
-	newmd5=$(md5sum $file2 | awk '{print $1}')
-	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
-	check_fileset_wbc_flags "$dir $file" "0x00000000"
-
-	rm -rf $dir || error "rm $dir failed"
-	mkdir $dir || error "mkdir $dir failed"
-	check_wbc_flags $dir "0x0000000f"
-	echo "QQQQQ" > $file || error "write $file failed"
-	check_wbc_flags $file "0x00000005"
-	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
-	check_wbc_flags $dir "0x00000000"
-	check_wbc_flags $file "0x0000000f"
-	$MULTIOP $file2 or1c || error "read $file2 failed"
-	rm -rf $dir || error "rm $dir failed"
-
-	mkdir $dir || error "mkdir $dir failed"
-	check_wbc_flags $dir "0x0000000f"
-	echo "QQQQQ" > $file || error "write $file failed"
-	check_wbc_flags $file "0x00000005"
-	$MULTIOP $file2 or1c || error "read $file2 failed"
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_2_base
 }
 run_test 2 "Verify remote read works correctly"
 
-test_3() {
+test_3_base() {
 	local dir="$DIR/$tdir"
 	local file="$dir/$tfile"
 	local file2="$DIR2/$tdir/$tfile"
 	local oldmd5
 	local newmd5
-
-	setup_wbc
 
 	mkdir $dir || error "mkdir $dir failed"
 	check_wbc_flags $dir "0x0000000f"
@@ -328,10 +348,23 @@ test_3() {
 	check_wbc_flags $file "0x00000000"
 	$CHECKSTAT -s 1049600 $file2 || error "$file size wrong"
 	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+
+	rm -rf $dir || error "rm $dir failed"
+}
+
+test_3() {
+	setup_wbc
+	test_3_base
+
+	setup_wbc "flush_mode=aging_drop"
+	test_3_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_3_base
 }
 run_test 3 "Remote read for WBC cached regular file with holes"
 
-test_4() {
+test_4_base() {
 	local dir11="$DIR/$tdir"
 	local dir21="$DIR2/$tdir"
 	local file11="$dir11/$tfile"
@@ -340,8 +373,6 @@ test_4() {
 	local dir22="$dir21/dir2"
 	local file12="$dir12/file2"
 	local file22="$dir22/file2"
-
-	setup_wbc
 
 	mkdir $dir11 || error "mkdir $dir11 failed"
 	rmdir $dir21 || error "rmdir $dir21 failed"
@@ -394,6 +425,19 @@ test_4() {
 	unlink $file22 || error "unlink $file22 failed"
 	stat $file12 && error "$file12 should be deleted"
 	check_fileset_wbc_flags "$dir11 $dir12" "0x00000000"
+
+	rm -rf $dir11 || error "rm $dir11 failed"
+}
+
+test_4() {
+	setup_wbc
+	test_4_base
+
+	setup_wbc "flush_mode=aging_drop"
+	test_4_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_4_base
 }
 run_test 4 "Verify unlink() works correctly"
 
@@ -410,7 +454,7 @@ test_5() {
 }
 run_test 5 "Hanle -ENOENT lookup failure correctly"
 
-test_6() {
+test_6_base() {
 	local file1="$tdir/file1"
 	local dir1="$tdir/dir1"
 	local file2="$dir1/file2"
@@ -418,15 +462,17 @@ test_6() {
 	local file3="$dir2/file3"
 	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
 	local expire=$(sysctl -n vm.dirty_expire_centisecs)
+	local flags="0x00000000"
 	local oldmd5
 	local newmd5
 
-	setup_wbc "cache_mode=memfs flush_mode=aging_drop"
 	echo "dirty_writeback_centisecs: $interval"
 	interval=$((interval + 100))
 	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
 	sysctl -w vm.dirty_expire_centisecs=$interval
 
+	wbc_conf_show | grep "flush_mode: aging_keep" &&
+		flags="0x00000007"
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	$LFS wbc state $DIR/$tdir
 	mkdir $DIR/$dir1 || error "mkdir $DIR/$dir1 failed"
@@ -444,17 +490,26 @@ test_6() {
 	sleep $((interval / 100))
 
 	wait_wbc_sync_state $DIR/$file3
-	check_fileset_wbc_flags "$fileset" "0x00000000" $DIR
+	$LFS wbc state $DIR/$tdir $DIR/$file1 $DIR/$dir1 $DIR/$file2 \
+		$DIR/$dir2 $DIR/$file3
+	check_fileset_wbc_flags "$fileset" "$flags" $DIR
 	check_mdt_fileset_exist "$fileset" 0 ||
 		error "'$fileset' should exist on MDT"
 
 	remount_client $MOUNT || error "failed to remount client $MOUNT"
 	newmd5=$(md5sum $DIR/$file2 | awk '{print $1}')
 	[ "$newmd5" == "$oldmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+
+	rm -rf $DIR/$tdir || error "rm $DIR/$tdir failed"
+}
+
+test_6() {
+	setup_wbc "flush_mode=aging_drop"
+	test_6_base
 }
 run_test 6 "Verify aging flush mode"
 
-test_7() {
+test_7_base() {
 	local dir="$DIR/$tdir"
 	local dir1="$dir/dir1"
 	local file1="$dir/file1"
@@ -462,8 +517,6 @@ test_7() {
 	local expected="400"
 	local accd
 	local accf
-
-	setup_wbc
 
 	mkdir $dir || error "mkdir $dir failed"
 	mkdir $dir1 || error "mkdir $dir1 failed"
@@ -498,13 +551,24 @@ test_7() {
 		error "$dir1 access rights: $accd, expect $expected"
 	[ $accf == $expected ] ||
 		error "$file1 access rights: $accf, expect $expected"
+
+	rm -rf $dir || error "rm $dir failed"
+}
+
+test_7() {
+	setup_wbc
+	test_7_base
+
+	setup_wbc "flush_mode=aging_drop"
+	test_7_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_7_base
 }
 run_test 7 "setattr() on the root WBC file"
 
-test_8() {
+test_8_base() {
 	local fileset="$DIR/$tdir/$tfile $DIR/$tdir/l-exist"
-
-	setup_wbc
 
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	touch $DIR/$tdir/$tfile || error "touch $DIR/$tdir/$tfile failed"
@@ -526,8 +590,80 @@ test_8() {
 		error "$tdir/l-exist not referencing a file"
 	rm -f $DIR/$tdir/l-exist
 	$CHECKSTAT -a $DIR/$tdir/l-exist || error "$tdir/l-exist not removed"
+
+	rm -rf $DIR/$tdir || error "rm $DIR/$tdir failed"
+}
+
+test_8() {
+	setup_wbc
+	test_8_base
+
+	setup_wbc "flush_mode=aging_drop"
+	test_8_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_8_base
 }
 run_test 8 "Verify symlink works correctly"
+
+test_9() {
+	local file="$tdir/$tfile"
+	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
+	local expire=$(sysctl -n vm.dirty_expire_centisecs)
+
+	echo "dirty_writeback_centisecs: $interval"
+	interval=$((interval + 100))
+	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
+	sysctl -w vm.dirty_expire_centisecs=$interval
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+	echo "QQQQQ" > $DIR/$file || error "write $DIR/$tfile failed"
+	check_wbc_flags $DIR/$file "0x00000005"
+	sleep $((interval / 100))
+	wait_wbc_sync_state $DIR/$file
+	check_wbc_flags $DIR/$file "0x00000007"
+	unlink $DIR/$file || error "unlink $DIR/$file failed"
+	check_mdt_fileset_exist "$file" 1 ||
+		error "'$file' should not exist under ROOT on MDT"
+}
+run_test 9 "Sync remove in aging keep flush mode"
+
+test_10() {
+	local file="$DIR/$tdir/$tfile"
+	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
+	local expire=$(sysctl -n vm.dirty_expire_centisecs)
+	local expected="400"
+	local accf
+
+	echo "dirty_writeback_centisecs: $interval"
+	interval=$((interval + 100))
+	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
+	sysctl -w vm.dirty_expire_centisecs=$interval
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	echo "QQQQQ" > $file || error "write $file failed"
+	accf=$(stat -c %a $file)
+	echo "$file access rights: $accf"
+	sleep $((interval / 100))
+	wait_wbc_sync_state $file
+	check_wbc_flags $file "0x00000007"
+	chmod $expected $file || error "chmod $file failed"
+	stat $file || error "stat $file failed"
+	check_wbc_flags $file "0x00000007"
+	accf=$(stat -c %a $file)
+	[ $accf == $expected ] ||
+		error "$file access rights: $accf, expect $expected"
+	stat $DIR2/$tdir/$tfile || error "stat $DIR2/$tdir/$tfile failed"
+	accf=$(stat -c %a $DIR2/$tdir/$tfile)
+	[ $accf == $expected ] ||
+		error "$file access rights: $accf, expect $expected"
+}
+run_test 10 "setattr in aging keep flush mode"
 
 test_sanity() {
 	local cmd="$LCTL wbc enable $MOUNT"

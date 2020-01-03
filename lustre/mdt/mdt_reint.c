@@ -42,6 +42,7 @@
 #define DEBUG_SUBSYSTEM S_MDS
 
 #include <lprocfs_status.h>
+#include <lustre_mds.h>
 #include "mdt_internal.h"
 #include <lustre_lmv.h>
 #include <lustre_crypto.h>
@@ -580,6 +581,7 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	struct md_op_spec *spec = &info->mti_spec;
 	struct ldlm_reply *dlmrep = NULL;
 	bool restripe = false;
+	bool lockless;
 	int rc;
 
 	ENTRY;
@@ -673,7 +675,9 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	OBD_RACE(OBD_FAIL_MDS_CREATE_RACE);
 
 	lh = &info->mti_lh[MDT_LH_PARENT];
-	if (!info->mti_parent_locked) {
+	lockless = info->mti_parent_locked ||
+		   ma->ma_attr_flags & MDS_WBC_LOCKLESS;
+	if (!lockless) {
 		mdt_lock_pdo_init(lh, LCK_PW, &rr->rr_name);
 		rc = mdt_object_lock(info, parent, lh, MDS_INODELOCK_UPDATE);
 		if (rc)
@@ -717,14 +721,15 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	if (rc < 0)
 		GOTO(put_child, rc);
 
-	if (info->mti_intent_lock)
+	if (info->mti_intent_lock ||
+	    md_should_create(info->mti_spec.sp_cr_flags))
 		mdt_prep_ma_buf_from_rep(info, child, ma);
 	rc = mdt_attr_get_complex(info, child, ma);
 	if (rc)
 		GOTO(put_child, rc);
 
 	if (ma->ma_valid & MA_LOV) {
-		LASSERT(info->mti_intent_lock && ma->ma_lmm_size != 0);
+		LASSERT(ma->ma_lmm_size != 0);
 		repbody->mbo_eadatasize = ma->ma_lmm_size;
 		if (S_ISREG(ma->ma_attr.la_mode))
 			repbody->mbo_valid |= OBD_MD_FLEASIZE;
@@ -816,7 +821,7 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 put_child:
 	mdt_object_put(info->mti_env, child);
 unlock_parent:
-	if (!info->mti_parent_locked)
+	if (!lockless)
 		mdt_object_unlock(info, parent, lh, rc);
 	if (rc && dlmrep)
 		mdt_clear_disposition(info, dlmrep, DISP_OPEN_CREATE);
@@ -856,8 +861,41 @@ static int mdt_attr_set_locked(struct mdt_thread_info *info,
 	RETURN(rc);
 }
 
+static int mdt_intent_attr_set(struct mdt_thread_info *info,
+			       struct mdt_object *mo, struct md_attr *ma,
+			       struct mdt_lock_handle *lhc)
+{
+	__u64 bits;
+	int rc;
+
+	ENTRY;
+
+	rc = mdt_check_resent_lock(info, mo, lhc);
+	if (rc <= 0)
+		RETURN(rc);
+
+	if (info->mti_exlock_update) {
+		if (!info->mti_parent_locked)
+			RETURN(-EPROTO);
+
+		bits = MDS_INODELOCK_UPDATE;
+		if (S_ISREG(lu_object_attr(&mo->mot_obj)))
+			bits |= MDS_INODELOCK_LAYOUT;
+		mdt_lock_reg_init(lhc, LCK_EX);
+		rc = mdt_object_lock(info, mo, lhc, bits);
+	} else {
+		/* TODO: normal intent setattr. */
+	}
+
+	rc = mdt_attr_set_locked(info, mo, ma);
+	if (rc && info->mti_exlock_update)
+		mdt_object_unlock(info, mo, lhc, rc);
+
+	RETURN(rc);
+}
+
 static int mdt_attr_set(struct mdt_thread_info *info, struct mdt_object *mo,
-			struct md_attr *ma)
+			struct md_attr *ma, struct mdt_lock_handle *lhc)
 {
 	struct mdt_lock_handle  *lh;
 	__u64 lockpart = MDS_INODELOCK_UPDATE;
@@ -869,6 +907,9 @@ static int mdt_attr_set(struct mdt_thread_info *info, struct mdt_object *mo,
 
 	if (ma->ma_attr_flags & MDS_WBC_LOCKLESS)
 		RETURN(mdt_attr_set_locked(info, mo, ma));
+
+	if (info->mti_intent_lock)
+		RETURN(mdt_intent_attr_set(info, mo, ma, lhc));
 
 	rc = mdt_object_striped(info, mo);
 	if (rc < 0)
@@ -965,7 +1006,8 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 	struct md_attr *ma = &info->mti_attr;
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct ptlrpc_request *req = mdt_info_req(info);
-	bool lockless = ma->ma_attr_flags & MDS_WBC_LOCKLESS;
+	bool lockless = ma->ma_attr_flags & MDS_WBC_LOCKLESS ||
+			info->mti_parent_locked;
 	struct mdt_object *mo;
 	struct mdt_body *repbody;
 	ktime_t kstart = ktime_get();
@@ -998,7 +1040,7 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 		     atomic_read(&mo->mot_lease_count) > 0)) {
 		down_read(&mo->mot_open_sem);
 
-		/* TODO: WBC lockless handling. */
+		/* TODO: WBC lockless handling for the lease open. */
 		if (atomic_read(&mo->mot_lease_count) > 0) { /* lease exists */
 			lhc = &info->mti_lh[MDT_LH_LOCAL];
 			mdt_lock_reg_init(lhc, LCK_CW);
@@ -1069,7 +1111,7 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 			}
 		}
 
-		rc = mdt_attr_set(info, mo, ma);
+		rc = mdt_attr_set(info, mo, ma, lhc);
 		if (rc)
 			GOTO(out_put, rc);
 	} else if ((ma->ma_valid & (MA_LOV | MA_LMV)) &&
@@ -1079,6 +1121,8 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 		struct mdt_lock_handle *lh = &info->mti_lh[MDT_LH_PARENT];
 		const char *name;
 		__u64 lockpart = MDS_INODELOCK_XATTR;
+
+		LASSERT(!(info->mti_parent_locked || info->mti_exlock_update));
 
 		/* reject if either remote or striped dir is disabled */
 		if (ma->ma_valid & MA_LMV) {
@@ -1255,9 +1299,10 @@ static int mdt_reint_unlink(struct mdt_thread_info *info,
 	struct lu_fid *child_fid = &info->mti_tmp_fid1;
 	struct mdt_object *mp;
 	struct mdt_object *mc;
-	struct mdt_lock_handle *parent_lh;
-	struct mdt_lock_handle *child_lh;
+	struct mdt_lock_handle *parent_lh = NULL;
+	struct mdt_lock_handle *child_lh = NULL;
 	struct ldlm_enqueue_info *einfo = &info->mti_einfo[0];
+	bool lockless = ma->ma_attr_flags & MDS_WBC_LOCKLESS;
 	__u64 lock_ibits;
 	bool cos_incompat = false;
 	int no_name = 0;
@@ -1292,12 +1337,14 @@ static int mdt_reint_unlink(struct mdt_thread_info *info,
 	OBD_RACE(OBD_FAIL_MDS_REINT_OPEN);
 	OBD_RACE(OBD_FAIL_MDS_REINT_OPEN2);
 relock:
-	parent_lh = &info->mti_lh[MDT_LH_PARENT];
-	mdt_lock_pdo_init(parent_lh, LCK_PW, &rr->rr_name);
-	rc = mdt_reint_object_lock(info, mp, parent_lh, MDS_INODELOCK_UPDATE,
-				   cos_incompat);
-	if (rc != 0)
-		GOTO(put_parent, rc);
+	if (!lockless) {
+		parent_lh = &info->mti_lh[MDT_LH_PARENT];
+		mdt_lock_pdo_init(parent_lh, LCK_PW, &rr->rr_name);
+		rc = mdt_reint_object_lock(info, mp, parent_lh,
+					   MDS_INODELOCK_UPDATE, cos_incompat);
+		if (rc != 0)
+			GOTO(put_parent, rc);
+	}
 
 	if (info->mti_spec.sp_cr_flags & MDS_OP_WITH_FID) {
 		*child_fid = *rr->rr_fid2;
@@ -1358,13 +1405,17 @@ relock:
 		cos_incompat = rc;
 		if (cos_incompat) {
 			mdt_object_put(info->mti_env, mc);
-			mdt_object_unlock(info, mp, parent_lh, -EAGAIN);
+			if (!lockless)
+				mdt_object_unlock(info, mp, parent_lh, -EAGAIN);
 			goto relock;
 		}
 	}
 
-	child_lh = &info->mti_lh[MDT_LH_CHILD];
-	mdt_lock_reg_init(child_lh, LCK_EX);
+	if (!lockless) {
+		child_lh = &info->mti_lh[MDT_LH_CHILD];
+		mdt_lock_reg_init(child_lh, LCK_EX);
+	}
+
 	if (info->mti_spec.sp_rm_entry) {
 		struct lu_ucred *uc  = mdt_ucred(info);
 
@@ -1399,13 +1450,16 @@ relock:
 			/* Return -ENOTSUPP for old client */
 			GOTO(put_child, rc = -ENOTSUPP);
 
-		/* Revoke the LOOKUP lock of the remote object granted by
+		/*
+		 * Revoke the LOOKUP lock of the remote object granted by
 		 * this MDT. Since the unlink will happen on another MDT,
 		 * it will release the LOOKUP lock right away. Then What
 		 * would happen if another client try to grab the LOOKUP
 		 * lock at the same time with unlink XXX
 		 */
-		mdt_object_lock(info, mc, child_lh, MDS_INODELOCK_LOOKUP);
+		if (!lockless)
+			mdt_object_lock(info, mc, child_lh,
+					MDS_INODELOCK_LOOKUP);
 		repbody = req_capsule_server_get(info->mti_pill, &RMF_MDT_BODY);
 		LASSERT(repbody != NULL);
 		repbody->mbo_fid1 = *mdt_object_fid(mc);
@@ -1416,23 +1470,27 @@ relock:
 	 * this now because a running HSM restore on the child (unlink
 	 * victim) will hold the layout lock. See LU-4002.
 	 */
-	lock_ibits = MDS_INODELOCK_LOOKUP | MDS_INODELOCK_UPDATE;
-	if (mdt_object_remote(mp)) {
-		/* Enqueue lookup lock from parent MDT */
-		rc = mdt_remote_object_lock(info, mp, mdt_object_fid(mc),
-					    &child_lh->mlh_rreg_lh,
-					    child_lh->mlh_rreg_mode,
-					    MDS_INODELOCK_LOOKUP, false);
-		if (rc != ELDLM_OK)
+	if (!lockless) {
+		lock_ibits = MDS_INODELOCK_LOOKUP | MDS_INODELOCK_UPDATE;
+		if (mdt_object_remote(mp)) {
+			/* Enqueue lookup lock from parent MDT */
+			rc = mdt_remote_object_lock(info, mp,
+						    mdt_object_fid(mc),
+						    &child_lh->mlh_rreg_lh,
+						    child_lh->mlh_rreg_mode,
+						    MDS_INODELOCK_LOOKUP,
+						    false);
+			if (rc != ELDLM_OK)
+				GOTO(put_child, rc);
+
+			lock_ibits &= ~MDS_INODELOCK_LOOKUP;
+		}
+
+		rc = mdt_reint_striped_lock(info, mc, child_lh, lock_ibits,
+					    einfo, cos_incompat);
+		if (rc != 0)
 			GOTO(put_child, rc);
-
-		lock_ibits &= ~MDS_INODELOCK_LOOKUP;
 	}
-
-	rc = mdt_reint_striped_lock(info, mc, child_lh, lock_ibits, einfo,
-				    cos_incompat);
-	if (rc != 0)
-		GOTO(put_child, rc);
 
 	/*
 	 * Now we can only make sure we need MA_INODE, in mdd layer, will check
@@ -1489,14 +1547,16 @@ out_stat:
 	EXIT;
 
 unlock_child:
-	mdt_reint_striped_unlock(info, mc, child_lh, einfo, rc);
+	if (!lockless)
+		mdt_reint_striped_unlock(info, mc, child_lh, einfo, rc);
 put_child:
 	if (info->mti_spec.sp_cr_flags & MDS_OP_WITH_FID &&
 	    info->mti_big_buf.lb_buf)
 		lu_buf_free(&info->mti_big_buf);
 	mdt_object_put(info->mti_env, mc);
 unlock_parent:
-	mdt_object_unlock(info, mp, parent_lh, rc);
+	if (!lockless)
+		mdt_object_unlock(info, mp, parent_lh, rc);
 put_parent:
 	mdt_object_put(info->mti_env, mp);
 	CFS_RACE_WAKEUP(OBD_FAIL_OBD_ZERO_NLINK_RACE);

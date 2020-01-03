@@ -319,16 +319,203 @@ wbc_prep_create_exlock(struct inode *dir, struct dentry *dchild,
 	return item;
 }
 
+static int wbc_setattr_exlock_cb(struct req_capsule *pill,
+				struct md_op_item *item, int rc)
+{
+	struct lookup_intent *it = &item->mop_it;
+	struct dentry *dentry = item->mop_dentry;
+	struct inode *inode = dentry->d_inode;
+	struct ll_inode_info *lli = ll_i2info(inode);
+	struct wbc_inode *wbci = &lli->lli_wbc_inode;
+	__u64 bits;
+
+	ENTRY;
+
+	if (rc) {
+		CERROR("Failed to do WBC setattr: rc = %d!\n", rc);
+		GOTO(out_dput, rc);
+	}
+
+	/* Must return with EX lock. */
+	if (it->it_lock_mode != LCK_EX)
+		GOTO(out_dput, rc = -EPROTO);
+
+	ll_set_lock_data(ll_i2mdexp(inode), inode, it, &bits);
+	LASSERT(bits & (MDS_INODELOCK_UPDATE | MDS_INODELOCK_LOOKUP));
+	LASSERT((wbci->wbci_flags & WBC_STATE_FL_PROTECTED) &&
+		(wbci->wbci_flags & WBC_STATE_FL_SYNC));
+	wbci->wbci_flags |= WBC_STATE_FL_ROOT;
+	wbci->wbci_lock_handle.cookie = it->it_lock_handle;
+	wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
+	wbci->wbci_dirty_attr = 0;
+	ll_intent_release(it);
+
+out_dput:
+	/* Unpin the dentry now as it is stable. */
+	dput(dentry);
+	wbc_fini_op_item(item);
+
+	RETURN(rc);
+}
+
+static void memfs_iattr_from_inode(struct inode *inode, unsigned int valid,
+				   struct iattr *attr, enum op_xvalid *xvalid)
+{
+	attr->ia_valid = 0;
+	attr->ia_uid = inode->i_uid;
+	attr->ia_gid = inode->i_gid;
+	attr->ia_size = inode->i_size;
+	attr->ia_atime = inode->i_atime;
+	attr->ia_mtime = inode->i_mtime;
+	attr->ia_ctime = inode->i_ctime;
+	attr->ia_mode = inode->i_mode;
+
+	if (valid & ATTR_UID)
+		attr->ia_valid |= ATTR_UID;
+	if (valid & ATTR_GID)
+		attr->ia_valid |= ATTR_GID;
+	if (valid & ATTR_SIZE) {
+		attr->ia_valid |= ATTR_SIZE;
+		*xvalid |= OP_XVALID_OWNEROVERRIDE;
+	}
+	if (valid & ATTR_ATIME)
+		attr->ia_valid |= ATTR_ATIME;
+	if (valid & ATTR_MTIME)
+		attr->ia_valid |= ATTR_MTIME;
+	if (valid & ATTR_CTIME) {
+		attr->ia_valid |= ATTR_CTIME;
+		*xvalid |= OP_XVALID_CTIME_SET;
+	}
+	if (valid & ATTR_MODE)
+		attr->ia_valid |= ATTR_MODE;
+}
+
+static void wbc_iattr_from_inode(struct inode *inode, struct iattr *attr,
+				 enum op_xvalid *xvalid)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	switch (wbci->wbci_cache_mode) {
+	case WBC_MODE_MEMFS:
+		memfs_iattr_from_inode(inode, wbci->wbci_dirty_attr,
+				       attr, xvalid);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Prepare data for async setattr RPC.
+ */
+static struct md_op_item *
+wbc_prep_setattr_exlock(struct inode *dir, struct dentry *dchild,
+			unsigned int valid)
+{
+	struct md_op_item *item;
+	struct inode *inode = dchild->d_inode;
+	struct md_op_data *op_data;
+
+	ENTRY;
+
+	OBD_ALLOC_PTR(item);
+	if (item == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	op_data = ll_prep_md_op_data(&item->mop_data, inode, NULL, NULL, 0, 0,
+				     LUSTRE_OPC_ANY, NULL);
+	if (IS_ERR(op_data)) {
+		OBD_FREE_PTR(item);
+		return (struct md_op_item *)op_data;
+	}
+
+	wbc_iattr_from_inode(inode, &op_data->op_attr, &op_data->op_xvalid);
+	wbc_prep_exlock_common(item, IT_SETATTR);
+
+	return item;
+}
+
+static int wbc_exlock_only_cb(struct req_capsule *pill,
+			       struct md_op_item *item, int rc)
+{
+	struct lookup_intent *it = &item->mop_it;
+	struct dentry *dentry = item->mop_dentry;
+	struct inode *inode = dentry->d_inode;
+	struct ll_inode_info *lli = ll_i2info(inode);
+	struct wbc_inode *wbci = &lli->lli_wbc_inode;
+	__u64 bits;
+
+	ENTRY;
+
+	if (rc) {
+		CERROR("Failed to acquire EX lock: rc = %d!\n", rc);
+		GOTO(out_dput, rc);
+	}
+
+	/* Must return with EX lock. */
+	if (it->it_lock_mode != LCK_EX)
+		GOTO(out_dput, rc = -EPROTO);
+
+	ll_set_lock_data(ll_i2mdexp(inode), inode, it, &bits);
+	LASSERT(bits & (MDS_INODELOCK_UPDATE | MDS_INODELOCK_LOOKUP));
+	LASSERT((wbci->wbci_flags & WBC_STATE_FL_PROTECTED) &&
+		(wbci->wbci_flags & WBC_STATE_FL_SYNC));
+	wbci->wbci_flags |= WBC_STATE_FL_ROOT | WBC_STATE_FL_SYNC;
+	wbci->wbci_lock_handle.cookie = it->it_lock_handle;
+
+	ll_intent_release(it);
+
+out_dput:
+	/* Unpin the dentry now as it is stable. */
+	dput(dentry);
+	wbc_fini_op_item(item);
+
+	RETURN(rc);
+}
+
+/*
+ * Prepare data for WBC EX lock.
+ * If the @inode is flushed to MDT in the state SYNC(S), during the time of
+ * dropping the root WBC lock of the parent directory @dir level by level, the
+ * client needs to acquire the WBC EX locks back on the children file @inode.
+ */
+static struct md_op_item *
+wbc_prep_exlock_only(struct inode *dir, struct dentry *dchild,
+		     unsigned int valid)
+{
+	struct md_op_item *item;
+	struct inode *inode = dchild->d_inode;
+	struct md_op_data *op_data;
+
+	OBD_ALLOC_PTR(item);
+	if (item == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	op_data = ll_prep_md_op_data(&item->mop_data, inode, NULL, NULL, 0, 0,
+				     LUSTRE_OPC_ANY, NULL);
+	if (IS_ERR(op_data)) {
+		OBD_FREE_PTR(item);
+		return (struct md_op_item *)op_data;
+	}
+
+	wbc_prep_exlock_common(item, IT_WBC_EXLOCK);
+	return item;
+}
+
 typedef struct md_op_item *(*md_prep_op_item_t)(struct inode *dir,
 						struct dentry *dchild,
 						unsigned int valid);
 
 md_prep_op_item_t wbc_op_item_preps[MD_OP_MAX] = {
 	[MD_OP_CREATE_EXLOCK]	= wbc_prep_create_exlock,
+	[MD_OP_SETATTR_EXLOCK]	= wbc_prep_setattr_exlock,
+	[MD_OP_EXLOCK_ONLY]	= wbc_prep_exlock_only,
 };
 
 md_op_item_cb_t wbc_op_item_cbs[MD_OP_MAX] = {
 	[MD_OP_CREATE_EXLOCK]	= wbc_create_exlock_cb,
+	[MD_OP_SETATTR_EXLOCK]	= wbc_setattr_exlock_cb,
+	[MD_OP_EXLOCK_ONLY]	= wbc_exlock_only_cb,
 };
 
 static struct md_op_item *
@@ -356,10 +543,9 @@ wbc_prep_op_item(enum md_item_opcode opc, struct inode *dir,
 	return item;
 }
 
-int wbc_do_setattr(struct dentry *dentry, struct iattr *attr)
+int wbc_do_setattr(struct inode *inode, struct iattr *attr)
 {
 	struct ptlrpc_request *request = NULL;
-	struct inode *inode = dentry->d_inode;
 	struct ll_sb_info *sbi = ll_i2sbi(inode);
 	enum op_xvalid xvalid = 0;
 	struct md_op_data *op_data;
@@ -490,6 +676,132 @@ out:
 	RETURN(rc);
 }
 
+int wbc_do_unlink(struct inode *dir, struct dentry *dchild)
+{
+	struct qstr *name = &dchild->d_name;
+	struct ptlrpc_request *request = NULL;
+	struct md_op_data *op_data;
+	struct mdt_body *body;
+	int rc;
+
+	ENTRY;
+
+	CDEBUG(D_VFSTRACE, "VFS Op:name=%.*s, dir="DFID"(%p)\n",
+	       name->len, name->name, PFID(ll_inode2fid(dir)), dir);
+
+	/*
+	 * XXX: unlink bind mountpoint maybe call to here,
+	 * just check it as vfs_unlink does.
+	 */
+	if (unlikely(d_mountpoint(dchild)))
+		RETURN(-EBUSY);
+
+	op_data = ll_prep_md_op_data(NULL, dir, NULL, name->name, name->len, 0,
+				     LUSTRE_OPC_ANY, NULL);
+	if (IS_ERR(op_data))
+		RETURN(PTR_ERR(op_data));
+
+	op_data->op_fid3 = *ll_inode2fid(dchild->d_inode);
+	op_data->op_fid2 = op_data->op_fid3;
+	op_data->op_bias |= MDS_WBC_LOCKLESS;
+
+	rc = md_unlink(ll_i2sbi(dir)->ll_md_exp, op_data, &request);
+	ll_finish_md_op_data(op_data);
+	if (rc)
+		GOTO(out, rc);
+
+	/*
+	 * The server puts attributes in on the last unlink, use them to update
+	 * the link count so the inode can be freed immediately.
+	 */
+	body = req_capsule_server_get(&request->rq_pill, &RMF_MDT_BODY);
+	if (body->mbo_valid & OBD_MD_FLNLINK)
+		set_nlink(dchild->d_inode, body->mbo_nlink);
+
+	ll_update_times(request, dir);
+out:
+	ptlrpc_req_finished(request);
+	RETURN(rc);
+}
+
+static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
+{
+	struct inode *dir = dchild->d_parent->d_inode;
+	struct ptlrpc_request *request = NULL;
+	struct ll_sb_info *sbi = ll_i2sbi(dir);
+	struct md_op_data *op_data;
+	const char *tgt = NULL;
+	int tgt_len = 0;
+	umode_t mode = 0;
+	__u64 cr_flags = 0;
+	int rdev = 0;
+	int opc;
+	int rc;
+
+	ENTRY;
+
+	switch (inode->i_mode & S_IFMT) {
+	case S_IFDIR:
+		opc = LUSTRE_OPC_MKDIR;
+		mode = (inode->i_mode & (S_IRWXUGO | S_ISVTX)) | S_IFDIR;
+		break;
+	case S_IFLNK:
+		opc = LUSTRE_OPC_SYMLINK;
+		mode = S_IFLNK | S_IRWXUGO;
+		tgt = ll_i2info(inode)->lli_symlink_name;
+		tgt_len = strlen(tgt) + 1;
+		break;
+	case S_IFREG:
+		mode = (inode->i_mode & S_IALLUGO) | S_IFREG;
+		cr_flags |= MDS_FMODE_WRITE;
+		/* fallthrough */
+	default:
+		rdev = old_encode_dev(inode->i_rdev);
+		opc = LUSTRE_OPC_CREATE;
+		break;
+	}
+
+	op_data = ll_prep_md_op_data(NULL, dir, inode,
+				     dchild->d_name.name, dchild->d_name.len,
+				     0, opc, NULL);
+	if (IS_ERR(op_data))
+		RETURN(PTR_ERR(op_data));
+
+	/* TODO: Set the timstamps for the inode correctly. */
+	op_data->op_bias |= MDS_WBC_LOCKLESS;
+	rc = md_create(sbi->ll_md_exp, op_data, tgt, tgt_len, mode,
+			from_kuid(&init_user_ns, inode->i_uid),
+			from_kgid(&init_user_ns, inode->i_gid),
+			current_cap(), rdev, cr_flags, &request);
+	if (rc)
+		GOTO(out, rc);
+
+	ll_update_times(request, dir);
+
+	rc = ll_prep_inode(&inode, &request->rq_pill, dchild->d_sb, NULL);
+	ptlrpc_req_finished(request);
+out:
+	ll_finish_md_op_data(op_data);
+	RETURN(rc);
+}
+
+static int wbc_do_create(struct inode *inode)
+{
+	struct dentry *dentry;
+	int rc;
+
+	ENTRY;
+
+	/* TODO: hardlink for a non-directory file. */
+	dentry = d_find_any_alias(inode);
+	if (!dentry)
+		RETURN(0);
+
+	rc = wbc_sync_create(inode, dentry);
+	dput(dentry);
+	RETURN(rc);
+}
+
 /*
  * Write the cached data in MemFS into Lustre clio for an inode.
  * TODO: It need to ensure that generic IO must be blocked in this phase until
@@ -518,8 +830,7 @@ int wbcfs_commit_cache_pages(struct inode *inode)
 		RETURN(0);
 
 	isize = i_size_read(inode);
-	if (isize == 0)
-		GOTO(out, rc = 0);
+	LASSERT(ll_i2info(inode)->lli_clob);
 
 	/* Get IO environment */
 	rc = cl_io_get(inode, &env, &io, &refcheck);
@@ -622,6 +933,9 @@ int wbcfs_commit_cache_pages(struct inode *inode)
 		cond_resched(); /* because why not? */
 	} while (nr_pages > 0);
 
+	if (queue.pl_nr == 0)
+		GOTO(out_page_discard, rc);
+
 	to = isize & (PAGE_SIZE - 1);
 	if (to == 0)
 		to = PAGE_SIZE;
@@ -672,6 +986,50 @@ out:
 	RETURN(rc);
 }
 
+int wbcfs_inode_flush_lockless(struct inode *inode)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc = 0;
+
+	ENTRY;
+
+	/* TODO: async metadata updates and batched metadata updates. */
+	if (wbci->wbci_flags & WBC_STATE_FL_SYNC) {
+		if (wbci->wbci_dirty_flags & WBC_DIRTY_ATTR) {
+			struct iattr attr;
+			enum op_xvalid xvalid = 0;
+
+			memfs_iattr_from_inode(inode, wbci->wbci_dirty_attr,
+					       &attr, &xvalid);
+			rc = wbc_do_setattr(inode, &attr);
+		}
+		/* TODO: Handle hardlink. */
+	} else {
+		rc = wbc_do_create(inode);
+	}
+
+	if (rc == 0) {
+		wbci->wbci_dirty_attr = 0;
+		wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
+		wbci->wbci_flags |= WBC_STATE_FL_SYNC;
+	}
+
+	return rc;
+}
+
+static inline bool wbc_need_rqset_wait(struct inode *dir,
+				       struct dentry *dentry,
+				       struct ptlrpc_request_set *rqset)
+{
+	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
+
+	if (conf->wbcc_max_rpcs > 0 &&
+	    atomic_read(&rqset->set_remaining) > conf->wbcc_max_rpcs)
+		return true;
+
+	return false;
+}
+
 /*
  * TODO: Flush batchly for metadata updates.
  */
@@ -682,10 +1040,7 @@ int wbcfs_flush_dir_children(struct inode *dir,
 	struct wbc_dentry *wbcd, *tmp;
 	struct ptlrpc_request_set *rqset;
 	struct ll_sb_info *sbi = ll_i2sbi(dir);
-	struct wbc_conf *conf = &sbi->ll_wbc_super.wbcs_conf;
-	int limiter = 0;
 	int rc = 0;
-	int rc2;
 
 	ENTRY;
 
@@ -700,8 +1055,8 @@ int wbcfs_flush_dir_children(struct inode *dir,
 
 		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
 		dchild = lld->lld_dentry;
-		item = wbc_prep_op_item(MD_OP_CREATE_EXLOCK, dir, dchild,
-					lock, 0);
+		item = wbc_prep_op_item(wbc_flush_opcode_get(dchild), dir,
+					dchild, lock, 0);
 		if (IS_ERR(item))
 			GOTO(out_rqset, rc = PTR_ERR(item));
 
@@ -713,8 +1068,7 @@ int wbcfs_flush_dir_children(struct inode *dir,
 		}
 
 		list_del_init(&wbcd->wbcd_flush_item);
-		limiter++;
-		if (conf->wbcc_max_rpcs > 0 && limiter > conf->wbcc_max_rpcs) {
+		if (wbc_need_rqset_wait(dir, dchild, rqset)) {
 			rc = ptlrpc_set_wait(NULL, rqset);
 			ptlrpc_set_destroy(rqset);
 			if (rc)
@@ -723,16 +1077,10 @@ int wbcfs_flush_dir_children(struct inode *dir,
 			rqset = ptlrpc_prep_set();
 			if (rqset == NULL)
 				RETURN(-ENOMEM);
-
-			limiter = 0;
 		}
 	}
 
-	if (limiter) {
-		rc2 = ptlrpc_set_wait(NULL, rqset);
-		if (rc == 0)
-			rc = rc2;
-	}
+	rc = ptlrpc_set_wait(NULL, rqset);
 out_rqset:
 	ptlrpc_set_destroy(rqset);
 
@@ -817,6 +1165,7 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 	seq_printf(m, "flush_mode: %s\n",
 		   wbc_flushmode2string(conf->wbcc_flush_mode));
 	seq_printf(m, "max_rpcs: %u\n", conf->wbcc_max_rpcs);
+	seq_printf(m, "rmpol: %s\n", wbc_rmpol2string(conf->wbcc_rmpol));
 
 	return 0;
 }
@@ -883,6 +1232,8 @@ static ssize_t wbc_flush_mode_seq_write(struct file *file,
 		cmd.wbcc_conf.wbcc_flush_mode = WBC_FLUSH_LAZY_DROP;
 	else if (strncmp(kernbuf, "aging_drop", 10) == 0)
 		cmd.wbcc_conf.wbcc_flush_mode = WBC_FLUSH_AGING_DROP;
+	else if (strncmp(kernbuf, "aging_keep", 10) == 0)
+		cmd.wbcc_conf.wbcc_flush_mode = WBC_FLUSH_AGING_KEEP;
 	else
 		RETURN(-EINVAL);
 
@@ -924,8 +1275,46 @@ static ssize_t wbc_max_rpcs_seq_write(struct file *file,
 	rc = wbc_cmd_handle(ll_s2wbcs(sb), &cmd);
 	return rc ? rc : count;
 }
-
 LDEBUGFS_SEQ_FOPS(wbc_max_rpcs);
+
+static int wbc_rmpol_seq_show(struct seq_file *m, void *v)
+{
+	struct super_block *sb = m->private;
+	struct wbc_conf *conf = ll_s2wbcc(sb);
+
+	seq_printf(m, "%s\n", wbc_rmpol2string(conf->wbcc_rmpol));
+
+	return 0;
+}
+
+static ssize_t wbc_rmpol_seq_write(struct file *file,
+				   const char __user *buffer,
+				   size_t count, loff_t *off)
+{
+	struct seq_file *m = file->private_data;
+	struct super_block *sb = m->private;
+	struct wbc_cmd cmd;
+	char kernbuf[128];
+	int rc;
+
+	if (count >= sizeof(kernbuf))
+		RETURN(-EINVAL);
+
+	if (copy_from_user(kernbuf, buffer, count))
+		RETURN(-EFAULT);
+
+	kernbuf[count] = 0;
+	memset(&cmd, 0, sizeof(cmd));
+	if (strncmp(kernbuf, "sync", 4) == 0)
+		cmd.wbcc_conf.wbcc_rmpol = WBC_RMPOL_SYNC;
+	else
+		return -EINVAL;
+
+	cmd.wbcc_flags |= WBC_CMD_OP_RMPOL;
+	rc = wbc_cmd_handle(ll_s2wbcs(sb), &cmd);
+	return rc ? rc : count;
+}
+LDEBUGFS_SEQ_FOPS(wbc_rmpol);
 
 struct ldebugfs_vars ldebugfs_llite_wbc_vars[] = {
 	{ .name =	"conf",
@@ -934,6 +1323,8 @@ struct ldebugfs_vars ldebugfs_llite_wbc_vars[] = {
 	  .fops =	&wbc_flush_mode_fops	},
 	{ .name =	"max_rpcs",
 	  .fops =	&wbc_max_rpcs_fops,	},
+	{ .name =	"rmpol",
+	  .fops =	&wbc_rmpol_fops,	},
 	{ NULL }
 };
 

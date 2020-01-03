@@ -2518,6 +2518,8 @@ enum ldlm_intent_flags {
 /*	IT_SETXATTR    = 0x00002000, Obsolete. */
 	IT_GLIMPSE     = 0x00004000,
 	IT_BRW	       = 0x00008000,
+	IT_SETATTR     = 0x00010000,
+	IT_WBC_EXLOCK  = 0x00020000,
 };
 
 struct ldlm_intent {

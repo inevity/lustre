@@ -36,6 +36,21 @@
 #include <linux/swap.h>
 #include "llite_internal.h"
 
+long wbc_flush_opcode_get(struct dentry *dchild)
+{
+	struct inode *inode = dchild->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	if (wbci->wbci_flags & WBC_STATE_FL_SYNC) {
+		if (wbci->wbci_dirty_flags & WBC_DIRTY_ATTR)
+			return MD_OP_SETATTR_EXLOCK;
+
+		return MD_OP_EXLOCK_ONLY;
+	}
+
+	return MD_OP_CREATE_EXLOCK;
+}
+
 static int wbc_flush_regular_file(struct inode *inode, struct ldlm_lock *lock)
 {
 	/*
@@ -109,9 +124,15 @@ int wbc_inode_flush(struct inode *inode, struct ldlm_lock *lock)
 	return -ENOTSUPP;
 }
 
+static inline void wbc_inode_flush_lockless(struct inode *inode)
+{
+	wbcfs_inode_flush_lockless(inode);
+}
+
 void wbc_inode_init(struct wbc_inode *wbci)
 {
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
+	wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
 }
 
 void wbc_dentry_init(struct dentry *dentry)
@@ -150,9 +171,12 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 		LDLM_LOCK_PUT(lock);
 		/* TODO: Convert the EX WBC lock to PR or CR lock. */
 		break;
+	case WBC_FLUSH_AGING_KEEP:
+		wbc_inode_flush_lockless(inode);
+		break;
 	case WBC_FLUSH_LAZY_DROP:
 	default:
-		RETURN(0);
+		break;
 	}
 
 	RETURN(0);
@@ -174,12 +198,16 @@ static void wbc_super_conf_default(struct wbc_conf *conf)
 
 static void wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 {
+	if (conf->wbcc_cache_mode == WBC_MODE_NONE)
+		conf->wbcc_cache_mode = WBC_MODE_DEFAULT;
 	if (cmd->wbcc_flags & WBC_CMD_OP_CACHE_MODE)
 		conf->wbcc_cache_mode = cmd->wbcc_conf.wbcc_cache_mode;
 	if (cmd->wbcc_flags & WBC_CMD_OP_FLUSH_MODE)
 		conf->wbcc_flush_mode = cmd->wbcc_conf.wbcc_flush_mode;
 	if (cmd->wbcc_flags & WBC_CMD_OP_MAX_RPCS)
 		conf->wbcc_max_rpcs = cmd->wbcc_conf.wbcc_max_rpcs;
+	if (cmd->wbcc_flags & WBC_CMD_OP_RMPOL)
+		conf->wbcc_rmpol = cmd->wbcc_conf.wbcc_rmpol;
 }
 
 void wbc_super_init(struct wbc_super *super)
@@ -213,6 +241,8 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 			conf->wbcc_flush_mode = WBC_FLUSH_LAZY_DROP;
 		else if (strcmp(val, "aging_drop") == 0)
 			conf->wbcc_flush_mode = WBC_FLUSH_AGING_DROP;
+		else if (strcmp(val, "aging_keep") == 0)
+			conf->wbcc_flush_mode = WBC_FLUSH_AGING_KEEP;
 		else
 			return -EINVAL;
 
@@ -224,6 +254,13 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 
 		conf->wbcc_max_rpcs = num;
 		cmd->wbcc_flags |= WBC_CMD_OP_MAX_RPCS;
+	} else if (strcmp(key, "rmpol") == 0) {
+		if (strcmp(val, "sync") == 0)
+			conf->wbcc_rmpol = WBC_RMPOL_SYNC;
+		else
+			return -EINVAL;
+
+		cmd->wbcc_flags |= WBC_CMD_OP_RMPOL;
 	} else {
 		return -EINVAL;
 	}

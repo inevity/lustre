@@ -128,6 +128,10 @@ const char *ldlm_it2str(enum ldlm_intent_flags it)
 		return "getxattr";
 	case IT_LAYOUT:
 		return "layout";
+	case IT_SETATTR:
+		return "setattr";
+	case IT_WBC_EXLOCK:
+		return "wbc_exlock";
 	default:
 		CERROR("Unknown intent 0x%08x\n", it);
 		return "UNKNOWN";

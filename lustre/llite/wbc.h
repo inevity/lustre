@@ -46,9 +46,14 @@ enum lu_mkdir_policy {
 
 #define WBC_MAX_ASYNC_RPCS	100
 
+enum wbc_remove_policy {
+	WBC_RMPOL_SYNC,
+};
+
 struct wbc_conf {
 	enum lu_wbc_cache_mode	wbcc_cache_mode;
 	enum lu_wbc_flush_mode	wbcc_flush_mode;
+	enum wbc_remove_policy	wbcc_rmpol;
 	__u32			wbcc_max_rpcs;
 };
 
@@ -57,6 +62,12 @@ struct wbc_super {
 	__u64		 wbcs_generation;
 	struct wbc_conf	 wbcs_conf;
 	struct dentry	*wbcs_debugfs_dir;
+};
+
+enum wbc_dirty_flags {
+	WBC_DIRTY_NONE	= 0x0,
+	/* Attributes was modified after the file was flushed to MDT. */
+	WBC_DIRTY_ATTR	= 0x1,
 };
 
 struct wbc_inode {
@@ -68,6 +79,8 @@ struct wbc_inode {
 	enum lu_wbc_cache_mode	wbci_cache_mode;
 	enum lu_wbc_flush_mode	wbci_flush_mode;
 	struct lustre_handle	wbci_lock_handle;
+	enum wbc_dirty_flags	wbci_dirty_flags;
+	unsigned int		wbci_dirty_attr;
 };
 
 struct wbc_dentry {
@@ -84,6 +97,7 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_CACHE_MODE	= 0x1,
 	WBC_CMD_OP_FLUSH_MODE	= 0x2,
 	WBC_CMD_OP_MAX_RPCS	= 0x4,
+	WBC_CMD_OP_RMPOL	= 0x8,
 };
 
 struct wbc_cmd {
@@ -117,7 +131,18 @@ static inline bool wbc_inode_has_protected(struct wbc_inode *wbci)
 	return wbci->wbci_flags & WBC_STATE_FL_PROTECTED;
 }
 
+static inline const char *wbc_rmpol2string(enum wbc_remove_policy pol)
+{
+	switch (pol) {
+	case WBC_RMPOL_SYNC:
+		return "sync";
+	default:
+		return "unknow";
+	}
+}
+
 /* wbc.c */
+long wbc_flush_opcode_get(struct dentry *dchild);
 void wbc_super_init(struct wbc_super *super);
 void wbc_inode_init(struct wbc_inode *wbci);
 void wbc_dentry_init(struct dentry *dentry);
@@ -132,8 +157,10 @@ void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);
 /* llite_wbc.c */
 void wbcfs_inode_operations_switch(struct inode *inode);
 int wbcfs_d_init(struct dentry *de);
-int wbc_do_setattr(struct dentry *dentry, struct iattr *attr);
+int wbc_do_setattr(struct inode *inode, struct iattr *attr);
+int wbc_do_unlink(struct inode *dir, struct dentry *dchild);
 int wbcfs_commit_cache_pages(struct inode *inode);
+int wbcfs_inode_flush_lockless(struct inode *inode);
 int wbcfs_flush_dir_children(struct inode *dir,
 			     struct list_head *childlist,
 			     struct ldlm_lock *lock);
