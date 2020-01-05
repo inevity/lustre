@@ -911,6 +911,8 @@ void ll_kill_super(struct super_block *sb)
 		while (atomic_read(&sbi->ll_sa_running) > 0)
 			schedule_timeout_uninterruptible(
 				cfs_time_seconds(1) >> 3);
+
+		wbc_super_shrink_roots(&sbi->ll_wbc_super);
 	}
 
 	EXIT;
@@ -2952,6 +2954,8 @@ void ll_umount_begin(struct super_block *sb)
 
 	CDEBUG(D_VFSTRACE, "VFS Op: superblock %p count %d active %d\n", sb,
 	       sb->s_count, atomic_read(&sb->s_active));
+
+	wbc_super_shrink_roots(&sbi->ll_wbc_super);
 
 	obd = class_exp2obd(sbi->ll_md_exp);
 	if (obd == NULL) {

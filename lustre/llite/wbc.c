@@ -36,6 +36,29 @@
 #include <linux/swap.h>
 #include "llite_internal.h"
 
+void wbc_super_root_add(struct inode *inode)
+{
+	struct wbc_super *super = ll_i2wbcs(inode);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	LASSERT(wbci->wbci_flags & WBC_STATE_FL_ROOT);
+	spin_lock(&super->wbcs_lock);
+	list_add(&wbci->wbci_root_list, &super->wbcs_roots);
+	spin_unlock(&super->wbcs_lock);
+}
+
+void wbc_super_root_del(struct inode *inode)
+{
+	struct wbc_super *super = ll_i2wbcs(inode);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	if (!list_empty(&wbci->wbci_root_list)) {
+		spin_lock(&super->wbcs_lock);
+		list_del_init(&wbci->wbci_root_list);
+		spin_unlock(&super->wbcs_lock);
+	}
+}
+
 long wbc_flush_opcode_get(struct dentry *dchild)
 {
 	struct inode *inode = dchild->d_inode;
@@ -133,6 +156,7 @@ void wbc_inode_init(struct wbc_inode *wbci)
 {
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
 	wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
+	INIT_LIST_HEAD(&wbci->wbci_root_list);
 }
 
 void wbc_dentry_init(struct dentry *dentry)
@@ -143,6 +167,39 @@ void wbc_dentry_init(struct dentry *dentry)
 	LASSERT(lld);
 	lld->lld_dentry = dentry;
 	INIT_LIST_HEAD(&lld->lld_wbc_dentry.wbcd_flush_item);
+}
+
+static inline struct wbc_inode *wbc_inode(struct list_head *head)
+{
+	return list_entry(head, struct wbc_inode, wbci_root_list);
+}
+
+void wbc_super_shrink_roots(struct wbc_super *super)
+{
+	spin_lock(&super->wbcs_lock);
+	while (!list_empty(&super->wbcs_roots)) {
+		struct wbc_inode *wbci = wbc_inode(super->wbcs_roots.prev);
+		struct inode *inode = ll_wbci2i(wbci);
+		struct ldlm_lock *lock;
+		bool cached;
+
+		list_del_init(&wbci->wbci_root_list);
+
+		cached = wbc_inode_has_protected(wbci);
+		if (!cached)
+			continue;
+		lock = ldlm_handle2lock(&wbci->wbci_lock_handle);
+		if (lock == NULL) {
+			LASSERT(!wbc_inode_has_protected(wbci));
+			continue;
+		}
+
+		spin_unlock(&super->wbcs_lock);
+		wbc_inode_lock_callback(inode, lock, &cached);
+		LDLM_LOCK_PUT(lock);
+		spin_lock(&super->wbcs_lock);
+	}
+	spin_unlock(&super->wbcs_lock);
 }
 
 int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
@@ -214,6 +271,7 @@ void wbc_super_init(struct wbc_super *super)
 {
 	spin_lock_init(&super->wbcs_lock);
 	wbc_super_conf_disable(&super->wbcs_conf);
+	INIT_LIST_HEAD(&super->wbcs_roots);
 }
 
 static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)

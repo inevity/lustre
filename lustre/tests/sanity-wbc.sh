@@ -665,6 +665,60 @@ test_10() {
 }
 run_test 10 "setattr in aging keep flush mode"
 
+test_11() {
+	local file="$DIR/$tdir/$tfile"
+	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
+	local expire=$(sysctl -n vm.dirty_expire_centisecs)
+	local expected="400"
+	local newmd5
+	local oldmd5
+
+	echo "dirty_writeback_centisecs: $interval"
+	interval=$((interval + 100))
+	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
+	sysctl -w vm.dirty_expire_centisecs=$interval
+
+	setup_wbc "flush_mode=aging_drop"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
+		error "failed to write $file"
+	check_wbc_flags $file "0x00000005"
+	oldmd5=$(md5sum $file | awk '{print $1}')
+	remount_client $MOUNT || error "remount_client $MOUNT failed"
+	newmd5=$(md5sum $file | awk '{print $1}')
+	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+	rm -rf $DIR/$tdir || error "rm $DIR/$tdir failed"
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
+		error "failed to write $file"
+	check_wbc_flags $file "0x00000005"
+	oldmd5=$(md5sum $file | awk '{print $1}')
+	remount_client $MOUNT || error "remount_client $MOUNT failed"
+	newmd5=$(md5sum $file | awk '{print $1}')
+	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+	rm -rf $DIR/$tdir || error "rm $DIR/$tdir failed"
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
+		error "failed to write $file"
+	check_wbc_flags $file "0x00000005"
+	oldmd5=$(md5sum $file | awk '{print $1}')
+	wait_wbc_sync_state $file
+	check_wbc_flags $file "0x00000007"
+	remount_client $MOUNT || error "remount_client $MOUNT failed"
+	newmd5=$(md5sum $file | awk '{print $1}')
+	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+}
+run_test 11 "Verify umount works correctly"
+
 test_sanity() {
 	local cmd="$LCTL wbc enable $MOUNT"
 

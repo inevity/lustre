@@ -58,10 +58,11 @@ struct wbc_conf {
 };
 
 struct wbc_super {
-	spinlock_t	 wbcs_lock;
-	__u64		 wbcs_generation;
-	struct wbc_conf	 wbcs_conf;
-	struct dentry	*wbcs_debugfs_dir;
+	spinlock_t		 wbcs_lock;
+	__u64			 wbcs_generation;
+	struct wbc_conf		 wbcs_conf;
+	struct dentry		*wbcs_debugfs_dir;
+	struct list_head	 wbcs_roots;
 };
 
 enum wbc_dirty_flags {
@@ -81,6 +82,7 @@ struct wbc_inode {
 	struct lustre_handle	wbci_lock_handle;
 	enum wbc_dirty_flags	wbci_dirty_flags;
 	unsigned int		wbci_dirty_attr;
+	struct list_head	wbci_root_list;
 };
 
 struct wbc_dentry {
@@ -142,6 +144,8 @@ static inline const char *wbc_rmpol2string(enum wbc_remove_policy pol)
 }
 
 /* wbc.c */
+void wbc_super_root_add(struct inode *inode);
+void wbc_super_root_del(struct inode *inode);
 long wbc_flush_opcode_get(struct dentry *dchild);
 void wbc_super_init(struct wbc_super *super);
 void wbc_inode_init(struct wbc_inode *wbci);
@@ -173,8 +177,11 @@ int wbc_root_init(struct inode *dir, struct inode *inode,
 		  struct dentry *dentry);
 
 int wbc_write_inode(struct inode *inode, struct writeback_control *wbc);
+void wbc_super_shrink_roots(struct wbc_super *super);
+
 enum lu_mkdir_policy
 ll_mkdir_policy_get(struct ll_sb_info *sbi, struct inode *dir,
 		    struct dentry *dchild, umode_t mode,
 		    __u64 *extra_lock_flags);
+
 #endif /* LLITE_WBC_H */

@@ -1776,6 +1776,16 @@ static inline struct wbc_inode *ll_i2wbci(struct inode *inode)
 	return &ll_i2info(inode)->lli_wbc_inode;
 }
 
+static inline struct ll_inode_info *ll_wbci2info(struct wbc_inode *wbci)
+{
+	return container_of(wbci, struct ll_inode_info, lli_wbc_inode);
+}
+
+static inline struct inode *ll_wbci2i(struct wbc_inode *wbci)
+{
+	return ll_info2i(ll_wbci2info(wbci));
+}
+
 static inline struct wbc_dentry *ll_d2wbcd(struct dentry *dentry)
 {
 	return &ll_d2d(dentry)->lld_wbc_dentry;

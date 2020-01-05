@@ -196,10 +196,7 @@ static int wbc_create_exlock_cb(struct req_capsule *pill,
 	wbci->wbci_flags |= WBC_STATE_FL_ROOT | WBC_STATE_FL_SYNC;
 	wbci->wbci_lock_handle.cookie = it->it_lock_handle;
 
-	/*
-	 * We got a lock handle from this intent, and potentially
-	 * the request that needs extra decrefs, so deal with it.
-	 */
+	wbc_super_root_add(inode);
 	ll_intent_release(it);
 
 out_dput:
@@ -348,6 +345,8 @@ static int wbc_setattr_exlock_cb(struct req_capsule *pill,
 	wbci->wbci_lock_handle.cookie = it->it_lock_handle;
 	wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
 	wbci->wbci_dirty_attr = 0;
+
+	wbc_super_root_add(inode);
 	ll_intent_release(it);
 
 out_dput:
@@ -463,6 +462,7 @@ static int wbc_exlock_only_cb(struct req_capsule *pill,
 	wbci->wbci_flags |= WBC_STATE_FL_ROOT | WBC_STATE_FL_SYNC;
 	wbci->wbci_lock_handle.cookie = it->it_lock_handle;
 
+	wbc_super_root_add(inode);
 	ll_intent_release(it);
 
 out_dput:
@@ -1101,6 +1101,7 @@ void wbc_inode_lock_callback(struct inode *inode, struct ldlm_lock *lock,
 	wbci->wbci_flags &= ~WBC_STATE_FL_PROTECTED;
 	(void) wbc_inode_flush(inode, lock);
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
+	wbc_super_root_del(inode);
 }
 
 int wbc_root_init(struct inode *dir, struct inode *inode, struct dentry *dchild)
@@ -1124,6 +1125,8 @@ int wbc_root_init(struct inode *dir, struct inode *inode, struct dentry *dchild)
 	 */
 	wbci->wbci_flags = WBC_STATE_FL_ROOT | WBC_STATE_FL_PROTECTED |
 			   WBC_STATE_FL_SYNC | WBC_STATE_FL_COMPLETE;
+
+	wbc_super_root_add(inode);
 
 	RETURN(0);
 }
