@@ -983,9 +983,11 @@ typedef int (*md_op_item_cb_t)(struct req_capsule *pill,
 enum md_item_opcode {
 	MD_OP_NONE		= 0,
 	MD_OP_GETATTR		= 1,
-	MD_OP_CREATE_EXLOCK	= 2,
-	MD_OP_SETATTR_EXLOCK	= 3,
-	MD_OP_EXLOCK_ONLY	= 4,
+	MD_OP_CREATE_LOCKLESS	= 2,
+	MD_OP_CREATE_EXLOCK	= 3,
+	MD_OP_SETATTR_LOCKLESS	= 4,
+	MD_OP_SETATTR_EXLOCK	= 5,
+	MD_OP_EXLOCK_ONLY	= 6,
 	MD_OP_MAX,
 };
 

@@ -243,11 +243,38 @@ static int memfs_link(struct dentry *old_dentry, struct inode *dir,
 	RETURN(simple_link(old_dentry, dir, new_dentry));
 }
 
+static int memfs_remove_policy(struct inode *dir, struct dentry *dchild,
+			       bool rmdir)
+{
+	struct inode *inode = dchild->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
+
+	ENTRY;
+
+	if (wbci->wbci_flush_mode != WBC_FLUSH_AGING_KEEP ||
+	    !wbc_inode_was_flushed(wbci))
+		RETURN(0);
+
+	switch (conf->wbcc_rmpol) {
+	case WBC_RMPOL_SYNC:
+		RETURN(wbc_do_remove(dir, dchild, rmdir));
+	default:
+		RETURN(0);
+	}
+}
+
 static int memfs_rmdir(struct inode *dir, struct dentry *dchild)
 {
+	int rc;
+
 	ENTRY;
 
 	LASSERT(wbc_inode_has_protected(ll_i2wbci(dir)));
+
+	rc = memfs_remove_policy(dir, dchild, true);
+	if (rc)
+		RETURN(rc);
 
 	/* Must be positve dentry */
 	RETURN(simple_rmdir(dir, dchild));
@@ -255,27 +282,16 @@ static int memfs_rmdir(struct inode *dir, struct dentry *dchild)
 
 static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 {
-	struct inode *inode = dchild->d_inode;
-	struct wbc_inode *wbci = ll_i2wbci(inode);
-	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
 	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(wbci) &&
+	LASSERT(wbc_inode_has_protected(ll_i2wbci(dchild->d_inode)) &&
 		wbc_inode_has_protected(ll_i2wbci(dir)));
 
-	if (wbci->wbci_flags & WBC_STATE_FL_SYNC &&
-	    wbci->wbci_flush_mode == WBC_FLUSH_AGING_KEEP) {
-		switch (conf->wbcc_rmpol) {
-		case WBC_RMPOL_SYNC:
-			rc = wbc_do_unlink(dir, dchild);
-			if (rc)
-				RETURN(rc);
-		default:
-			break;
-		}
-	}
+	rc = memfs_remove_policy(dir, dchild, false);
+	if (rc)
+		RETURN(rc);
 
 	RETURN(simple_unlink(dir, dchild));
 }
@@ -364,16 +380,33 @@ static int memfs_flush(struct file *file, fl_owner_t id)
 	RETURN(0);
 }
 
+/*
+ * TODO: Add fsync(2) support for the WBC_FLUSH_LAZY and WBC_FLUSH_AGING_KEEP
+ * flush mode. It needs to reopen the file from MDT when the root WBC EX lock
+ * is revoking.
+ */
 static int memfs_fsync(struct file *file, loff_t start,
 		       loff_t end, int datasync)
 {
+	struct dentry *dentry = file_dentry(file);
 	struct inode *inode = file_inode(file);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc = 0;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
-	/* XXX Clearly we cannot leave it like this for production! */
-	RETURN(noop_fsync(file, start, end, datasync));
+	LASSERT(wbc_inode_has_protected(wbci));
+
+	if (!(wbc_inode_was_flushed(wbci)))
+		rc = wbc_make_inode_sync(dentry);
+	else if (S_ISREG(inode->i_mode))
+		rc = wbcfs_commit_cache_pages(inode);
+
+	if (rc)
+		RETURN(rc);
+
+	LASSERT(wbc_inode_was_flushed(wbci));
+	RETURN(ll_fsync(file, start, end, datasync));
 }
 
 static ssize_t memfs_file_splice_read(struct file *in_file, loff_t *ppos,
@@ -973,7 +1006,7 @@ static const struct file_operations memfs_dir_operations = {
 #else
 	.readdir	= dcache_readdir,
 #endif
-	.fsync		= noop_fsync,
+	.fsync		= memfs_fsync,
 	.unlocked_ioctl	= wbc_ioctl,
 };
 

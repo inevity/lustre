@@ -1956,6 +1956,9 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	if (IS_ERR(op_data))
 		RETURN(PTR_ERR(op_data));
 
+	if (extra_lock_flags & LDLM_FL_INTENT_PARENT_LOCKED)
+		op_data->op_bias |= MDS_WBC_LOCKLESS;
+
 	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
 	    pol == MKDIR_POL_INTENT) {
 		rc = ll_dentry_init_security(dchild, mode, &dchild->d_name,

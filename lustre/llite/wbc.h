@@ -63,12 +63,58 @@ struct wbc_super {
 	struct wbc_conf		 wbcs_conf;
 	struct dentry		*wbcs_debugfs_dir;
 	struct list_head	 wbcs_roots;
+	struct list_head	wbcs_lazy_roots;
 };
 
 enum wbc_dirty_flags {
 	WBC_DIRTY_NONE	= 0x0,
 	/* Attributes was modified after the file was flushed to MDT. */
 	WBC_DIRTY_ATTR	= 0x1,
+};
+
+/* Extend for the data structure writeback_control */
+struct writeback_control_ext {
+	long nr_to_write;		/* Write this many pages, and decrement
+					   this for each page written */
+	long pages_skipped;		/* Pages which were not written */
+
+	/*
+	 * For a_ops->writepages(): if start or end are non-zero then this is
+	 * a hint that the filesystem need only write out the pages inside that
+	 * byterange.  The byte at `end' is included in the writeout request.
+	 */
+	loff_t range_start;
+	loff_t range_end;
+
+	enum writeback_sync_modes sync_mode;
+
+	unsigned for_kupdate:1;		/* A kupdate writeback */
+	unsigned for_background:1;	/* A background writeback */
+	unsigned tagged_writepages:1;	/* tag-and-write to avoid livelock */
+	unsigned for_reclaim:1;		/* Invoked from the page allocator */
+	unsigned range_cyclic:1;	/* range_start is cyclic */
+	unsigned for_sync:1;		/* sync(2) WB_SYNC_ALL writeback */
+	/*
+	 * When writeback IOs are bounced through async layers, only the
+	 * initial synchronous phase should be accounted towards inode
+	 * cgroup ownership arbitration to avoid confusion.  Later stages
+	 * can set the following flag to disable the accounting.
+	 */
+	unsigned no_cgroup_owner:1;
+	unsigned punt_to_cgroup:1;	/* cgrp punting, see __REQ_CGROUP_PUNT */
+	unsigned for_fsync:1;		/* fsync(2) WB_SYNC_ALL writeback */
+	unsigned for_callback:1;	/* conflict DLM lock callback */
+	unsigned for_decomplete:1;	/* decomplete a WBC directory */
+	/* Unreserve all children from inode limit when decomplete parent. */
+	unsigned unrsv_children_decomp:1;
+	unsigned unused_bit0:1,
+		 unused_bit1:1,
+		 unused_bit2:1,
+		 unused_bit3:1,
+		 unused_bit4:1,
+		 unused_bit5:1,
+		 unused_bit6:1,
+		 unused_bit7:1;
 };
 
 struct wbc_inode {
@@ -87,6 +133,7 @@ struct wbc_inode {
 
 struct wbc_dentry {
 	struct list_head	wbcd_flush_item;
+	struct list_head	wbcd_fsync_item;
 };
 
 enum wbc_cmd_type {
@@ -133,6 +180,17 @@ static inline bool wbc_inode_has_protected(struct wbc_inode *wbci)
 	return wbci->wbci_flags & WBC_STATE_FL_PROTECTED;
 }
 
+static inline bool wbc_inode_root(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags & WBC_STATE_FL_ROOT;
+}
+
+static inline bool wbc_inode_was_flushed(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags & WBC_STATE_FL_SYNC ||
+	       wbci->wbci_flags == WBC_STATE_FL_NONE;
+}
+
 static inline const char *wbc_rmpol2string(enum wbc_remove_policy pol)
 {
 	switch (pol) {
@@ -146,14 +204,21 @@ static inline const char *wbc_rmpol2string(enum wbc_remove_policy pol)
 /* wbc.c */
 void wbc_super_root_add(struct inode *inode);
 void wbc_super_root_del(struct inode *inode);
-long wbc_flush_opcode_get(struct dentry *dchild);
+long wbc_flush_opcode_get(struct inode *dir, struct dentry *dchild,
+			  struct ldlm_lock *lock, unsigned int *valid,
+			  struct writeback_control_ext *wbcx);
+long wbc_flush_opcode_data_lockless(struct inode *inode, unsigned int *valid,
+				    struct writeback_control_ext *wbcx);
+void wbc_inode_writeback_complete(struct inode *inode);
+int wbc_make_inode_sync(struct dentry *dentry);
+int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
+			  struct writeback_control_ext *wbcx);
 void wbc_super_init(struct wbc_super *super);
 void wbc_inode_init(struct wbc_inode *wbci);
 void wbc_dentry_init(struct dentry *dentry);
 int wbc_cmd_handle(struct wbc_super *super, struct wbc_cmd *cmd);
 int wbc_cmd_parse_and_handle(char *buffer, unsigned long count,
 			     struct wbc_super *super);
-int wbc_inode_flush(struct inode *inode, struct ldlm_lock *lock);
 
 /* memfs.c */
 void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);
@@ -162,12 +227,15 @@ void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);
 void wbcfs_inode_operations_switch(struct inode *inode);
 int wbcfs_d_init(struct dentry *de);
 int wbc_do_setattr(struct inode *inode, struct iattr *attr);
-int wbc_do_unlink(struct inode *dir, struct dentry *dchild);
+int wbc_do_remove(struct inode *dir, struct dentry *dchild, bool rmdir);
 int wbcfs_commit_cache_pages(struct inode *inode);
-int wbcfs_inode_flush_lockless(struct inode *inode);
+int wbcfs_inode_flush_lockless(struct inode *inode,
+			       struct writeback_control_ext *wbcx);
 int wbcfs_flush_dir_children(struct inode *dir,
 			     struct list_head *childlist,
-			     struct ldlm_lock *lock);
+			     struct ldlm_lock *lock,
+			     struct writeback_control_ext *wbcx);
+
 void wbc_tunables_init(struct super_block *sb);
 void wbc_tunables_fini(struct super_block *sb);
 long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
@@ -177,7 +245,8 @@ int wbc_root_init(struct inode *dir, struct inode *inode,
 		  struct dentry *dentry);
 
 int wbc_write_inode(struct inode *inode, struct writeback_control *wbc);
-void wbc_super_shrink_roots(struct wbc_super *super);
+int wbc_super_shrink_roots(struct wbc_super *super);
+int wbc_super_sync_fs(struct wbc_super *super, int wait);
 
 enum lu_mkdir_policy
 ll_mkdir_policy_get(struct ll_sb_info *sbi, struct inode *dir,

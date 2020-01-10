@@ -146,13 +146,29 @@ exit 0;"
 
 wait_wbc_sync_state() {
 	local file=$1
-	local client=${2:-$HOSTNAME}\
+	local client=${2:-$HOSTNAME}
 	local cmd="$LFS wbc state $file"
 
 	cmd+=" | grep -E -c 'state: .*(none|sync)'"
 	echo $cmd
 	wait_update --verbose $client "$cmd" "1" 50 ||
 		error "$file is not synced"
+}
+
+check_wbc_flushed() {
+	local file=$1
+	local sync=$($LFS wbc state $file | grep -E -c 'state: .*(none|sync)')
+
+	[ $sync == "1" ] || error "$file is not flushed to MDT"
+}
+
+check_fileset_wbc_flushed() {
+	local fileset="$1"
+	local file
+
+	for file in $fileset; do
+		check_wbc_flushed $file
+	done
 }
 
 test_1_base() {
@@ -496,6 +512,7 @@ test_6_base() {
 	check_mdt_fileset_exist "$fileset" 0 ||
 		error "'$fileset' should exist on MDT"
 
+	log "remount client $MOUNT"
 	remount_client $MOUNT || error "failed to remount client $MOUNT"
 	newmd5=$(md5sum $DIR/$file2 | awk '{print $1}')
 	[ "$newmd5" == "$oldmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
@@ -718,6 +735,91 @@ test_11() {
 	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
 }
 run_test 11 "Verify umount works correctly"
+
+test_12_base() {
+	local dir="$DIR/$tdir"
+	local file1="$dir/file1"
+	local dir1="$dir/dir1"
+	local file2="$dir1/file2"
+	local dir2="$dir1/dir2"
+	local fileset="$dir $file1 $dir1 $file2 $dir2"
+
+	mkdir $dir || error "mkdir $dir failed"
+	echo "QQQQQ" > $file1 || error "write $file1 failed"
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	echo "LLLLL" > $file2 || error "write $file2 failed"
+	mkdir $dir2 || error "mkdir $dir2 failed"
+
+	$LFS wbc state $fileset
+	sync
+	$LFS wbc state $fileset
+	check_fileset_wbc_flushed "$fileset"
+
+	ls -R $dir
+	unlink $file2 || error "unlink $file2 failed"
+	rmdir $dir2 || error "rmdir $dir2 failed"
+	rmdir $dir1 || error "rmdir $dir1 failed"
+	unlink $file1 || error "unlink $file1 failed"
+	ls -R $dir
+	rmdir $dir || error "rmdir $dir failed"
+}
+
+test_12() {
+	setup_wbc
+	test_12_base
+
+	setup_wbc "flush_mode=aging_drop rmpol=sync"
+	test_12_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_12_base
+}
+run_test 12 "Verify sync(2) works correctly"
+
+test_13() {
+	local dir="$DIR/$tdir"
+	local file1="$dir/file1"
+	local dir1="$dir/dir1"
+	local file2="$dir1/file2"
+	local dir2="$dir1/dir2"
+	local file3="$dir2/file3"
+	local dir3="$dir2/dir3"
+	local file4="$dir3/file4"
+	local fileset="$dir $file1 $dir1 $file2 $dir2 $file3 $dir3 $file4"
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+
+	echo -e "\n===== Test fsync(2) on a regular file ====="
+	mkdir $dir || error "mkdir $dir failed"
+	echo "QQQQQ" > $file1 || error "write $file1 failed"
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	echo "QQQQQ" > $file2 || error "write $file2 failed"
+	mkdir $dir2 || error "mkdir $dir2 failed"
+	echo "QQQQQ" > $file3 || error "write $file3 failed"
+	mkdir $dir3 || error "mkdir $dir3 failed"
+	echo "QQQQQ" > $file4 || error "write $file4 failed"
+	$LFS wbc state $fileset
+	$MULTIOP $file4 oyc || error "$MULTIOP $file2 oyc failed"
+	$LFS wbc state $fileset
+	fileset="$dir $dir1 $dir2 $dir3 $file4"
+	check_fileset_wbc_flushed "$fileset"
+
+	echo -e "\n===== Test fsync(2) on a directory ====="
+	rm -rf $dir || error "rm $dir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	echo "QQQQQ" > $file1 || error "write $file1 failed"
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	echo "QQQQQ" > $file2 || error "write $file2 failed"
+	mkdir $dir2 || error "mkdir $dir2 failed"
+	echo "QQQQQ" > $file3 || error "write $file3 failed"
+	mkdir $dir3 || error "mkdir $dir3 failed"
+	fileset="$dir $dir1 $dir2 $dir3"
+	$LFS wbc state $fileset
+	$MULTIOP $dir3 oyc || error "$MULTIOP $dir Dyc failed"
+	$LFS wbc state $fileset
+	check_fileset_wbc_flushed "$fileset"
+}
+run_test 13 "Verify fsync(2) works correctly for aging keep flush mode"
 
 test_sanity() {
 	local cmd="$LCTL wbc enable $MOUNT"

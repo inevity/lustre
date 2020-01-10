@@ -86,6 +86,11 @@ static int ll_write_inode(struct inode *inode, struct writeback_control *wbc)
 	return wbc_write_inode(inode, wbc);
 }
 
+static int ll_sync_fs(struct super_block *sb, int wait)
+{
+	return wbc_super_sync_fs(&ll_s2sbi(sb)->ll_wbc_super, wait);
+}
+
 /* exported operations */
 const struct super_operations lustre_super_operations =
 {
@@ -95,6 +100,7 @@ const struct super_operations lustre_super_operations =
 	.write_inode   = ll_write_inode,
 	.evict_inode   = ll_delete_inode,
 	.put_super     = ll_put_super,
+	.sync_fs       = ll_sync_fs,
 	.statfs        = ll_statfs,
 	.umount_begin  = ll_umount_begin,
 	.remount_fs    = ll_remount_fs,
