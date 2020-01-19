@@ -141,6 +141,9 @@ static int ll_ddelete(const struct dentry *de)
 	/* kernel >= 2.6.38 last refcount is decreased after this function. */
 	LASSERT(ll_d_count(de) == 1);
 
+	if (de->d_inode && wbc_inode_reserved(ll_i2wbci(de->d_inode)))
+		RETURN(1);
+
 	if (d_lustre_invalid(de))
 		RETURN(1);
 	RETURN(0);

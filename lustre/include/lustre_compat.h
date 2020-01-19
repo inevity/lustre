@@ -619,10 +619,30 @@ static inline void ll_security_release_secctx(char *secdata, u32 seclen)
 #define vfs_create(ns, dir, de, mode, ex)	vfs_create(dir, de, mode, ex)
 #define vfs_mkdir(ns, dir, de, mode)		vfs_mkdir(dir, de, mode)
 #define ll_set_acl(ns, inode, acl, type)	ll_set_acl(inode, acl, type)
+#define setattr_copy(ns, inode, attr)		setattr_copy(inode, attr)
 #endif
 
 #ifndef HAVE_SETATTR_PREPARE
-#define setattr_prepare(de, attr)	inode_change_ok((de)->d_inode, attr)
+#define setattr_prepare(ns, de, attr)	inode_change_ok((de)->d_inode, attr)
+#elif !defined(HAVE_USER_NAMESPACE_ARG)
+#define setattr_prepare(ns, de, attr)	setattr_prepare(de, attr)
 #endif
+
+static inline int simple_setattr_no_dirty(struct user_namespace *mnt_userns,
+					  struct dentry *dentry,
+					  struct iattr *attr)
+{
+	struct inode *inode = d_inode(dentry);
+	int rc;
+
+	rc = setattr_prepare(mnt_userns, dentry, attr);
+	if (rc)
+		return rc;
+
+	if (attr->ia_valid & ATTR_SIZE)
+		truncate_setsize(inode, attr->ia_size);
+	setattr_copy(mnt_userns, inode, attr);
+	return 0;
+}
 
 #endif /* _LUSTRE_COMPAT_H */

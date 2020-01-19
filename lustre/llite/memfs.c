@@ -41,6 +41,48 @@
 #define DIRENT64_SIZE(len)	\
 	ALIGN(offsetof(struct linux_dirent64, d_name) + (len) + 1, sizeof(u64))
 
+static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
+{
+	struct wbc_inode *wbci = ll_i2wbci(dir);
+	struct dentry *parent = dchild->d_parent;
+	int rc;
+
+	ENTRY;
+
+	down_read(&wbci->wbci_rw_sem);
+
+	if (!wbc_inode_has_protected(wbci) || !wbc_inode_complete(wbci))
+		RETURN(0);
+
+	rc = wbc_reserve_inode(ll_i2wbcs(dir));
+	if (rc == 0)
+		RETURN(1);
+	if (rc != -ENOSPC)
+		RETURN(rc);
+
+	up_read(&wbci->wbci_rw_sem);
+	LASSERT(parent != NULL && parent->d_inode == dir);
+
+	if (!d_mountpoint(parent)) {
+		if (wbc_mode_lock_drop(wbci))
+			rc = wbc_make_inode_sync(parent->d_parent);
+		else if (wbc_mode_lock_keep(wbci))
+			rc = wbc_make_inode_sync(parent);
+		if (rc)
+			GOTO(down_rwsem, rc);
+	}
+
+	rc = wbc_make_inode_decomplete(dir);
+down_rwsem:
+	down_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
+}
+
+static void wbc_cache_leave(struct inode *dir, enum md_op_code opc)
+{
+	up_read(&ll_i2wbci(dir)->wbci_rw_sem);
+}
+
 /*
  * These are the methods to create virtual entries for MD WBC.
  * Borrowing heavily from ramfs code.
@@ -51,6 +93,7 @@ static struct inode *wbc_get_inode(struct inode *dir, int mode, dev_t dev,
 	struct inode *inode = new_inode(dir->i_sb);
 	struct ll_sb_info *sbi = ll_s2sbi(dir->i_sb);
 	struct ll_inode_info *lli;
+	struct wbc_inode *dwbci;
 	struct wbc_inode *wbci;
 	int rc;
 
@@ -93,11 +136,13 @@ static struct inode *wbc_get_inode(struct inode *dir, int mode, dev_t dev,
 	 * TODO: This should be a common data structure shared by all files or
 	 * directories under the protection of the root WBC EX lock.
 	 */
+	dwbci = ll_i2wbci(dir);
 	wbci = &lli->lli_wbc_inode;
-	wbci->wbci_cache_mode = ll_i2wbci(dir)->wbci_cache_mode;
-	wbci->wbci_flush_mode = ll_i2wbci(dir)->wbci_flush_mode;
-	ll_i2wbci(inode)->wbci_flags = WBC_STATE_FL_PROTECTED |
-				       WBC_STATE_FL_COMPLETE;
+	wbci->wbci_cache_mode = dwbci->wbci_cache_mode;
+	wbci->wbci_flush_mode = dwbci->wbci_flush_mode;
+	wbci->wbci_flags = WBC_STATE_FL_PROTECTED | WBC_STATE_FL_COMPLETE |
+			   WBC_STATE_FL_INODE_RESERVED;
+	wbci->wbci_dirty_flags = WBC_DIRTY_FL_CREAT;
 	wbc_inode_operations_set(inode, mode, dev);
 
 	/* directory inodes start off with i_nlink == 2 (for "." entry) */
@@ -192,11 +237,12 @@ static struct dentry *memfs_lookup_nd(struct inode *parent,
 				      struct dentry *dentry, unsigned int flags)
 {
 	struct wbc_inode *wbci = ll_i2wbci(parent);
+	struct dentry *de;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(wbci));
-	if (wbci->wbci_flags & WBC_STATE_FL_COMPLETE) {
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_complete(wbci)) {
 		/*
 		 * XXX Check d_name.len and if it's too big, bail out right away
 		 * Probably no point to cache negative dentries, so
@@ -206,11 +252,18 @@ static struct dentry *memfs_lookup_nd(struct inode *parent,
 		 * and we will fall through into the create path if this was
 		 * open|create kind of lookup, but that's likely ok too.
 		 */
-		return simple_lookup(parent, dentry, flags);
+		de = simple_lookup(parent, dentry, flags);
+	} else {
+		/*
+		 * If @parent is in the state WBC_STATE_FL_NONE, or not
+		 * Complete(C) but Protected(C) state, perform the lookup()
+		 * on MDT.
+		 */
+		de = ll_dir_inode_operations.lookup(parent, dentry, flags);
 	}
 
-	/* TODO: Perform lookup on MDT. */
-	return ERR_PTR(-EPROTO);
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(de);
 }
 
 int memfs_mkdir(struct inode *dir, struct dentry *dchild, umode_t mode)
@@ -219,15 +272,20 @@ int memfs_mkdir(struct inode *dir, struct dentry *dchild, umode_t mode)
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(dir)));
-
 	if (!IS_POSIXACL(dir) || !exp_connect_umask(ll_i2mdexp(dir)))
 		mode &= ~current_umask();
 
 	mode = (mode & (S_IRWXUGO | S_ISVTX)) | S_IFDIR;
-	rc = wbc_new_node(dir, dchild, NULL, mode, 0, LUSTRE_OPC_MKDIR);
-	if (!rc)
-		inc_nlink(dir);
+	rc = wbc_cache_enter(dir, dchild);
+	if (rc > 0) { /* inode is reserved in MemFS. */
+		rc = wbc_new_node(dir, dchild, NULL, mode, 0, LUSTRE_OPC_MKDIR);
+		if (!rc)
+			inc_nlink(dir);
+	} else if (rc == 0) {
+		rc = ll_dir_inode_operations.mkdir(dir, dchild, mode);
+	}
+
+	wbc_cache_leave(dir, LUSTRE_OPC_MKDIR);
 
 	RETURN(rc);
 }
@@ -252,13 +310,13 @@ static int memfs_remove_policy(struct inode *dir, struct dentry *dchild,
 
 	ENTRY;
 
-	if (wbci->wbci_flush_mode != WBC_FLUSH_AGING_KEEP ||
-	    !wbc_inode_was_flushed(wbci))
+	if (!wbc_mode_lock_keep(wbci) || !wbc_inode_was_flushed(wbci))
 		RETURN(0);
 
 	switch (conf->wbcc_rmpol) {
 	case WBC_RMPOL_SYNC:
-		RETURN(wbc_do_remove(dir, dchild, rmdir));
+		RETURN(rmdir ? ll_dir_inode_operations.rmdir(dir, dchild) :
+			       ll_dir_inode_operations.unlink(dir, dchild));
 	default:
 		RETURN(0);
 	}
@@ -266,34 +324,59 @@ static int memfs_remove_policy(struct inode *dir, struct dentry *dchild,
 
 static int memfs_rmdir(struct inode *dir, struct dentry *dchild)
 {
+	struct wbc_inode *wbci = ll_i2wbci(dir);
 	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(dir)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_complete(wbci)) {
+		rc = memfs_remove_policy(dir, dchild, true);
+		if (rc)
+			GOTO(up_rwsem, rc);
 
-	rc = memfs_remove_policy(dir, dchild, true);
-	if (rc)
-		RETURN(rc);
+		rc = simple_rmdir(dir, dchild);
+	} else {
+		LASSERT(wbc_inode_written_out(wbci));
+		rc = ll_dir_inode_operations.rmdir(dir, dchild);
+		if (rc)
+			GOTO(up_rwsem, rc);
 
-	/* Must be positve dentry */
-	RETURN(simple_rmdir(dir, dchild));
+		if (wbc_inode_reserved(ll_i2wbci(dchild->d_inode)))
+			rc = simple_rmdir(dir, dchild);
+	}
+
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
 }
 
 static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 {
+	struct wbc_inode *wbci = ll_i2wbci(dir);
 	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(dchild->d_inode)) &&
-		wbc_inode_has_protected(ll_i2wbci(dir)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_complete(wbci)) {
+		rc = memfs_remove_policy(dir, dchild, false);
+		if (rc)
+			GOTO(up_rwsem, rc);
 
-	rc = memfs_remove_policy(dir, dchild, false);
-	if (rc)
-		RETURN(rc);
+		rc = simple_unlink(dir, dchild);
+	} else {
+		rc = ll_dir_inode_operations.unlink(dir, dchild);
+		if (rc)
+			GOTO(up_rwsem, rc);
 
-	RETURN(simple_unlink(dir, dchild));
+		if (wbc_inode_reserved(ll_i2wbci(dchild->d_inode)))
+			rc = simple_unlink(dir, dchild);
+	}
+
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
 }
 
 static int memfs_rename(struct inode *src, struct dentry *src_dchild,
@@ -309,13 +392,8 @@ static int memfs_rename(struct inode *src, struct dentry *src_dchild,
 
 	LASSERT(wbc_inode_has_protected(ll_i2wbci(src)));
 
-	/* XXX This is only safe within this dir so we DO need the extra checks.
-	 * Actually it's ok if both dirs are virtual, I guess, assuming
-	 * the actual children are not persistent yet.
-	 * Of course in reality when this happens we need to properly handle it
-	 * instead of returning an error.
-	 */
-	if (!wbc_inode_has_protected(ll_i2wbci(tgt)))
+	if (!wbc_inode_complete(ll_i2wbci(src)) ||
+	    !wbc_inode_complete(ll_i2wbci(tgt)))
 		RETURN(-EXDEV);
 
 	rc = simple_rename(src, src_dchild, tgt, tgt_dchild
@@ -428,24 +506,38 @@ static int memfs_getattr(const struct path *path, struct kstat *stat,
 {
 	struct dentry *dentry = path->dentry;
 	struct inode *inode = dentry->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_has_protected(wbci))
+		rc = simple_getattr(path, stat, request_mask, flags);
+	else
+		rc = inode->i_op->getattr(path, stat, request_mask, flags);
+	up_read(&wbci->wbci_rw_sem);
 
-	RETURN(simple_getattr(path, stat, request_mask, flags));
+	RETURN(rc);
 }
 #else
 static int memfs_getattr(struct vfsmount *mnt, struct dentry *de,
 			 struct kstat *stat)
 {
 	struct inode *inode = de->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_has_protected(wbci))
+		rc = simple_getattr(mnt, de, stat);
+	else
+		rc = inode->i_op->getattr(mnt, de, stat);
+	up_read(&wbci->wbci_rw_sem);
 
-	RETURN(simple_getattr(mnt, de, stat));
+	RETURN(rc);
 }
 #endif
 
@@ -889,21 +981,6 @@ static int memfs_file_mmap(struct file *file, struct vm_area_struct *vma)
 	RETURN(generic_file_mmap(file, vma));
 }
 
-static int memfs_setattr_no_dirty(struct dentry *dentry, struct iattr *attr)
-{
-	struct inode *inode = d_inode(dentry);
-	int rc;
-
-	rc = setattr_prepare(dentry, attr);
-	if (rc)
-		return rc;
-
-	if (attr->ia_valid & ATTR_SIZE)
-		truncate_setsize(inode, attr->ia_size);
-	setattr_copy(inode, attr);
-	return 0;
-}
-
 static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	struct inode *inode = dentry->d_inode;
@@ -912,24 +989,23 @@ static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(wbci));
-
-	if (wbci->wbci_flags & WBC_STATE_FL_ROOT) {
-		rc = wbc_do_setattr(inode, attr);
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_has_protected(wbci)) {
+		rc = simple_setattr_no_dirty(&init_user_ns, dentry, attr);
 		if (rc)
 			RETURN(rc);
+
+		spin_lock(&inode->i_lock);
+		wbci->wbci_dirty_flags |= WBC_DIRTY_FL_ATTR;
+		wbci->wbci_dirty_attr |= attr->ia_valid;
+		spin_unlock(&inode->i_lock);
+		if (wbc_flush_mode_aging(wbci))
+			mark_inode_dirty(inode);
+	} else {
+		LASSERT(wbc_inode_none(wbci));
+		rc = inode->i_op->setattr(dentry, attr);
 	}
-
-	rc = memfs_setattr_no_dirty(dentry, attr);
-	if (rc)
-		RETURN(rc);
-
-	wbci->wbci_dirty_flags |= WBC_DIRTY_ATTR;
-	wbci->wbci_dirty_attr |= attr->ia_valid;
-	if (wbci->wbci_flush_mode == WBC_FLUSH_AGING_KEEP &&
-	    !(wbci->wbci_flags & WBC_STATE_FL_SYNC))
-		mark_inode_dirty(inode);
-
+	up_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
 }
 
@@ -951,10 +1027,23 @@ static int memfs_mknod(struct inode *dir, struct dentry *dchild,
 	case S_IFCHR:
 	case S_IFBLK:
 	case S_IFIFO:
-	case S_IFSOCK:
-		rc = wbc_new_node(dir, dchild, NULL, mode, old_encode_dev(rdev),
-				  LUSTRE_OPC_MKNOD);
+	case S_IFSOCK: {
+		struct wbc_inode *wbci = ll_i2wbci(dir);
+
+		rc = wbc_cache_enter(dir, dchild);
+		/* The inode was reserved in MemFS successfully. */
+		if (rc > 0) {
+			rc = wbc_new_node(dir, dchild, NULL, mode,
+					  old_encode_dev(rdev),
+					  LUSTRE_OPC_MKNOD);
+		} else if (rc == 0) {
+			LASSERT(wbc_inode_was_flushed(wbci));
+			rc = ll_dir_inode_operations.mknod(dir, dchild,
+							   mode, rdev);
+		}
+		wbc_cache_leave(dir, LUSTRE_OPC_MKNOD);
 		break;
+	}
 	case S_IFDIR:
 		rc = -EPERM;
 		break;
@@ -968,16 +1057,36 @@ static int memfs_mknod(struct inode *dir, struct dentry *dchild,
 static int memfs_create_nd(struct inode *dir, struct dentry *dentry,
 			   umode_t mode, bool want_excl)
 {
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(dir)));
+	int rc;
 
-	return wbc_new_node(dir, dentry, NULL, mode, 0, LUSTRE_OPC_CREATE);
+	ENTRY;
+
+	rc = wbc_cache_enter(dir, dentry);
+	if (rc > 0)
+		rc = wbc_new_node(dir, dentry, NULL, mode, 0,
+				  LUSTRE_OPC_CREATE);
+	else if (rc == 0)
+		rc = ll_dir_inode_operations.create(dir, dentry, mode,
+						    want_excl);
+	wbc_cache_leave(dir, LUSTRE_OPC_CREATE);
+	RETURN(rc);
 }
 
 static int memfs_symlink(struct inode *dir, struct dentry *dchild,
 			 const char *oldpath)
 {
-	return wbc_new_node(dir, dchild, oldpath, S_IFLNK | S_IRWXUGO, 0,
-			    LUSTRE_OPC_SYMLINK);
+	int rc;
+
+	ENTRY;
+
+	rc = wbc_cache_enter(dir, dchild);
+	if (rc > 0)
+		rc = wbc_new_node(dir, dchild, oldpath, S_IFLNK | S_IRWXUGO, 0,
+				  LUSTRE_OPC_SYMLINK);
+	else if (rc == 0)
+		rc = ll_dir_inode_operations.symlink(dir, dchild, oldpath);
+	wbc_cache_leave(dir, LUSTRE_OPC_SYMLINK);
+	RETURN(rc);
 }
 
 #ifdef HAVE_IOP_GET_LINK

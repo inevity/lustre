@@ -72,21 +72,31 @@ cleanup_wbc()
 		error "failed to disable WBC"
 }
 
+clear_wbc()
+{
+	$LCTL set_param llite.*.wbc.conf=clear ||
+		error "failed to clear WBC"
+}
+
 wbc_conf_show()
 {
-	$LCTL get_param llite.*.wbc.conf
+	local mnt=${1:-$MOUNT}
+
+	$LCTL get_param llite.$($LFS getname $mnt | awk '{print $1}').wbc.conf
 }
 
 setup_wbc()
 {
 	local conf="$1"
+	local mnt=${2:-$MOUNT}
+	local fsuuid=$($LFS getname $mnt | awk '{print $1}')
 
 	stack_trap "cleanup_wbc" EXIT
 	if [ -n "$conf" ]; then
-		$LCTL set_param llite.*.wbc.conf="conf $conf" ||
+		$LCTL set_param llite.$fsuuid.wbc.conf="conf $conf" ||
 			error "failed to conf WBC: conf $conf"
 	else
-		$LCTL set_param llite.*.wbc.conf=enable ||
+		$LCTL set_param llite.$fsuuid.wbc.conf=enable ||
 			error "failed to enable WBC"
 	fi
 	wbc_conf_show
@@ -110,7 +120,7 @@ check_wbc_flags() {
 
 	local st=$(get_wbc_flags "$prefix$file")
 
-	[[ $st == $flags ]] || error "wbc flags on $3$file are $st != $flags"
+	[[ $st == $flags ]] || error "wbc flags on $file are $st != $flags"
 }
 
 check_fileset_wbc_flags() {
@@ -171,6 +181,84 @@ check_fileset_wbc_flushed() {
 	done
 }
 
+check_wbc_inode_reserved() {
+	local file=$1
+	local expected=$2
+	local reserved=$($LFS wbc state $file | grep -E -c 'state: .*reserved')
+
+	[ $reserved == "$expected" ] ||
+		error "$file Reserved(E) state: $reserved, expected $expected"
+}
+
+check_fileset_inode_reserved() {
+	local fileset="$1"
+	local expected=$2
+	local file
+
+	for file in $fileset; do
+		check_wbc_inode_reserved $file $expected
+	done
+}
+
+check_wbc_inode_complete() {
+	local file=$1
+	local expected=$2
+	local comp=$($LFS wbc state $file | grep -E -c 'state: .*complete')
+
+	[ $comp == "$expected" ] ||
+		error "$file Complete(C) state: $comp, expected $expected"
+}
+
+wait_wbc_uptodate() {
+	local file=$1
+	local client=${2:-$HOSTNAME}
+	local uptodate="$LFS wbc state $file"
+
+	cmd+=" | grep -E -c 'state: .*(none|uptodate)'"
+
+	echo $cmd
+	wait_update --verbose $client "$cmd" "1" 50 ||
+		error "$file is not UPTODATE"
+}
+
+check_wbc_uptodate() {
+	local file=$1
+	local uptodate=$($LFS wbc state $file |
+			grep -E -c 'state: .*(none|uptodate')
+
+	[ $uptodate == "1" ] || error "$file is not UPTODATE"
+}
+
+check_fileset_wbc_uptodate() {
+	local fileset="$1"
+	local file
+
+	for file in $fileset; do
+		check_wbc_uptodate $file
+	done
+}
+
+reset_kernel_writeback_param() {
+	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
+	local expire=$(sysctl -n vm.dirty_expire_centisecs)
+
+	interval=$((interval + 100))
+	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
+	sysctl -w vm.dirty_expire_centisecs=$interval
+}
+
+flush_mode_lock_keep() {
+	wbc_conf_show | grep -c -E "flush_mode: (aging|lazy)_keep" &> /dev/null
+}
+
+flush_mode_lock_drop() {
+	wbc_conf_show | grep -c -E "flush_mode: (aging|lazy)_drop" &> /dev/null
+}
+
+get_free_inodes() {
+	wbc_conf_show | grep "inodes_free:" | awk '{print $2}'
+}
+
 test_1_base() {
 	local file1="$tdir/file1"
 	local dir1="$tdir/dir1"
@@ -183,8 +271,9 @@ test_1_base() {
 
 	# WBC flags:
 	# 0x00000000: not in WBC
-	# 0x0000000f: in Root(R) | Protected(P) | Sync(S) | Complete(P) state
-	# 0x00000005: in Protected(P)| Complete(C) state
+	# 0x0000000f: Root(R) | Protected(P) | Sync(S) | Complete(P) state
+	# 0x00000015: Protected(P)| Complete(C) | Reserved(E) state
+	# 0x00000017: Protected(P)| Complete(C) | Sync(S) | Reserved(E) state
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	$LFS wbc state $DIR/$tdir
 	check_wbc_flags $DIR/$tdir "0x0000000f"
@@ -207,7 +296,7 @@ test_1_base() {
 
 	check_mdt_fileset_exist "$fileset" 1 ||
 		error "'$filelist' should not exist under ROOT on MDT"
-	check_fileset_wbc_flags "$fileset" "0x00000005" $DIR
+	check_fileset_wbc_flags "$fileset" "0x00000015" $DIR
 
 	# Flush directories level by level when WBC EX lock is revoking
 	echo "stat $DIR2/$tdir"
@@ -217,7 +306,7 @@ test_1_base() {
 	check_mdt_fileset_exist "$fileset" 0 ||
 		error "'$fileset' should exist under ROOT on MDT"
 	fileset="$file2 $dir2"
-	check_fileset_wbc_flags "$fileset" "0x00000005" $DIR
+	check_fileset_wbc_flags "$fileset" "0x00000015" $DIR
 	check_mdt_fileset_exist "$filelist" 1 ||
 		error "'$filelist' should not exist under ROOT on MDT"
 
@@ -276,7 +365,7 @@ test_2_base() {
 	check_wbc_flags $dir "0x0000000f"
 	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
 		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	newmd5=$(md5sum $file2 | awk '{print $1}')
 	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
@@ -287,7 +376,7 @@ test_2_base() {
 	check_wbc_flags $dir "0x0000000f"
 	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
 		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
 	check_wbc_flags $dir "0x00000000"
@@ -300,7 +389,7 @@ test_2_base() {
 	mkdir $dir || error "mkdir $dir failed"
 	check_wbc_flags $dir "0x0000000f"
 	echo "QQQQQ" > $file || error "write $file failed"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
 	check_wbc_flags $dir "0x00000000"
 	check_wbc_flags $file "0x0000000f"
@@ -310,7 +399,7 @@ test_2_base() {
 	mkdir $dir || error "mkdir $dir failed"
 	check_wbc_flags $dir "0x0000000f"
 	echo "QQQQQ" > $file || error "write $file failed"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	$MULTIOP $file2 or1c || error "read $file2 failed"
 
 	rm -rf $dir || error "rm $dir failed"
@@ -339,7 +428,7 @@ test_3_base() {
 	check_wbc_flags $dir "0x0000000f"
 	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
 		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	$CHECKSTAT -s 1049600 $file || error "$file size wrong"
 	stat $file2 || error "stat $file2 failed"
@@ -354,7 +443,7 @@ test_3_base() {
 	check_wbc_flags $dir "0x0000000f"
 	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
 		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	$CHECKSTAT -s 1049600 $file || error "$file size wrong"
 	$MULTIOP $file2 oc || error "stat $file2 failed"
@@ -416,7 +505,7 @@ test_4_base() {
 	echo "QQQQ" > $file11 || error "write $file11 failed"
 	mkdir $dir12 || error "mkdir $dir12 failed"
 	echo "QQQQQQ" > $file12 || error "write $file12 failed"
-	check_fileset_wbc_flags "$file11 $dir12 $file12" "0x00000005"
+	check_fileset_wbc_flags "$file11 $dir12 $file12" "0x00000015"
 	unlink $file21 || error "unlink $file21 failed"
 	stat $file11 && error "$file11 should be deleted"
 	unlink $file22 || error "unlink $file22 failed"
@@ -476,19 +565,17 @@ test_6_base() {
 	local file2="$dir1/file2"
 	local dir2="$dir1/dir2"
 	local file3="$dir2/file3"
-	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
-	local expire=$(sysctl -n vm.dirty_expire_centisecs)
 	local flags="0x00000000"
+	local interval
 	local oldmd5
 	local newmd5
 
+	reset_kernel_writeback_param
+	interval=$(sysctl -n vm.dirty_expire_centisecs)
 	echo "dirty_writeback_centisecs: $interval"
-	interval=$((interval + 100))
-	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
-	sysctl -w vm.dirty_expire_centisecs=$interval
 
 	wbc_conf_show | grep "flush_mode: aging_keep" &&
-		flags="0x00000007"
+		flags="0x00000017"
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	$LFS wbc state $DIR/$tdir
 	mkdir $DIR/$dir1 || error "mkdir $DIR/$dir1 failed"
@@ -502,7 +589,7 @@ test_6_base() {
 	local fileset="$file1 $dir1 $file2 $dir2 $file3"
 
 	ls -R $DIR/$tdir
-	check_fileset_wbc_flags "$fileset" "0x00000005" $DIR
+	check_fileset_wbc_flags "$fileset" "0x00000015" $DIR
 	sleep $((interval / 100))
 
 	wait_wbc_sync_state $DIR/$file3
@@ -523,6 +610,9 @@ test_6_base() {
 test_6() {
 	setup_wbc "flush_mode=aging_drop"
 	test_6_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_6_base
 }
 run_test 6 "Verify aging flush mode"
 
@@ -538,7 +628,7 @@ test_7_base() {
 	mkdir $dir || error "mkdir $dir failed"
 	mkdir $dir1 || error "mkdir $dir1 failed"
 	echo "QQQQQ" > $file1 || error "write $file1 failed"
-	check_fileset_wbc_flags "$fileset" "0x00000005"
+	check_fileset_wbc_flags "$fileset" "0x00000015"
 	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
 	check_fileset_wbc_flags "$fileset" "0x0000000f"
 	chmod $expected $dir1 || error "chmod $expected $dir1 failed"
@@ -549,7 +639,7 @@ test_7_base() {
 	mkdir $dir || error "mkdir $dir failed"
 	mkdir $dir1 || error "mkdir $dir1 failed"
 	echo "QQQQQ" > $file1 || error "write $file1 failed"
-	check_fileset_wbc_flags "$fileset" "0x00000005"
+	check_fileset_wbc_flags "$fileset" "0x00000015"
 	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
 	check_fileset_wbc_flags "$fileset" "0x0000000f"
 	accd=$(stat -c %a $dir1)
@@ -590,7 +680,7 @@ test_8_base() {
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	touch $DIR/$tdir/$tfile || error "touch $DIR/$tdir/$tfile failed"
 	ln -s $DIR/$tdir/$tfile $DIR/$tdir/l-exist
-	check_fileset_wbc_flags "$fileset" "0x00000005"
+	check_fileset_wbc_flags "$fileset" "0x00000015"
 	ls -l $DIR/$tdir
 	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
 	check_fileset_wbc_flags "$fileset" "0x0000000f"
@@ -638,10 +728,11 @@ test_9() {
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	check_wbc_flags $DIR/$tdir "0x0000000f"
 	echo "QQQQQ" > $DIR/$file || error "write $DIR/$tfile failed"
-	check_wbc_flags $DIR/$file "0x00000005"
+	check_wbc_flags $DIR/$file "0x00000015"
 	sleep $((interval / 100))
 	wait_wbc_sync_state $DIR/$file
-	check_wbc_flags $DIR/$file "0x00000007"
+	$LFS wbc state $DIR/$file
+	check_wbc_flags $DIR/$file "0x00000017"
 	unlink $DIR/$file || error "unlink $DIR/$file failed"
 	check_mdt_fileset_exist "$file" 1 ||
 		error "'$file' should not exist under ROOT on MDT"
@@ -668,10 +759,10 @@ test_10() {
 	echo "$file access rights: $accf"
 	sleep $((interval / 100))
 	wait_wbc_sync_state $file
-	check_wbc_flags $file "0x00000007"
+	check_wbc_flags $file "0x00000017"
 	chmod $expected $file || error "chmod $file failed"
 	stat $file || error "stat $file failed"
-	check_wbc_flags $file "0x00000007"
+	check_wbc_flags $file "0x00000017"
 	accf=$(stat -c %a $file)
 	[ $accf == $expected ] ||
 		error "$file access rights: $accf, expect $expected"
@@ -701,7 +792,7 @@ test_11() {
 	check_wbc_flags $DIR/$tdir "0x0000000f"
 	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
 		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	remount_client $MOUNT || error "remount_client $MOUNT failed"
 	newmd5=$(md5sum $file | awk '{print $1}')
@@ -714,7 +805,7 @@ test_11() {
 	check_wbc_flags $DIR/$tdir "0x0000000f"
 	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
 		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	remount_client $MOUNT || error "remount_client $MOUNT failed"
 	newmd5=$(md5sum $file | awk '{print $1}')
@@ -726,10 +817,10 @@ test_11() {
 	check_wbc_flags $DIR/$tdir "0x0000000f"
 	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
 		error "failed to write $file"
-	check_wbc_flags $file "0x00000005"
+	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	wait_wbc_sync_state $file
-	check_wbc_flags $file "0x00000007"
+	check_wbc_flags $file "0x00000017"
 	remount_client $MOUNT || error "remount_client $MOUNT failed"
 	newmd5=$(md5sum $file | awk '{print $1}')
 	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
@@ -765,10 +856,13 @@ test_12_base() {
 }
 
 test_12() {
-	setup_wbc
+	setup_wbc "flush_mode=lazy_drop"
 	test_12_base
 
 	setup_wbc "flush_mode=aging_drop rmpol=sync"
+	test_12_base
+
+	setup_wbc "flush_mode=lazy_keep rmpol=sync"
 	test_12_base
 
 	setup_wbc "flush_mode=aging_keep rmpol=sync"
@@ -820,6 +914,281 @@ test_13() {
 	check_fileset_wbc_flushed "$fileset"
 }
 run_test 13 "Verify fsync(2) works correctly for aging keep flush mode"
+
+test_14_base() {
+	local dir="$DIR/$tdir"
+	local file1="$dir/file1"
+	local dir1="$dir/dir1"
+	local file2="$dir1/file2"
+	local dir2="$dir1/dir2"
+	local file3="$dir2/file3"
+	local dir3="$dir2/dir3"
+	local file4="$dir3/file4"
+	local fileset="$dir $file1 $dir1 $file2 $dir2 $file3 $dir3 $file4"
+
+	mkdir -p $dir3 || error "mkdir -p $dir3 failed"
+	echo "QQQQQ" > $file1 || error "write $file1 failed"
+	echo "QQQQQ" > $file2 || error "write $file2 failed"
+	echo "QQQQQ" > $file3 || error "write $file3 failed"
+	echo "QQQQQ" > $file4 || error "write $file4 failed"
+	echo "===== WBC state before cache clear ====="
+	$LFS wbc state $fileset
+	clear_wbc
+	echo -e "\n===== WBC state after cache clear ====="
+	$LFS wbc state $fileset
+	check_fileset_wbc_flags "$fileset" "0x00000000"
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_14() {
+	setup_wbc
+	test_14_base
+
+	setup_wbc "flush_mode=aging_drop"
+	test_14_base
+
+	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	test_14_base
+}
+run_test 14 "Verify the command 'lctl wbc clear' cleans all cached files"
+
+test_15a_base() {
+	local dir="$DIR/$tdir"
+	local nr_inodes=$1
+	local prefix="wbcent"
+	local fileset
+
+	for i in $(seq 1 $nr_inodes); do
+		fileset+="$dir/$prefix.i$i "
+	done
+
+	echo -e "\n===== Test for regular files ======"
+	mkdir $dir || error "mkdir $dir failed"
+	touch $fileset || error "touch $fileset failed"
+	wbc_conf_show | grep 'inodes_free:'
+	$LFS wbc state $fileset
+	check_fileset_wbc_flags "$fileset" "0x00000015"
+	check_fileset_inode_reserved "$fileset" 1
+	touch $dir/$prefix.i0 || error "touch $dir/$prefix.i0 failed"
+	wbc_conf_show | grep 'inodes_free:'
+	ls $dir
+	$LFS wbc state $dir $dir/$prefix.i0 $fileset
+	if flush_mode_lock_drop; then
+		check_fileset_wbc_flags "$dir $dir/$prefix.i0" "0x00000000"
+		check_fileset_wbc_flags "$fileset" "0x0000000f"
+	else
+		# Protected(P):0x01 | Sync(S):0x02 | Root(R):0x08
+		check_wbc_flags $dir "0x0000000b"
+		# Protected(P):0x01 | Sync(S):0x02 | Complete(C):0x04 |
+		# Reserved(E): 0x10
+		check_fileset_wbc_flags "$fileset" "0x00000017"
+		# Protected(P):0x01 | Sync(S):0x02
+		check_wbc_flags $dir/$prefix.i0 "0x00000003"
+	fi
+	check_wbc_inode_reserved $dir/$prefix.i0 0
+	wbc_conf_show | grep 'inodes_free:'
+	rm -rf $dir || error "rm -rf $dir failed"
+	wbc_conf_show | grep 'inodes_free:'
+
+	echo -e "\n===== Test for directories ======"
+	mkdir $dir || error "mkdir $dir failed"
+	wbc_conf_show | grep 'inodes_free:'
+	mkdir $fileset || error "mkdir $fileset failed"
+	wbc_conf_show | grep 'inodes_free:'
+	$LFS wbc state $fileset
+	check_fileset_wbc_flags "$fileset" "0x00000015"
+	check_fileset_inode_reserved "$fileset" 1
+	mkdir $dir/$prefix.i0 || error "mkdir $dir/$prefix.i0 failed"
+	wbc_conf_show | grep 'inodes_free:'
+	ls $dir
+	$LFS wbc state $dir $dir/$prefix.i0 $fileset
+	check_wbc_inode_reserved $dir/$prefix.i0 0
+	if flush_mode_lock_drop; then
+		check_wbc_flags $dir "0x00000000"
+		check_fileset_wbc_flags "$fileset $dir/$prefix.i0" "0x0000000f"
+	else
+		# Protected(P):0x01 | Sync(S):0x02 | Root(R):0x08
+		check_wbc_flags $dir "0x0000000b"
+		# Protected(P):0x01 | Sync(S):0x02 | Complete(C):0x04 |
+		# Reserved(E):0x10
+		check_fileset_wbc_flags "$fileset" "0x00000017"
+		# Protected(P):0x01 | Sync(S):0x02
+		check_wbc_flags $dir/$prefix.i0 "0x00000003"
+	fi
+	wbc_conf_show | grep 'inodes_free:'
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_15a() {
+	local nr_inodes=10
+
+	echo "===== Inode limits for lazy drop flush mode ====="
+	setup_wbc "flush_mode=lazy_drop max_inodes=$nr_inodes"
+	test_15a_base $nr_inodes
+
+	echo -e "\n===== Inode limits for aging drop flush mode ====="
+	setup_wbc "flush_mode=aging_drop max_inodes=$nr_inodes"
+	test_15a_base $nr_inodes
+
+	echo -e "\n===== Inode limits for lazy keep flush mode ====="
+	setup_wbc "flush_mode=lazy_keep max_inodes=$nr_inodes"
+	test_15a_base $nr_inodes
+
+	echo -e "\n===== Inode limits for aging keep flush mode ====="
+	setup_wbc "flush_mode=aging_keep max_inodes=$nr_inodes"
+	test_15a_base $nr_inodes
+}
+run_test 15a "Inode limits for various flush modes"
+
+test_15b_base() {
+	local dir="$DIR/$tdir"
+	local nr_inodes=$1
+	local prefix="wbcent"
+	local fileset
+
+	echo "Free inodes: $(get_free_inodes) before create regular files"
+	for i in $(seq 1 $nr_inodes); do
+		fileset+="$dir/$prefix.i$i "
+	done
+
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir
+	touch $fileset || error "touch $fileset failed"
+	echo "Free inodes: $(get_free_inodes) create $nr_inodes files"
+	$LFS wbc state $fileset
+	check_fileset_wbc_flags "$fileset" "0x00000015"
+
+	touch $dir/$prefix.i0 || error "touch $dir/$prefix.i0 failed"
+	echo "Free inodes: $(get_free_inodes) create $((nr_inodes + 1)) files"
+	$LFS wbc state $dir $fileset $dir/$prefix.i0
+	#check_fileset_inode_reserved "$fileset" 1
+	#check_fileset_wbc_flags "$dir $dir/$prefix.i0" "0x00000000"
+	#check_fileset_wbc_flags "$fileset" "0x0000000f"
+	rm -rf $dir || error "rmdir -rf $dir failed"
+}
+
+test_15b() {
+	local nr_inodes=10
+
+	echo -e "\n===== Inode limits for lazy keep flush mode ====="
+	setup_wbc "flush_mode=lazy_keep max_inodes=$nr_inodes"
+	test_15b_base $nr_inodes
+
+	echo -e "\n===== Inode limits for aging keep flush mode ====="
+	setup_wbc "flush_mode=aging_keep max_inodes=$nr_inodes"
+	test_15b_base $nr_inodes
+}
+run_test 15b "Inode limits for various lock keep flush modes"
+
+test_15c_base() {
+	local flush_mode=$1
+	local level=$2
+	local nr_level=$3
+	local nr_inodes=$(( nr_level * level ))
+	local path="$DIR/$tdir"
+	local flushset
+	local fileset
+	local regset
+	local file
+
+
+	echo "level: $level files_per_level: $nr_level max_inodes: $nr_inodes"
+	setup_wbc "flush_mode=$flush_mode max_inodes=$nr_inodes"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	echo "Free inodes: $(get_free_inodes) Create: 0"
+	for l in $(seq 1 $level); do
+		for i in $(seq 1 $nr_level); do
+			fileset+="$path/dir_l$l.i$i "
+		done
+		path+="/dir_l$l.i1"
+		flushset+="$path "
+	done
+
+	mkdir $fileset || error "mkdir $fileset failed"
+	echo "Free inodes: $(get_free_inodes) Create: $nr_inodes"
+	$LFS wbc state $DIR/$tdir $fileset
+	check_fileset_inode_reserved "$fileset" 1
+
+	file=$path.URSVD.i0
+	mkdir $file || error "mkdir $file failed"
+	echo "Free inodes: $(get_free_inodes) Create: $(( nr_inodes + 1 ))"
+	$LFS wbc state $DIR/$tdir $fileset $file
+	check_fileset_inode_reserved "$file" 0
+	check_fileset_wbc_flushed "$flushset $file"
+	# The parent directory should be decompleted.
+	check_wbc_inode_complete $(dirname $file) 0
+	rmdir $file || error "rmdir $file failed"
+	echo "Free inodes: $(get_free_inodes) rmdir: $file"
+	rmdir $path || error "rmdir $path failed"
+	echo "Free inodes: $(get_free_inodes) rmdir: $path"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	local free_inodes=$(get_free_inodes)
+	[ $free_inodes == $nr_inodes ] ||
+		error "free_inodes: $free_inodes != max_inodes: $nr_inodes"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	echo "Free inodes: $(get_free_inodes) Create: 0"
+	path="$DIR/$tdir"
+	fileset=""
+	flushset=""
+	for l in $(seq 1 $((level - 1 ))); do
+		for i in $(seq 1 $nr_level); do
+			fileset+="$path/dir_l$l.i$i "
+		done
+		path+="/dir_l$l.i1"
+		flushset+="$path "
+	done
+
+	for i in $(seq 1 $nr_level); do
+		regset+="$path/reg_l$level.i$i "
+	done
+
+	mkdir $fileset || error "mkdir $fileset failed"
+	touch $regset || error "touch $regset failed"
+	echo "Free inodes: $(get_free_inodes) Create: $nr_inodes"
+	$LFS wbc state $fileset $regset
+	check_fileset_inode_reserved "$fileset $regset" 1
+
+	file=$path/reg_l$level.URSVD.i0
+	touch $file || error "touch $file failed"
+	echo "Free inodes: $(get_free_inodes) Create: $(( nr_inodes + 1 ))"
+	$LFS wbc state $fileset $regset $file
+	check_fileset_inode_reserved "$file" 0
+	check_fileset_wbc_flushed "$flushset $file"
+	# The parent directory should be decompleted.
+	check_wbc_inode_complete $(dirname $file) 0
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	free_inodes=$(get_free_inodes)
+	echo "Free inodes: $free_inodes"
+	[ $free_inodes == $nr_inodes ] ||
+		error "free_inodes: $free_inodes != max_inodes: $nr_inodes"
+}
+
+test_15c() {
+	stack_trap "cleanup_wbc" EXIT
+	echo -e "\n=== Inode limits for lazy keep flush mode ==="
+	test_15c_base "lazy_keep" 2 3
+	test_15c_base "lazy_keep" 5 6
+
+	echo -e "\n=== Inode limits for aging keep flush mode ==="
+	test_15c_base "aging_keep" 5 7
+	test_15c_base "aging_keep" 6 8
+
+	echo -e "\n=== Clear WBC caching ==="
+	clear_wbc
+	echo "Free inodes: $(get_free_inodes)"
+	echo -e "\n=== Inode limits for lazy drop flush mode ==="
+	test_15c_base "lazy_drop" 3 1
+	test_15c_base "lazy_drop" 5 6
+
+	echo -e "\n=== Inode limits for aging drop flush mode ==="
+	test_15c_base "aging_drop" 5 7
+	test_15c_base "aging_drop" 6 8
+}
+run_test 15c "Inode limits for lock keep modes with multiple level directories"
 
 test_sanity() {
 	local cmd="$LCTL wbc enable $MOUNT"

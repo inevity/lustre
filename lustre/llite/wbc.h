@@ -44,10 +44,13 @@ enum lu_mkdir_policy {
 
 #define LPROCFS_WR_WBC_MAX_CMD 4096
 
-#define WBC_MAX_ASYNC_RPCS	100
+#define WBC_MAX_RPCS		100
+#define WBC_DEFAULT_MAX_RPCS	0
 
 enum wbc_remove_policy {
+	WBC_RMPOL_NONE,
 	WBC_RMPOL_SYNC,
+	WBC_RMPOL_DEFAULT = WBC_RMPOL_SYNC,
 };
 
 struct wbc_conf {
@@ -55,6 +58,16 @@ struct wbc_conf {
 	enum lu_wbc_flush_mode	wbcc_flush_mode;
 	enum wbc_remove_policy	wbcc_rmpol;
 	__u32			wbcc_max_rpcs;
+	__u32			wbcc_background_async_rpc:1,
+				wbcc_batch_update;
+	/* How many inodes are allowed. */
+	unsigned long		wbcc_max_inodes;
+	/* How many inodes are left for allocation. */
+	unsigned long		wbcc_free_inodes;
+	/* How many blocks are allowed. */
+	unsigned long		wbcc_max_blocks;
+	/* How many blocks are allocated. */
+	struct percpu_counter	wbcc_used_blocks;
 };
 
 struct wbc_super {
@@ -64,12 +77,6 @@ struct wbc_super {
 	struct dentry		*wbcs_debugfs_dir;
 	struct list_head	 wbcs_roots;
 	struct list_head	wbcs_lazy_roots;
-};
-
-enum wbc_dirty_flags {
-	WBC_DIRTY_NONE	= 0x0,
-	/* Attributes was modified after the file was flushed to MDT. */
-	WBC_DIRTY_ATTR	= 0x1,
 };
 
 /* Extend for the data structure writeback_control */
@@ -125,10 +132,11 @@ struct wbc_inode {
 	 */
 	enum lu_wbc_cache_mode	wbci_cache_mode;
 	enum lu_wbc_flush_mode	wbci_flush_mode;
-	struct lustre_handle	wbci_lock_handle;
-	enum wbc_dirty_flags	wbci_dirty_flags;
+	enum lu_wbc_dirty_flags	wbci_dirty_flags;
 	unsigned int		wbci_dirty_attr;
 	struct list_head	wbci_root_list;
+	struct lustre_handle	wbci_lock_handle;
+	struct rw_semaphore	wbci_rw_sem;
 };
 
 struct wbc_dentry {
@@ -140,13 +148,18 @@ enum wbc_cmd_type {
 	WBC_CMD_DISABLE = 0,
 	WBC_CMD_ENABLE,
 	WBC_CMD_CONFIG,
+	WBC_CMD_CHANGE,
+	WBC_CMD_CLEAR,
 };
 
 enum wbc_cmd_op {
-	WBC_CMD_OP_CACHE_MODE	= 0x1,
-	WBC_CMD_OP_FLUSH_MODE	= 0x2,
-	WBC_CMD_OP_MAX_RPCS	= 0x4,
-	WBC_CMD_OP_RMPOL	= 0x8,
+	WBC_CMD_OP_CACHE_MODE	= 0x01,
+	WBC_CMD_OP_FLUSH_MODE	= 0x02,
+	WBC_CMD_OP_MAX_RPCS	= 0x04,
+	WBC_CMD_OP_RMPOL	= 0x08,
+	WBC_CMD_OP_INODES_LIMIT	= 0x10,
+	WBC_CMD_OP_BLOCKS_LIMIT	= 0x20,
+	WBC_CMD_OP_DECOMPLETE	= 0x40,
 };
 
 struct wbc_cmd {
@@ -175,9 +188,64 @@ do {									\
 
 #endif
 
+static inline bool md_opcode_need_exlock(enum md_item_opcode opc)
+{
+	return opc == MD_OP_CREATE_EXLOCK || opc == MD_OP_SETATTR_EXLOCK ||
+	       opc == MD_OP_EXLOCK_ONLY;
+}
+
+static inline bool wbc_mode_lock_drop(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flush_mode == WBC_FLUSH_AGING_DROP ||
+	       wbci->wbci_flush_mode == WBC_FLUSH_LAZY_DROP;
+}
+
+static inline bool wbc_mode_lock_keep(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flush_mode == WBC_FLUSH_AGING_KEEP ||
+	       wbci->wbci_flush_mode == WBC_FLUSH_LAZY_KEEP;
+}
+
+static inline bool wbc_flush_mode_lazy(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flush_mode == WBC_FLUSH_LAZY_DROP ||
+	       wbci->wbci_flush_mode == WBC_FLUSH_LAZY_KEEP;
+}
+
+static inline bool wbc_flush_mode_aging(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flush_mode == WBC_FLUSH_AGING_DROP ||
+	       wbci->wbci_flush_mode == WBC_FLUSH_AGING_KEEP;
+}
+
 static inline bool wbc_inode_has_protected(struct wbc_inode *wbci)
 {
 	return wbci->wbci_flags & WBC_STATE_FL_PROTECTED;
+}
+
+static inline bool wbc_inode_complete(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags & WBC_STATE_FL_COMPLETE;
+}
+
+static inline bool wbc_inode_none(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags == WBC_STATE_FL_NONE;
+}
+
+static inline bool wbc_inode_reserved(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags & WBC_STATE_FL_INODE_RESERVED;
+}
+
+static inline bool wbc_inode_data_committed(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags & WBC_STATE_FL_DATA_COMMITTED;
+}
+
+static inline bool wbc_inode_data_caching(struct wbc_inode *wbci)
+{
+	return wbc_inode_has_protected(wbci) && !wbc_inode_data_committed(wbci);
 }
 
 static inline bool wbc_inode_root(struct wbc_inode *wbci)
@@ -187,8 +255,41 @@ static inline bool wbc_inode_root(struct wbc_inode *wbci)
 
 static inline bool wbc_inode_was_flushed(struct wbc_inode *wbci)
 {
+	return wbci->wbci_flags & WBC_STATE_FL_SYNC;
+}
+
+/* The file metadata was written out to the server. */
+static inline bool wbc_inode_written_out(struct wbc_inode *wbci)
+{
 	return wbci->wbci_flags & WBC_STATE_FL_SYNC ||
 	       wbci->wbci_flags == WBC_STATE_FL_NONE;
+}
+
+static inline bool wbc_inode_attr_dirty(struct wbc_inode *wbci)
+{
+	return wbci->wbci_dirty_flags & WBC_DIRTY_FL_ATTR;
+}
+
+static inline bool wbc_decomplete_lock_keep(struct wbc_inode *wbci,
+					    struct writeback_control_ext *wbcx)
+{
+	return wbcx->for_decomplete && wbc_mode_lock_keep(wbci);
+}
+
+static inline enum mds_op_bias wbc_md_op_bias(struct wbc_inode *wbci)
+{
+	return wbc_inode_has_protected(wbci) ? MDS_WBC_LOCKLESS : 0;
+}
+
+static inline __u64 wbc_intent_lock_flags(struct wbc_inode *wbci,
+					  struct lookup_intent *it)
+{
+	if (wbc_inode_has_protected(wbci)) {
+		LASSERT((it->it_op == IT_LOOKUP || it->it_op == IT_GETATTR) &&
+			!wbc_inode_complete(wbci));
+		return LDLM_FL_INTENT_PARENT_LOCKED;
+	}
+	return 0;
 }
 
 static inline const char *wbc_rmpol2string(enum wbc_remove_policy pol)
@@ -204,16 +305,22 @@ static inline const char *wbc_rmpol2string(enum wbc_remove_policy pol)
 /* wbc.c */
 void wbc_super_root_add(struct inode *inode);
 void wbc_super_root_del(struct inode *inode);
-long wbc_flush_opcode_get(struct inode *dir, struct dentry *dchild,
-			  struct ldlm_lock *lock, unsigned int *valid,
-			  struct writeback_control_ext *wbcx);
+int wbc_reserve_inode(struct wbc_super *super);
+void wbc_unreserve_inode(struct inode *inode);
+void wbc_free_inode(struct inode *inode);
+void wbc_inode_unreserve_dput(struct inode *inode, struct dentry *dentry);
+long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
+			  struct writeback_control_ext *wbcx,
+			  unsigned int *valid);
 long wbc_flush_opcode_data_lockless(struct inode *inode, unsigned int *valid,
 				    struct writeback_control_ext *wbcx);
 void wbc_inode_writeback_complete(struct inode *inode);
 int wbc_make_inode_sync(struct dentry *dentry);
 int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
 			  struct writeback_control_ext *wbcx);
-void wbc_super_init(struct wbc_super *super);
+int wbc_make_inode_decomplete(struct inode *inode);
+int wbc_super_init(struct wbc_super *super);
+void wbc_super_fini(struct wbc_super *super);
 void wbc_inode_init(struct wbc_inode *wbci);
 void wbc_dentry_init(struct dentry *dentry);
 int wbc_cmd_handle(struct wbc_super *super, struct wbc_cmd *cmd);
@@ -226,7 +333,7 @@ void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);
 /* llite_wbc.c */
 void wbcfs_inode_operations_switch(struct inode *inode);
 int wbcfs_d_init(struct dentry *de);
-int wbc_do_setattr(struct inode *inode, struct iattr *attr);
+int wbc_do_setattr(struct inode *inode, unsigned int valid);
 int wbc_do_remove(struct inode *dir, struct dentry *dchild, bool rmdir);
 int wbcfs_commit_cache_pages(struct inode *inode);
 int wbcfs_inode_flush_lockless(struct inode *inode,
@@ -247,6 +354,14 @@ int wbc_root_init(struct inode *dir, struct inode *inode,
 int wbc_write_inode(struct inode *inode, struct writeback_control *wbc);
 int wbc_super_shrink_roots(struct wbc_super *super);
 int wbc_super_sync_fs(struct wbc_super *super, int wait);
+void wbc_free_inode(struct inode *inode);
+void wbc_intent_inode_init(struct inode *dir, struct inode *inode,
+			   struct lookup_intent *it);
+
+int ll_new_inode_init(struct inode *dir, struct dentry *dchild,
+		      struct inode *inode);
+void ll_intent_inode_init(struct inode *dir, struct inode *inode,
+			  struct lookup_intent *it);
 
 enum lu_mkdir_policy
 ll_mkdir_policy_get(struct ll_sb_info *sbi, struct inode *dir,

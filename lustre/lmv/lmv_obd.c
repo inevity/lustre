@@ -3291,6 +3291,48 @@ out_fas:
 	RETURN(rc);
 }
 
+/* WBC lockless create/setattr/link operations. */
+static int lmv_reint_async(struct obd_export *exp, struct md_op_item *item,
+			   struct ptlrpc_request_set *set)
+{
+	struct md_op_data *op_data = &item->mop_data;
+	struct lookup_intent *it = &item->mop_it;
+	struct obd_device *obd = exp->exp_obd;
+	struct lmv_obd *lmv = &obd->u.lmv;
+	struct lmv_tgt_desc *tgt;
+	int rc;
+
+	ENTRY;
+
+	if (!lmv->lmv_mdt_descs.ltd_lmv_desc.ld_active_tgt_count)
+		RETURN(-EIO);
+
+	if (it->it_op == IT_CREAT) {
+		op_data->op_flags |= MF_MDC_CANCEL_FID1;
+		tgt = lmv_locate_tgt_create(obd, lmv, op_data);
+		if (IS_ERR(tgt))
+			RETURN(PTR_ERR(tgt));
+
+		if (!fid_is_sane(&op_data->op_fid2)) {
+			rc = lmv_fid_alloc(NULL, exp,
+					   &op_data->op_fid2, op_data);
+			if (rc)
+				RETURN(rc);
+		}
+	} else if (it->it_op == IT_SETATTR) {
+		op_data->op_flags |= MF_MDC_CANCEL_FID1;
+		tgt = lmv_fid2tgt(lmv, &op_data->op_fid1);
+		if (IS_ERR(tgt))
+			RETURN(PTR_ERR(tgt));
+	} else {
+		LBUG();
+	}
+
+	rc = md_reint_async(tgt->ltd_exp, item, set);
+
+	RETURN(rc);
+}
+
 /**
  * Asynchronously set by key a value associated with a LMV device.
  *
@@ -4110,6 +4152,7 @@ static const struct md_ops lmv_md_ops = {
 	.m_batch_add		= lmv_batch_add,
 	.m_batch_stop		= lmv_batch_stop,
 	.m_batch_flush		= lmv_batch_flush,
+	.m_reint_async		= lmv_reint_async,
 };
 
 static int __init lmv_init(void)

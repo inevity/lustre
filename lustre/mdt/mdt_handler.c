@@ -2052,7 +2052,7 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 		rc = mdt_check_resent_lock(info, child, lhc);
 		if (rc < 0) {
 			RETURN(rc);
-		} else if (rc > 0) {
+		} else if (rc > 0 && !info->mti_parent_locked) {
 			mdt_lock_handle_init(lhc);
 			mdt_lock_reg_init(lhc, LCK_PR);
 
@@ -2073,7 +2073,7 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 		}
 
 		/* Finally, we can get attr for child. */
-		if (!mdt_object_exists(child)) {
+		if (!mdt_object_exists(child) && !info->mti_parent_locked) {
 			LU_OBJECT_DEBUG(D_INFO, info->mti_env,
 					&child->mot_obj,
 					"remote object doesn't exist.");
@@ -2083,7 +2083,8 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 
 		rc = mdt_getattr_internal(info, child, 0);
 		if (unlikely(rc != 0)) {
-			mdt_object_unlock(info, child, lhc, 1);
+			if (!info->mti_parent_locked)
+				mdt_object_unlock(info, child, lhc, 1);
 			RETURN(rc);
 		}
 
@@ -2213,7 +2214,8 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 		}
 
 		/* step 1: lock parent only if parent is a directory */
-		if (S_ISDIR(lu_object_attr(&parent->mot_obj))) {
+		if (!info->mti_parent_locked &&
+		    S_ISDIR(lu_object_attr(&parent->mot_obj))) {
 			lhp = &info->mti_lh[MDT_LH_PARENT];
 			mdt_lock_pdo_init(lhp, LCK_PR, lname);
 			rc = mdt_object_lock(info, parent, lhp,
@@ -2290,7 +2292,8 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 			 * a trylock to avoid preemptive cache flushes unless
 			 * absolutely necessary.
 			 */
-			if (ma->ma_valid & MA_INODE &&
+			if (!info->mti_parent_locked &&
+			    ma->ma_valid & MA_INODE &&
 			    ma->ma_attr.la_valid & LA_CTIME &&
 			    info->mti_mdt->mdt_namespace->ns_ctime_age_limit +
 			    ma->ma_attr.la_ctime < ktime_get_real_seconds())
@@ -2312,40 +2315,55 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 				try_bits |= MDS_INODELOCK_DOM;
 		}
 
-		/*
-		 * To avoid possible deadlock between batched statahead RPC
-		 * and rename()/migrate() operation, it should use trylock to
-		 * obtain the DLM PR ibits lock for file attributes in a
-		 * batched statahead RPC. A failed trylock means that other
-		 * users maybe modify the directory simultaneously as in current
-		 * Lustre design the server only grants read lock to a client.
-		 *
-		 * When a trylock failed, the MDT reports the conflict with
-		 * error code -EBUSY, and stops statahead immediately.
-		 */
-		if (info->mti_batch_env) {
-			try_bits |= child_bits;
-			child_bits = 0;
-		}
-
-		if (try_bits != 0) {
-			/* try layout lock, it may fail to be granted due to
-			 * contention at LOOKUP or UPDATE */
-			rc = mdt_object_lock_try(info, child, lhc, &child_bits,
-						 try_bits, false);
-			if (child_bits & MDS_INODELOCK_LAYOUT)
+		if (info->mti_parent_locked) {
+			if (try_bits & MDS_INODELOCK_LAYOUT)
 				ma_need |= MA_LOV;
 		} else {
-			/* Do not enqueue the UPDATE lock from MDT(cross-MDT),
-			 * client will enqueue the lock to the remote MDT */
-			if (mdt_object_remote(child))
-				child_bits &= ~MDS_INODELOCK_UPDATE;
-			rc = mdt_object_lock(info, child, lhc, child_bits);
+			/*
+			 * To avoid possible deadlock between batched statahead
+			 * RPC and rename()/migrate() operation, it should use
+			 * trylock to obtain the DLM PR ibits lock for file
+			 * attributes in a batched statahead RPC. A failed
+			 * trylock means that other users maybe modify the
+			 * directory simultaneously as in current Lustre design
+			 * the server only grants read lock to a client.
+			 *
+			 * When a trylock failed, the MDT reports the conflict
+			 * with error code -EBUSY, and stops statahead
+			 * immediately.
+			 */
+			if (info->mti_batch_env) {
+				try_bits |= child_bits;
+				child_bits = 0;
+			}
+
+			if (try_bits != 0) {
+				/*
+				 * try layout lock, it may fail to be granted
+				 * due to contention at LOOKUP or UPDATE
+				 */
+				rc = mdt_object_lock_try(info, child, lhc,
+							 &child_bits, try_bits,
+							 false);
+				if (child_bits & MDS_INODELOCK_LAYOUT)
+					ma_need |= MA_LOV;
+			} else {
+				/*
+				 * Do not enqueue the UPDATE lock from
+				 * MDT(cross-MDT), client will enqueue the lock
+				 * to the remote MDT.
+				 */
+				if (mdt_object_remote(child))
+					child_bits &= ~MDS_INODELOCK_UPDATE;
+				rc = mdt_object_lock(info, child, lhc,
+						     child_bits);
+			}
+
+			if (unlikely(rc != 0))
+				GOTO(out_child, rc);
+			if (info->mti_batch_env && child_bits == 0)
+				GOTO(out_child, rc = -EBUSY);
 		}
-		if (unlikely(rc != 0))
-			GOTO(out_child, rc);
-		if (info->mti_batch_env && child_bits == 0)
-			GOTO(out_child, rc = -EBUSY);
 	}
 
 	/* finally, we can get attr for child. */

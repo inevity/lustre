@@ -902,6 +902,7 @@ int mdc_finish_enqueue(struct obd_export *exp,
 	__u32 lvb_len = 0;
 
 	ENTRY;
+
 	LASSERT(rc >= 0);
 	/* Similarly, if we're going to replay this request, we don't want to
 	 * actually get a lock, just perform the intent.

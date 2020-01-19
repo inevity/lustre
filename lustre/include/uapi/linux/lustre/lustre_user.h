@@ -56,6 +56,7 @@
 # include <stdbool.h>
 # include <stdio.h> /* snprintf() */
 # include <sys/stat.h>
+# include <sys/types.h>
 # define FILEID_LUSTRE 0x97 /* for name_to_handle_at() (and llapi_fd2fid()) */
 #endif /* !__KERNEL__ */
 
@@ -2755,7 +2756,7 @@ struct ll_foreign_symlink_upcall_item {
 #define MAX_NB_UPCALL_ITEMS 32
 
 enum lu_wbc_flush_mode {
-	WBC_FLUSH_NONE		= 0,
+	WBC_FLUSH_NONE		= 0x0,
 	/*
 	 * In the lazy flush mode, a client never flushes dirty cache and drops
 	 * the root WBC EX lock actively unless it has to in the following
@@ -2775,8 +2776,8 @@ enum lu_wbc_flush_mode {
 	 * - WBC_FLUSH_LAZY_KEEP indicates that the root WBC EX lock will be
 	 *   kept during flush;
 	 */
-	WBC_FLUSH_LAZY_DROP	= 1,
-	WBC_FLUSH_LAZY_KEEP	= 2,
+	WBC_FLUSH_LAZY_DROP	= 0x1,
+	WBC_FLUSH_LAZY_KEEP	= 0x2,
 	/*
 	 * In this flush mode, it will trigger to flush dirty cache in the
 	 * background periodically when the cache is aged.
@@ -2788,7 +2789,7 @@ enum lu_wbc_flush_mode {
 	 *   directories;
 	 * And then release the root WBC EX lock;
 	 */
-	WBC_FLUSH_AGING_DROP	= 3,
+	WBC_FLUSH_AGING_DROP	= 0x3,
 	/*
 	 * This flush mode is similar to WBC_FLUSH_AGING_DROP. Instead,
 	 * the WBC EX lock for the root WBC directory never drops actively
@@ -2799,9 +2800,10 @@ enum lu_wbc_flush_mode {
 	 * - A application or a user wants to cleanup or uncache the cached
 	 *   data on the client manually.
 	 */
-	WBC_FLUSH_AGING_KEEP	= 4,
+	WBC_FLUSH_AGING_KEEP	= 0x4,
+	WBC_FLUSH_LAZY_DEFAULT	= WBC_FLUSH_LAZY_DROP,
 	/* Default WBC flush mode. */
-	WBC_FLUSH_DEFAULT_MODE	= WBC_FLUSH_LAZY_DROP,
+	WBC_FLUSH_DEFAULT_MODE	= WBC_FLUSH_LAZY_DEFAULT,
 };
 
 enum lu_wbc_cache_mode {
@@ -2860,11 +2862,36 @@ enum lu_wbc_state_flags {
 	WBC_STATE_FL_WRITEBACK		= (1 << __WBC_STATE_FL_WRITEBACK),
 };
 
+enum lu_wbc_dirty_flags {
+	WBC_DIRTY_FL_NONE	= 0x0,
+	/* The file is up-to-date. */
+	WBC_DIRTY_FL_UPTODATE	= WBC_DIRTY_FL_NONE,
+	/* The file is being flushed. */
+	WBC_DIRTY_FL_FLUSHING	= 0x1,
+	/* The file was created in MemFS but not yet flushed to MDT. */
+	WBC_DIRTY_FL_CREAT	= 0x2,
+	/*
+	 * Attributes was modified since the file was created in MemFS or
+	 * flushed to MDT last time.
+	 */
+	WBC_DIRTY_FL_ATTR	= 0x4,
+	/*
+	 * New hardlinks were added since the file was create in MemFS or
+	 * flushed to MDT last time.
+	 */
+	WBC_DIRTY_FL_HARDLINK	= 0x8,
+};
+
 struct lu_wbc_state {
 	/* File mode. */
 	mode_t			wbcs_fmode;
 	/* WBC state for the file. */
 	__u32			wbcs_flags;
+	/*
+	 * Flags to indicate what is changed since the file is created in
+	 * MemFS.
+	 */
+	__u32			wbcs_dirty_flags;
 	/* WBC cache mode. */
 	enum lu_wbc_cache_mode	wbcs_cache_mode;
 	/*
@@ -2897,6 +2924,8 @@ static inline const char *wbc_flushmode2string(enum lu_wbc_flush_mode mode)
 		return "none";
 	case WBC_FLUSH_LAZY_DROP:
 		return "lazy_drop";
+	case WBC_FLUSH_LAZY_KEEP:
+		return "lazy_keep";
 	case WBC_FLUSH_AGING_DROP:
 		return "aging_drop";
 	case WBC_FLUSH_AGING_KEEP:

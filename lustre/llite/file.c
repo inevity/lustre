@@ -5178,7 +5178,7 @@ static int ll_inode_revalidate(struct dentry *dentry, enum ldlm_intent_flags op)
 out:
 	ptlrpc_req_finished(req);
 
-	return rc;
+	RETURN(rc);
 }
 
 static int ll_merge_md_attr(struct inode *inode)

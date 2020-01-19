@@ -87,6 +87,10 @@ int mdc_intent_lock_async(struct obd_export *exp,
 			  struct md_op_item *item,
 			  struct ptlrpc_request_set *rqset);
 
+int mdc_reint_async(struct obd_export *exp,
+		    struct md_op_item *item,
+		    struct ptlrpc_request_set *rqset);
+
 int mdc_enqueue(struct obd_export *exp, struct ldlm_enqueue_info *einfo,
 		const union ldlm_policy_data *policy,
 		struct md_op_data *op_data,

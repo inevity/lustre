@@ -1078,7 +1078,7 @@ int quotactl_ioctl(struct super_block *sb, struct if_quotactl *qctl);
 extern const struct inode_operations ll_special_inode_operations;
 
 struct inode *ll_iget(struct super_block *sb, ino_t hash,
-                      struct lustre_md *lic);
+		      struct lustre_md *md);
 int ll_test_inode_by_fid(struct inode *inode, void *opaque);
 int ll_md_blocking_ast(struct ldlm_lock *, struct ldlm_lock_desc *,
                        void *data, int flag);
@@ -1812,10 +1812,10 @@ static inline bool ll_data_in_lustre(struct inode *inode)
 	struct wbc_inode *wbci = &lli->lli_wbc_inode;
 
 	if (S_ISREG(inode->i_mode) && lli->lli_clob != NULL) {
-		if (wbci->wbci_flags == WBC_STATE_FL_NONE)
+		if (wbc_inode_none(wbci))
 			return true;
 
-		if (wbci->wbci_flags & WBC_STATE_FL_DATA_COMMITTED) {
+		if (wbc_inode_data_committed(wbci)) {
 			LASSERT(wbc_inode_has_protected(wbci));
 			return true;
 		}

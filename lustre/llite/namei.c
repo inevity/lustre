@@ -676,6 +676,7 @@ static int ll_lookup_it_finish(struct ptlrpc_request *request,
 	__u64			  bits = 0;
 	int			  rc;
 	struct dentry *alias;
+
 	ENTRY;
 
 	/* NB 1 request reference will be taken away by ll_intent_lock()
@@ -720,6 +721,8 @@ static int ll_lookup_it_finish(struct ptlrpc_request *request,
 				}
 			}
 		}
+
+		ll_intent_inode_init(parent, inode, it);
 
 		ll_set_lock_data(ll_i2sbi(parent)->ll_md_exp, inode, it, &bits);
 		/* OPEN can return data if lock has DoM+LAYOUT bits set */
@@ -778,8 +781,12 @@ static int ll_lookup_it_finish(struct ptlrpc_request *request,
 	*de = alias;
 
 	if (!it_disposition(it, DISP_LOOKUP_NEG)) {
-		/* we have lookup look - unhide dentry */
-		if (bits & MDS_INODELOCK_LOOKUP) {
+		/*
+		 * we have lookup look - unhide dentry, or protected by
+		 * a root WBC EX lock.
+		 */
+		if (bits & MDS_INODELOCK_LOOKUP ||
+		    wbc_inode_has_protected(ll_i2wbci(parent))) {
 			d_lustre_revalidate(*de);
 			ll_update_dir_depth(parent, (*de)->d_inode);
 		}
@@ -812,6 +819,11 @@ static int ll_lookup_it_finish(struct ptlrpc_request *request,
 				GOTO(out, rc);
 		}
 
+		/*
+		 * TODO: revalidate the dentry if @parent is under the
+		 * protection of the root WBC EX lock for caching the negative
+		 * dentries.
+		 */
 		if (md_revalidate_lock(ll_i2mdexp(parent), &parent_it, &fid,
 				       NULL)) {
 			d_lustre_revalidate(*de);
@@ -851,8 +863,10 @@ static struct dentry *ll_lookup_it(struct inode *parent, struct dentry *dentry,
 	__u32 opc;
 	int rc;
 	char secctx_name[XATTR_NAME_MAX + 1];
+	__u64 extra_lock_flags;
 	struct llcrypt_name fname;
 	struct lu_fid fid;
+
 	ENTRY;
 
 	if (dentry->d_name.len > ll_i2sbi(parent)->ll_namelen)
@@ -1047,8 +1061,9 @@ inherit:
 		it->it_flags |= MDS_OPEN_PCC;
 	}
 
+	extra_lock_flags = wbc_intent_lock_flags(ll_i2wbci(parent), it);
 	rc = md_intent_lock(ll_i2mdexp(parent), op_data, it, &req,
-			    &ll_md_blocking_ast, 0);
+			    &ll_md_blocking_ast, extra_lock_flags);
 	/* If the MDS allows the client to chgrp (CFS_SETGRP_PERM), but the
 	 * client does not know which suppgid should be sent to the MDS, or
 	 * some other(s) changed the target file's GID after this RPC sent
@@ -1072,7 +1087,7 @@ inherit:
 		req = NULL;
 		ll_intent_release(it);
 		rc = md_intent_lock(ll_i2mdexp(parent), op_data, it, &req,
-				    &ll_md_blocking_ast, 0);
+				    &ll_md_blocking_ast, extra_lock_flags);
 	}
 
 	if (rc < 0)
@@ -1639,6 +1654,7 @@ again:
 		}
 	}
 
+	op_data->op_bias |= wbc_md_op_bias(ll_i2wbci(dir));
 	err = md_create(sbi->ll_md_exp, op_data, tgt ? disk_link->name : NULL,
 			tgt ? disk_link->len : 0, mode,
 			from_kuid(&init_user_ns, current_fsuid()),
@@ -1736,7 +1752,9 @@ again:
 			GOTO(err_exit, err);
 	}
 
-	d_instantiate(dchild, inode);
+	err = ll_new_inode_init(dir, dchild, inode);
+	if (err)
+		GOTO(err_exit, err);
 
 	if (encrypt) {
 		err = ll_set_encflags(inode, op_data->op_file_encctx,
@@ -1986,6 +2004,9 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	if (rc)
 		GOTO(out_fini, rc);
 
+	if (pol == MKDIR_POL_EXCL)
+		wbc_intent_inode_init(dir, inode, &mkdir_it);
+
 	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
 	    pol == MKDIR_POL_INTENT) {
 		/* must be done before d_instantiate, because it calls
@@ -1999,14 +2020,13 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 			GOTO(out_fini, rc);
 	}
 
-	if (d_unhashed(dchild)) {
-		if (!ll_d_setup(dchild, false))
-			GOTO(out_fini, rc = -ENOMEM);
+	if (!ll_d_setup(dchild, false))
+		GOTO(out_fini, rc = -ENOMEM);
 
+	if (d_unhashed(dchild))
 		d_add(dchild, inode);
-	} else {
+	else
 		d_instantiate(dchild, inode);
-	}
 
 	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
 	    pol == MKDIR_POL_INTENT) {
@@ -2015,27 +2035,14 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 			GOTO(out_fini, rc);
 	}
 
-	if (mkdir_it.it_lock_mode) {
+
+	if (mkdir_it.it_lock_mode || pol == MKDIR_POL_EXCL) {
 		__u64 bits = 0;
 
 		LASSERT(it_disposition(&mkdir_it, DISP_LOOKUP_NEG));
 		ll_set_lock_data(sbi->ll_md_exp, inode, &mkdir_it, &bits);
-		if (bits & MDS_INODELOCK_LOOKUP)
+		if (bits & MDS_INODELOCK_LOOKUP || pol == MKDIR_POL_EXCL)
 			d_lustre_revalidate(dchild);
-
-		/* Obtain WBC EX lock. */
-		if (mkdir_it.it_lock_mode == LCK_EX && pol == MKDIR_POL_EXCL) {
-			rc = wbc_root_init(dir, inode, dchild);
-			if (rc)
-				GOTO(out_fini, rc);
-
-			if (!(bits & MDS_INODELOCK_LOOKUP))
-				d_lustre_revalidate(dchild);
-
-			/* Save the lock handle of the root WBC EX lock. */
-			ll_i2wbci(inode)->wbci_lock_handle.cookie =
-					mkdir_it.it_lock_handle;
-		}
 	}
 
 out_fini:
@@ -2084,6 +2091,7 @@ static int ll_rmdir(struct inode *dir, struct dentry *dchild)
 
 	if (fid_is_zero(&op_data->op_fid2))
 		op_data->op_fid2 = op_data->op_fid3;
+	op_data->op_bias |= wbc_md_op_bias(ll_i2wbci(dir));
 	rc = md_unlink(ll_i2sbi(dir)->ll_md_exp, op_data, &request);
 	ll_finish_md_op_data(op_data);
 	if (!rc) {
@@ -2098,11 +2106,14 @@ static int ll_rmdir(struct inode *dir, struct dentry *dchild)
 		 * to update the link count so the inode can be freed
 		 * immediately.
 		 */
-		body = req_capsule_server_get(&request->rq_pill, &RMF_MDT_BODY);
-		if (body->mbo_valid & OBD_MD_FLNLINK) {
-			spin_lock(&dchild->d_inode->i_lock);
-			set_nlink(dchild->d_inode, body->mbo_nlink);
-			spin_unlock(&dchild->d_inode->i_lock);
+		if (!wbc_inode_reserved(ll_i2wbci(dchild->d_inode))) {
+			body = req_capsule_server_get(&request->rq_pill,
+						      &RMF_MDT_BODY);
+			if (body->mbo_valid & OBD_MD_FLNLINK) {
+				spin_lock(&dchild->d_inode->i_lock);
+				set_nlink(dchild->d_inode, body->mbo_nlink);
+				spin_unlock(&dchild->d_inode->i_lock);
+			}
 		}
 	}
 
@@ -2190,20 +2201,24 @@ static int ll_unlink(struct inode *dir, struct dentry *dchild)
 		op_data->op_cli_flags |= CLI_DIRTY_DATA;
 	if (fid_is_zero(&op_data->op_fid2))
 		op_data->op_fid2 = op_data->op_fid3;
+	op_data->op_bias |= wbc_md_op_bias(ll_i2wbci(dir));
 	rc = md_unlink(ll_i2sbi(dir)->ll_md_exp, op_data, &request);
 	ll_finish_md_op_data(op_data);
 	if (rc)
 		GOTO(out, rc);
 
-	/*
-	 * The server puts attributes in on the last unlink, use them to update
-	 * the link count so the inode can be freed immediately.
-	 */
-	body = req_capsule_server_get(&request->rq_pill, &RMF_MDT_BODY);
-	if (body->mbo_valid & OBD_MD_FLNLINK) {
-		spin_lock(&dchild->d_inode->i_lock);
-		set_nlink(dchild->d_inode, body->mbo_nlink);
-		spin_unlock(&dchild->d_inode->i_lock);
+	if (!wbc_inode_reserved(ll_i2wbci(dchild->d_inode))) {
+		/*
+		 * The server puts attributes in on the last unlink, use them
+		 * to update the link count so the inode can be freed
+		 * immediately.
+		 */
+		body = req_capsule_server_get(&request->rq_pill, &RMF_MDT_BODY);
+		if (body->mbo_valid & OBD_MD_FLNLINK) {
+			spin_lock(&dchild->d_inode->i_lock);
+			set_nlink(dchild->d_inode, body->mbo_nlink);
+			spin_unlock(&dchild->d_inode->i_lock);
+		}
 	}
 
 	ll_update_times(request, dir);

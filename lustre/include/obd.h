@@ -1240,6 +1240,9 @@ struct md_ops {
 				   struct md_op_item *,
 				   struct ptlrpc_request_set *);
 
+	int (*m_reint_async)(struct obd_export *, struct md_op_item *,
+			     struct ptlrpc_request_set *);
+
 	int (*m_link)(struct obd_export *, struct md_op_data *,
 		      struct ptlrpc_request **);
 

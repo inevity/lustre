@@ -12730,18 +12730,30 @@ static int lfs_wbc_state(int argc, char **argv)
 			printf(" writeback");
 
 		if (S_ISREG(state.wbcs_fmode)) {
-			printf(", data: ");
+			printf(", data:");
 			if (state.wbcs_flags & WBC_STATE_FL_DATA_COMMITTED)
 				printf(" lustre");
 			else
 				printf(" ram");
 		} else if (S_ISDIR(state.wbcs_fmode)) {
-			printf(", metadata: ");
+			printf(", metadata:");
 			if (state.wbcs_flags & WBC_STATE_FL_INODE_RESERVED)
 				printf(" ram");
 			else
 				printf(" lustre");
 		}
+
+		printf(", dirty: (0x%08x)", state.wbcs_dirty_flags);
+		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_CREAT)
+			printf(" create");
+		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_ATTR)
+			printf(" attr");
+		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_HARDLINK)
+			printf(" hardlink");
+		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_FLUSHING)
+			printf(" flushing");
+		if (state.wbcs_dirty_flags == WBC_DIRTY_FL_UPTODATE)
+			printf(" uptodate");
 
 		printf(", flush_mode: %s",
 		       wbc_flushmode2string(state.wbcs_flush_mode));

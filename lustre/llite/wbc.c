@@ -43,8 +43,7 @@ void wbc_super_root_add(struct inode *inode)
 
 	LASSERT(wbci->wbci_flags & WBC_STATE_FL_ROOT);
 	spin_lock(&super->wbcs_lock);
-	if (wbci->wbci_flush_mode == WBC_FLUSH_LAZY_KEEP ||
-	    wbci->wbci_flush_mode == WBC_FLUSH_LAZY_DROP)
+	if (wbc_flush_mode_lazy(wbci))
 		list_add(&wbci->wbci_root_list, &super->wbcs_lazy_roots);
 	else
 		list_add(&wbci->wbci_root_list, &super->wbcs_roots);
@@ -124,46 +123,113 @@ void wbc_inode_writeback_complete(struct inode *inode)
 	wake_up_bit(&wbci->wbci_flags, __WBC_STATE_FL_WRITEBACK);
 }
 
-long wbc_flush_opcode_get(struct inode *dir, struct dentry *dchild,
-			  struct ldlm_lock *lock, unsigned int *valid,
-			  struct writeback_control_ext *wbcx)
+int wbc_reserve_inode(struct wbc_super *super)
 {
-	struct inode *inode = dchild->d_inode;
+	struct wbc_conf *conf = &super->wbcs_conf;
+	int rc = 0;
+
+	if (conf->wbcc_max_inodes) {
+		spin_lock(&super->wbcs_lock);
+		if (!conf->wbcc_free_inodes)
+			rc = -ENOSPC;
+		else
+			conf->wbcc_free_inodes--;
+		spin_unlock(&super->wbcs_lock);
+	}
+	return rc;
+}
+
+void wbc_unreserve_inode(struct inode *inode)
+{
+	struct wbc_super *super = ll_i2wbcs(inode);
+
+	if (super->wbcs_conf.wbcc_max_inodes) {
+		spin_lock(&super->wbcs_lock);
+		super->wbcs_conf.wbcc_free_inodes++;
+		spin_unlock(&super->wbcs_lock);
+	}
+}
+
+void wbc_free_inode(struct inode *inode)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	if (wbc_inode_root(wbci))
+		wbc_super_root_del(inode);
+	if (wbc_inode_reserved(wbci))
+		wbc_unreserve_inode(inode);
+}
+
+void wbc_inode_unreserve_dput(struct inode *inode,
+					    struct dentry *dentry)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	if (wbc_inode_reserved(wbci)) {
+		LASSERT(wbc_inode_written_out(wbci));
+		wbci->wbci_flags &= ~WBC_STATE_FL_INODE_RESERVED;
+		wbc_unreserve_inode(inode);
+		/* Unpin the dentry now as it is stable. */
+		dput(dentry);
+	}
+}
+
+static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci,
+					     unsigned int *valid)
+{
+	*valid = wbci->wbci_dirty_attr;
+	wbci->wbci_dirty_attr = 0;
+	wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
+}
+
+static inline bool wbc_flush_need_exlock(struct wbc_inode *wbci,
+					 struct writeback_control_ext *wbcx)
+{
+	return wbc_mode_lock_drop(wbci) || wbcx->for_callback;
+}
+
+long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
+			  struct writeback_control_ext *wbcx,
+			  unsigned int *valid)
+{
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 	long opc = MD_OP_NONE;
+	bool decomp_keep;
 
 	ENTRY;
 
+	decomp_keep = wbc_decomplete_lock_keep(wbci, wbcx);
 	spin_lock(&inode->i_lock);
-	switch (wbci->wbci_flush_mode) {
-	case WBC_FLUSH_LAZY_KEEP:
-		break;
-	case WBC_FLUSH_AGING_DROP:
-		LASSERT(!(inode->i_state & I_SYNC));
-		break;
-	case WBC_FLUSH_AGING_KEEP:
-		if (inode->i_state & I_SYNC)
+	if (wbc_mode_lock_keep(wbci)) {
+		if (wbcx->for_callback && inode->i_state & I_SYNC)
 			__inode_wait_for_writeback(inode);
 
-		LASSERT(!(inode->i_state & I_SYNC) && !wbcx->for_fsync);
-		if (wbci->wbci_flags & WBC_STATE_FL_WRITEBACK)
+		if (!wbcx->for_fsync &&
+		    wbci->wbci_flags & WBC_STATE_FL_WRITEBACK)
 			__wbc_inode_wait_for_writeback(inode);
-		break;
-	default:
-		break;
+	} else if (wbc_mode_lock_drop(wbci)) {
+		LASSERT(!(inode->i_state & I_SYNC));
 	}
 
-	/* The root WBC EX lock was revoked. */
-	if (wbci->wbci_flags == WBC_STATE_FL_NONE)
-		GOTO(out_unlock, opc);
+	/*
+	 * The inode was redirtied.
+	 * TODO: handle more dirty flags: I_DIRTY_TIME | I_DIRTY_TIME_EXPIRED
+	 * in the latest Linux kernel.
+	 */
 
-	if (wbc_inode_was_flushed(wbci)) {
-		if (wbci->wbci_dirty_flags & WBC_DIRTY_ATTR) {
-			opc = MD_OP_SETATTR_EXLOCK;
-			*valid = wbci->wbci_dirty_attr;
-			wbci->wbci_dirty_attr = 0;
-			wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
-		} else if (!(wbci->wbci_flags & WBC_STATE_FL_ROOT)) {
+	if (wbc_inode_none(wbci)) {
+		opc = MD_OP_NONE;
+	} else if (wbc_inode_was_flushed(wbci)) {
+		if (decomp_keep) {
+			LASSERT(dchild != NULL);
+			opc = MD_OP_NONE;
+			if (wbcx->unrsv_children_decomp)
+				wbc_inode_unreserve_dput(inode, dchild);
+		} else if (wbc_inode_attr_dirty(wbci)) {
+			wbc_clear_dirty_for_flush(wbci, valid);
+			opc = wbc_flush_need_exlock(wbci, wbcx) ?
+			      MD_OP_SETATTR_EXLOCK : MD_OP_SETATTR_LOCKLESS;
+		} else if (wbc_flush_need_exlock(wbci, wbcx)) {
 			opc = MD_OP_EXLOCK_ONLY;
 		}
 	} else {
@@ -171,18 +237,25 @@ long wbc_flush_opcode_get(struct inode *dir, struct dentry *dchild,
 		 * TODO: Update the metadata attributes on MDT together with
 		 * the file creation.
 		 */
-		*valid = wbci->wbci_dirty_attr;
-		wbci->wbci_dirty_attr = 0;
-		wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
-		opc = MD_OP_CREATE_EXLOCK;
+		wbc_clear_dirty_for_flush(wbci, valid);
+		opc = wbc_flush_need_exlock(wbci, wbcx) ?
+		      MD_OP_CREATE_EXLOCK : MD_OP_CREATE_LOCKLESS;
 	}
 
 	if (opc != MD_OP_NONE)
 		wbci->wbci_flags |= WBC_STATE_FL_WRITEBACK;
-out_unlock:
 	spin_unlock(&inode->i_lock);
 
 	RETURN(opc);
+}
+
+static void wbc_flush_lockless_check(struct inode *inode,
+				     struct writeback_control_ext *wbcx)
+{
+	LASSERT(inode->i_state & I_SYNC && !wbcx->for_callback &&
+		!wbcx->for_decomplete);
+	if (wbcx->for_fsync)
+		LASSERT(ll_i2wbci(inode)->wbci_flags & WBC_STATE_FL_WRITEBACK);
 }
 
 long wbc_flush_opcode_data_lockless(struct inode *inode, unsigned int *valid,
@@ -191,12 +264,9 @@ long wbc_flush_opcode_data_lockless(struct inode *inode, unsigned int *valid,
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 	long opc = MD_OP_NONE;
 
+	wbc_flush_lockless_check(inode, wbcx);
 	spin_lock(&inode->i_lock);
-	LASSERT(inode->i_state & I_SYNC && !wbcx->for_callback);
-
-	if (wbcx->for_fsync)
-		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK);
-	else if (wbci->wbci_flags & WBC_STATE_FL_WRITEBACK)
+	if (!wbcx->for_fsync && wbci->wbci_flags & WBC_STATE_FL_WRITEBACK)
 		__wbc_inode_wait_for_writeback(inode);
 
 	/*
@@ -210,15 +280,24 @@ long wbc_flush_opcode_data_lockless(struct inode *inode, unsigned int *valid,
 		smp_mb();
 	}
 
-	if (wbc_inode_was_flushed(wbci)) {
-		if (wbci->wbci_dirty_flags & WBC_DIRTY_ATTR) {
+	if (wbc_inode_none(wbci)) {
+		opc = MD_OP_NONE;
+	} else if (wbc_inode_was_flushed(wbci)) {
+		if (wbc_inode_attr_dirty(wbci)) {
 			opc = MD_OP_SETATTR_LOCKLESS;
 			*valid = wbci->wbci_dirty_attr;
 			wbci->wbci_dirty_attr = 0;
-			wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
+			wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
 		}
 		/* TODO: Hardlink. */
 	} else {
+		/*
+		 * TODO: Update the metadata attributes on MDT together with
+		 * the file creation.
+		 */
+		*valid = wbci->wbci_dirty_attr;
+		wbci->wbci_dirty_attr = 0;
+		wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
 		opc = MD_OP_CREATE_LOCKLESS;
 	}
 	spin_unlock(&inode->i_lock);
@@ -244,12 +323,21 @@ static int wbc_flush_ancestors_topdown(struct list_head *fsync_list)
 		struct ll_dentry_data *lld;
 		struct dentry *dentry;
 		struct inode *inode;
+		struct wbc_inode *wbci;
 
 		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
 		dentry = lld->lld_dentry;
 		inode = dentry->d_inode;
+		wbci = ll_i2wbci(inode);
 
 		list_del_init(&wbcd->wbcd_fsync_item);
+
+		/* Add @inode into the dirty list, otherwise sync_inode() will
+		 * skip to write out the inode as the inode is not marked as
+		 * I_DIRTY.
+		 */
+		if (wbc_flush_mode_lazy(wbci))
+			mark_inode_dirty(inode);
 
 		/* TODO: batched metadata flushing */
 		if (rc == 0)
@@ -262,6 +350,17 @@ static int wbc_flush_ancestors_topdown(struct list_head *fsync_list)
 	}
 
 	RETURN(rc);
+}
+
+static inline void wbc_sync_addroot_lockdrop(struct wbc_inode *wbci,
+					     struct wbc_dentry *wbcd,
+					     struct list_head *fsync_list)
+{
+	if (wbc_mode_lock_drop(wbci) && wbc_inode_root(wbci)) {
+		LASSERT(wbc_inode_has_protected(wbci));
+		wbci->wbci_flags |= WBC_STATE_FL_WRITEBACK;
+		list_add(&wbcd->wbcd_fsync_item, fsync_list);
+	}
 }
 
 int wbc_make_inode_sync(struct dentry *dentry)
@@ -279,7 +378,8 @@ int wbc_make_inode_sync(struct dentry *dentry)
 			LASSERT(wbc_inode_was_flushed(wbci));
 		}
 
-		if (wbc_inode_was_flushed(wbci)) {
+		if (wbc_inode_written_out(wbci)) {
+			wbc_sync_addroot_lockdrop(wbci, wbcd, &fsync_list);
 			spin_unlock(&inode->i_lock);
 			break;
 		}
@@ -289,7 +389,8 @@ int wbc_make_inode_sync(struct dentry *dentry)
 
 		LASSERT(!(inode->i_state & I_SYNC));
 
-		if (wbc_inode_was_flushed(wbci)) {
+		if (wbc_inode_written_out(wbci)) {
+			wbc_sync_addroot_lockdrop(wbci, wbcd, &fsync_list);
 			spin_unlock(&inode->i_lock);
 			break;
 		}
@@ -303,13 +404,53 @@ int wbc_make_inode_sync(struct dentry *dentry)
 	return wbc_flush_ancestors_topdown(&fsync_list);
 }
 
+static int wbc_inode_update_metadata(struct inode *inode,
+				     struct ldlm_lock *lock,
+				     struct writeback_control_ext *wbcx)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	long opc = MD_OP_NONE;
+	unsigned int valid;
+	int rc = 0;
+
+	ENTRY;
+
+	LASSERT(wbc_inode_was_flushed(wbci));
+
+	spin_lock(&inode->i_lock);
+	if (wbc_inode_attr_dirty(wbci)) {
+		valid = wbci->wbci_dirty_attr;
+		wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
+		wbci->wbci_dirty_attr = 0;
+		opc = MD_OP_SETATTR_LOCKLESS;
+	}
+	/* TODO: hardlink. */
+	spin_unlock(&inode->i_lock);
+
+	/*
+	 * FIXME: if @inode is a directory, it should handle the order of the
+	 * metadata attribute updating such as chmod()/chown() and newly file
+	 * creation under this directory carefully. Or MDT should ignore the
+	 * permission check for newly file creation under the protection of an
+	 * WBC EX lock.
+	 */
+	if (opc == MD_OP_SETATTR_LOCKLESS)
+		rc = wbc_do_setattr(inode, valid);
+
+	RETURN(rc);
+}
+
 static int wbc_flush_regular_file(struct inode *inode, struct ldlm_lock *lock,
 				  struct writeback_control_ext *wbcx)
 {
 	int rc;
 
+	rc = wbc_inode_update_metadata(inode, lock, wbcx);
+	if (rc)
+		return rc;
+
 	rc = wbcfs_commit_cache_pages(inode);
-	wbcfs_inode_operations_switch(inode);
+	//wbcfs_inode_operations_switch(inode);
 
 	return rc;
 }
@@ -322,6 +463,10 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 	int rc;
 
 	ENTRY;
+
+	rc = wbc_inode_update_metadata(dir, lock, wbcx);
+	if (rc)
+		RETURN(rc);
 
 	spin_lock(&dir->i_lock);
 	/*
@@ -364,7 +509,6 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 
 	rc = wbcfs_flush_dir_children(dir, &dirty_children_list, lock, wbcx);
 	mapping_clear_unevictable(dir->i_mapping);
-	wbcfs_inode_operations_switch(dir);
 	/* TODO: error handling when @dirty_children_list is not empty. */
 	LASSERT(list_empty(&dirty_children_list));
 
@@ -393,6 +537,9 @@ static inline void wbc_mark_inode_deroot(struct inode *inode)
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 
 	wbc_super_root_del(inode);
+	if (wbc_inode_reserved(wbci))
+		wbc_unreserve_inode(inode);
+
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
 	wbcfs_inode_operations_switch(inode);
 }
@@ -411,6 +558,51 @@ int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
 	return rc;
 }
 
+int wbc_make_inode_decomplete(struct inode *inode)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	struct writeback_control_ext wbcx = {
+		.sync_mode = WB_SYNC_ALL,
+		.nr_to_write = 0, /* metadata-only */
+		.for_decomplete = 1,
+	};
+	struct ldlm_lock *lock = NULL;
+	int rc;
+
+	ENTRY;
+
+	LASSERT(S_ISDIR(inode->i_mode));
+	if (wbc_mode_lock_drop(wbci)) {
+		lock = ldlm_handle2lock(&wbci->wbci_lock_handle);
+		if (lock == NULL) {
+			LASSERTF(!wbc_inode_has_protected(wbci),
+				 "WBC flags %d\n", wbci->wbci_flags);
+			RETURN(0);
+		}
+	}
+
+	down_write(&wbci->wbci_rw_sem);
+	if (wbc_inode_none(wbci) || !wbc_inode_complete(wbci))
+		GOTO(up_rwsem, rc = 0);
+
+	rc = wbc_inode_flush(inode, lock, &wbcx);
+	/* FIXME: error handling. */
+
+	spin_lock(&inode->i_lock);
+	if (wbc_mode_lock_drop(wbci))
+		wbc_mark_inode_deroot(inode);
+	else if (wbc_mode_lock_keep(wbci))
+		wbci->wbci_flags &= ~WBC_STATE_FL_COMPLETE;
+	spin_unlock(&inode->i_lock);
+
+up_rwsem:
+	up_write(&wbci->wbci_rw_sem);
+	if (lock)
+		LDLM_LOCK_PUT(lock);
+
+	RETURN(rc);
+}
+
 static int wbc_inode_flush_lockdrop(struct inode *inode,
 				    struct writeback_control_ext *wbcx)
 {
@@ -420,12 +612,15 @@ static int wbc_inode_flush_lockdrop(struct inode *inode,
 
 	lock = ldlm_handle2lock(&wbci->wbci_lock_handle);
 	if (lock == NULL) {
-		LASSERT(!wbc_inode_has_protected(wbci));
+		LASSERTF(!wbc_inode_has_protected(wbci),
+			 "WBC flags: %d\n", wbci->wbci_flags);
 		RETURN(0);
 	}
 
+	down_write(&wbci->wbci_rw_sem);
 	if (wbc_inode_has_protected(wbci))
-		rc = wbc_inode_flush(inode, lock, wbcx);
+		rc = wbc_make_inode_deroot(inode, lock, wbcx);
+	up_write(&wbci->wbci_rw_sem);
 
 	LDLM_LOCK_PUT(lock);
 
@@ -435,8 +630,9 @@ static int wbc_inode_flush_lockdrop(struct inode *inode,
 void wbc_inode_init(struct wbc_inode *wbci)
 {
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
-	wbci->wbci_dirty_flags = WBC_DIRTY_NONE;
+	wbci->wbci_dirty_flags = WBC_DIRTY_FL_NONE;
 	INIT_LIST_HEAD(&wbci->wbci_root_list);
+	init_rwsem(&wbci->wbci_rw_sem);
 }
 
 void wbc_dentry_init(struct dentry *dentry)
@@ -495,6 +691,7 @@ int wbc_super_shrink_roots(struct wbc_super *super)
 	int rc;
 	int rc2;
 
+	super->wbcs_conf.wbcc_cache_mode = WBC_MODE_NONE;
 	rc = __wbc_super_shrink_roots(super, &super->wbcs_lazy_roots);
 	rc2 = __wbc_super_shrink_roots(super, &super->wbcs_roots);
 	if (rc)
@@ -535,6 +732,14 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 		rc = wbc_inode_flush_lockless(inode, wbcx);
 		break;
 	case WBC_FLUSH_LAZY_DROP:
+	case WBC_FLUSH_LAZY_KEEP:
+		if (wbcx->for_fsync) {
+			if (wbc_mode_lock_drop(wbci))
+				rc = wbc_inode_flush_lockdrop(inode, wbcx);
+			else if (wbc_mode_lock_keep(wbci))
+				rc = wbc_inode_flush_lockless(inode, wbcx);
+		}
+		break;
 	default:
 		break;
 	}
@@ -542,22 +747,73 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 	RETURN(rc);
 }
 
-static void wbc_super_conf_disable(struct wbc_conf *conf)
+static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 {
-	memset(conf, 0, sizeof(*conf));
+	conf->wbcc_rmpol = WBC_RMPOL_DEFAULT;
+	conf->wbcc_max_rpcs = WBC_DEFAULT_MAX_RPCS;
+	conf->wbcc_background_async_rpc = 0;
+	conf->wbcc_batch_update = 0;
+	conf->wbcc_max_inodes = 0;
+	conf->wbcc_free_inodes = 0;
+	conf->wbcc_max_blocks = 0;
+}
+
+/* called with @wbcs_lock hold. */
+static void wbc_super_disable_cache(struct wbc_super *super)
+{
+	struct wbc_conf *conf = &super->wbcs_conf;
+
+repeat:
 	conf->wbcc_cache_mode = WBC_MODE_NONE;
 	conf->wbcc_flush_mode = WBC_FLUSH_NONE;
+
+	spin_unlock(&super->wbcs_lock);
+	wbc_super_shrink_roots(super);
+	spin_lock(&super->wbcs_lock);
+	/* The cache mode was changed when shrinking the WBC roots. */
+	if (conf->wbcc_cache_mode != WBC_MODE_NONE)
+		goto repeat;
+
+	LASSERTF(conf->wbcc_max_inodes == conf->wbcc_free_inodes &&
+		 percpu_counter_sum(&conf->wbcc_used_blocks) == 0,
+		 "max_inodes: %lu free_inodes:%lu\n",
+		 conf->wbcc_max_inodes, conf->wbcc_free_inodes);
+	wbc_super_reset_common_conf(conf);
 }
 
 static void wbc_super_conf_default(struct wbc_conf *conf)
 {
 	conf->wbcc_cache_mode = WBC_MODE_MEMFS;
 	conf->wbcc_flush_mode = WBC_FLUSH_DEFAULT_MODE;
+	conf->wbcc_rmpol = WBC_RMPOL_DEFAULT;
 	conf->wbcc_max_rpcs = 0;
 }
 
-static void wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
+static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 {
+	/*
+	 * Memery limits for inodes/blocks are not allowed to be decreased
+	 * less then used value in the runtime.
+	 */
+	if (cmd->wbcc_flags & WBC_CMD_OP_INODES_LIMIT &&
+	    (conf->wbcc_max_inodes - conf->wbcc_free_inodes) >
+	    cmd->wbcc_conf.wbcc_max_inodes)
+		return -EINVAL;
+
+	if (cmd->wbcc_flags & WBC_CMD_OP_BLOCKS_LIMIT &&
+	    percpu_counter_compare(&conf->wbcc_used_blocks,
+				   cmd->wbcc_conf.wbcc_max_blocks) > 0)
+		return -EINVAL;
+
+	if (cmd->wbcc_flags & WBC_CMD_OP_INODES_LIMIT) {
+		conf->wbcc_free_inodes += (cmd->wbcc_conf.wbcc_max_inodes -
+					   conf->wbcc_max_inodes);
+		conf->wbcc_max_inodes = cmd->wbcc_conf.wbcc_max_inodes;
+	}
+
+	if (cmd->wbcc_flags & WBC_CMD_OP_BLOCKS_LIMIT)
+		conf->wbcc_max_blocks = cmd->wbcc_conf.wbcc_max_blocks;
+
 	if (conf->wbcc_cache_mode == WBC_MODE_NONE)
 		conf->wbcc_cache_mode = WBC_MODE_DEFAULT;
 	if (cmd->wbcc_flags & WBC_CMD_OP_CACHE_MODE)
@@ -568,20 +824,42 @@ static void wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_max_rpcs = cmd->wbcc_conf.wbcc_max_rpcs;
 	if (cmd->wbcc_flags & WBC_CMD_OP_RMPOL)
 		conf->wbcc_rmpol = cmd->wbcc_conf.wbcc_rmpol;
+
+	return 0;
 }
 
-void wbc_super_init(struct wbc_super *super)
+void wbc_super_fini(struct wbc_super *super)
 {
+	percpu_counter_destroy(&super->wbcs_conf.wbcc_used_blocks);
+}
+
+int wbc_super_init(struct wbc_super *super)
+{
+	struct wbc_conf *conf = &super->wbcs_conf;
+	int rc;
+
+#ifdef HAVE_PERCPU_COUNTER_INIT_GFP_FLAG
+	rc = percpu_counter_init(&conf->wbcc_used_blocks, 0, GFP_KERNEL);
+#else
+	rc = percpu_counter_init(&conf->wbcc_used_blocks, 0);
+#endif
+	if (rc)
+		return -ENOMEM;
+
+	conf->wbcc_cache_mode = WBC_MODE_NONE;
+	conf->wbcc_flush_mode = WBC_FLUSH_NONE;
+	wbc_super_reset_common_conf(conf);
 	spin_lock_init(&super->wbcs_lock);
-	wbc_super_conf_disable(&super->wbcs_conf);
 	INIT_LIST_HEAD(&super->wbcs_roots);
 	INIT_LIST_HEAD(&super->wbcs_lazy_roots);
+
+	return 0;
 }
 
 static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 {
 	struct wbc_conf *conf = &cmd->wbcc_conf;
-	char *key, *val;
+	char *key, *val, *rest;
 	unsigned long num;
 	int rc;
 
@@ -599,8 +877,12 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 
 		cmd->wbcc_flags |= WBC_CMD_OP_CACHE_MODE;
 	} else if (strcmp(key, "flush_mode") == 0) {
-		if (strcmp(val, "lazy_drop") == 0)
+		if (strcmp(val, "lazy") == 0)
+			conf->wbcc_flush_mode = WBC_FLUSH_LAZY_DEFAULT;
+		else if (strcmp(val, "lazy_drop") == 0)
 			conf->wbcc_flush_mode = WBC_FLUSH_LAZY_DROP;
+		else if (strcmp(val, "lazy_keep") == 0)
+			conf->wbcc_flush_mode = WBC_FLUSH_LAZY_KEEP;
 		else if (strcmp(val, "aging_drop") == 0)
 			conf->wbcc_flush_mode = WBC_FLUSH_AGING_DROP;
 		else if (strcmp(val, "aging_keep") == 0)
@@ -623,6 +905,18 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 			return -EINVAL;
 
 		cmd->wbcc_flags |= WBC_CMD_OP_RMPOL;
+	} else if (strcmp(key, "max_inodes") == 0) {
+		conf->wbcc_max_inodes = memparse(val, &rest);
+		if (*rest)
+			return -EINVAL;
+
+		cmd->wbcc_flags |= WBC_CMD_OP_INODES_LIMIT;
+	} else if (strcmp(key, "max_blocks") == 0) {
+		conf->wbcc_max_blocks = memparse(val, &rest);
+		if (*rest)
+			return -EINVAL;
+
+		cmd->wbcc_flags |= WBC_CMD_OP_BLOCKS_LIMIT;
 	} else {
 		return -EINVAL;
 	}
@@ -672,6 +966,11 @@ static struct wbc_cmd *wbc_cmd_parse(char *buffer, unsigned long count)
 		RETURN(cmd);
 	}
 
+	if (strncmp(buffer, "clear", 5) == 0) {
+		cmd->wbcc_cmd = WBC_CMD_CLEAR;
+		RETURN(cmd);
+	}
+
 	val = buffer;
 	token = strsep(&val, " ");
 	if (val == NULL || strlen(val) == 0)
@@ -700,7 +999,7 @@ int wbc_cmd_handle(struct wbc_super *super, struct wbc_cmd *cmd)
 	spin_lock(&super->wbcs_lock);
 	switch (cmd->wbcc_cmd) {
 	case WBC_CMD_DISABLE:
-		wbc_super_conf_disable(conf);
+		wbc_super_disable_cache(super);
 		super->wbcs_generation++;
 		break;
 	case WBC_CMD_ENABLE:
@@ -712,8 +1011,15 @@ int wbc_cmd_handle(struct wbc_super *super, struct wbc_cmd *cmd)
 		}
 		break;
 	case WBC_CMD_CONFIG:
-		wbc_super_conf_update(conf, cmd);
-		super->wbcs_generation++;
+	case WBC_CMD_CHANGE:
+		rc = wbc_super_conf_update(conf, cmd);
+		if (rc == 0)
+			super->wbcs_generation++;
+		break;
+	case WBC_CMD_CLEAR:
+		spin_unlock(&super->wbcs_lock);
+		rc = wbc_super_shrink_roots(super);
+		spin_lock(&super->wbcs_lock);
 		break;
 	default:
 		rc = -EINVAL;
