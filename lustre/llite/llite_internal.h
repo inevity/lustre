@@ -1809,16 +1809,14 @@ static inline struct wbc_conf *ll_s2wbcc(struct super_block *sb)
 static inline bool ll_data_in_lustre(struct inode *inode)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
-	struct wbc_inode *wbci = &lli->lli_wbc_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
 
-	if (S_ISREG(inode->i_mode) && lli->lli_clob != NULL) {
-		if (wbc_inode_none(wbci))
-			return true;
+	if (wbc_inode_none(wbci) && lli->lli_clob != NULL)
+		return true;
 
-		if (wbc_inode_data_committed(wbci)) {
-			LASSERT(wbc_inode_has_protected(wbci));
-			return true;
-		}
+	if (wbc_inode_data_committed(wbci)) {
+		LASSERT(wbc_inode_has_protected(wbci) && lli->lli_clob != NULL);
+		return true;
 	}
 
 	return false;

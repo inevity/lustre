@@ -2827,7 +2827,7 @@ void ll_delete_inode(struct inode *inode)
 {
 	ENTRY;
 
-	if (ll_data_in_lustre(inode)) {
+	if (S_ISREG(inode->i_mode)) {
 		/* It is last chance to write out dirty pages,
 		 * otherwise we may lose data while umount.
 		 *
@@ -2835,8 +2835,12 @@ void ll_delete_inode(struct inode *inode)
 		 * local inode gets i_nlink 0 from server only for the last
 		 * unlink, so that file is not opened somewhere else
 		 */
-		cl_sync_file_range(inode, 0, OBD_OBJECT_EOF, inode->i_nlink ?
-				   CL_FSYNC_LOCAL : CL_FSYNC_DISCARD, 1);
+		if (ll_data_in_lustre(inode))
+			cl_sync_file_range(inode, 0, OBD_OBJECT_EOF,
+					   inode->i_nlink ? CL_FSYNC_LOCAL :
+					   CL_FSYNC_DISCARD, 1);
+		else
+			wbc_free_inode_pages_final(inode, &inode->i_data);
 	}
 
 	ll_truncate_inode_pages_final(inode);

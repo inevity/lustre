@@ -12748,6 +12748,8 @@ static int lfs_wbc_state(int argc, char **argv)
 			printf(" create");
 		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_ATTR)
 			printf(" attr");
+		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_DATA)
+			printf(" data");
 		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_HARDLINK)
 			printf(" hardlink");
 		if (state.wbcs_dirty_flags & WBC_DIRTY_FL_FLUSHING)

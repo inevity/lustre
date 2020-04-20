@@ -64,10 +64,10 @@ struct wbc_conf {
 	unsigned long		wbcc_max_inodes;
 	/* How many inodes are left for allocation. */
 	unsigned long		wbcc_free_inodes;
-	/* How many blocks are allowed. */
-	unsigned long		wbcc_max_blocks;
-	/* How many blocks are allocated. */
-	struct percpu_counter	wbcc_used_blocks;
+	/* How many pages are allowed. */
+	unsigned long		wbcc_max_pages;
+	/* How many pages are allocated. */
+	struct percpu_counter	wbcc_used_pages;
 };
 
 struct wbc_super {
@@ -158,7 +158,7 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_MAX_RPCS	= 0x04,
 	WBC_CMD_OP_RMPOL	= 0x08,
 	WBC_CMD_OP_INODES_LIMIT	= 0x10,
-	WBC_CMD_OP_BLOCKS_LIMIT	= 0x20,
+	WBC_CMD_OP_PAGES_LIMIT	= 0x20,
 	WBC_CMD_OP_DECOMPLETE	= 0x40,
 };
 
@@ -319,6 +319,7 @@ int wbc_make_inode_sync(struct dentry *dentry);
 int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
 			  struct writeback_control_ext *wbcx);
 int wbc_make_inode_decomplete(struct inode *inode);
+int wbc_make_data_commit(struct dentry *dentry);
 int wbc_super_init(struct wbc_super *super);
 void wbc_super_fini(struct wbc_super *super);
 void wbc_inode_init(struct wbc_inode *wbci);
@@ -329,6 +330,8 @@ int wbc_cmd_parse_and_handle(char *buffer, unsigned long count,
 
 /* memfs.c */
 void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);
+bool wbc_inode_acct_page(struct inode *inode, long nr_pages);
+void wbc_inode_unacct_pages(struct inode *inode, long nr_pages);
 
 /* llite_wbc.c */
 void wbcfs_inode_operations_switch(struct inode *inode);
@@ -342,6 +345,8 @@ int wbcfs_flush_dir_children(struct inode *dir,
 			     struct list_head *childlist,
 			     struct ldlm_lock *lock,
 			     struct writeback_control_ext *wbcx);
+void wbc_free_inode_pages_final(struct inode *inode,
+				struct address_space *mapping);
 
 void wbc_tunables_init(struct super_block *sb);
 void wbc_tunables_fini(struct super_block *sb);
@@ -355,6 +360,8 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc);
 int wbc_super_shrink_roots(struct wbc_super *super);
 int wbc_super_sync_fs(struct wbc_super *super, int wait);
 void wbc_free_inode(struct inode *inode);
+void wbc_free_inode_pages_final(struct inode *inode,
+				struct address_space *mapping);
 void wbc_intent_inode_init(struct inode *dir, struct inode *inode,
 			   struct lookup_intent *it);
 

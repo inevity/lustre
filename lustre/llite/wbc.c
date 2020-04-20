@@ -603,6 +603,33 @@ up_rwsem:
 	RETURN(rc);
 }
 
+int wbc_make_data_commit(struct dentry *dentry)
+{
+	struct inode *inode = dentry->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
+
+	ENTRY;
+
+	/*
+	 * TODO: Reopen the file to support lock drop flush mode.
+	 */
+	if (!d_mountpoint(dentry->d_parent)) {
+		if (wbc_mode_lock_drop(ll_i2wbci(inode)))
+			rc = wbc_make_inode_sync(dentry->d_parent);
+		else /* lock keep flush mode */
+			rc = wbc_make_inode_sync(dentry);
+		if (rc)
+			RETURN(rc);
+	}
+
+	down_write(&wbci->wbci_rw_sem);
+	rc = wbcfs_commit_cache_pages(inode);
+	up_write(&wbci->wbci_rw_sem);
+
+	RETURN(rc);
+}
+
 static int wbc_inode_flush_lockdrop(struct inode *inode,
 				    struct writeback_control_ext *wbcx)
 {
@@ -755,7 +782,7 @@ static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 	conf->wbcc_batch_update = 0;
 	conf->wbcc_max_inodes = 0;
 	conf->wbcc_free_inodes = 0;
-	conf->wbcc_max_blocks = 0;
+	conf->wbcc_max_pages = 0;
 }
 
 /* called with @wbcs_lock hold. */
@@ -775,7 +802,7 @@ repeat:
 		goto repeat;
 
 	LASSERTF(conf->wbcc_max_inodes == conf->wbcc_free_inodes &&
-		 percpu_counter_sum(&conf->wbcc_used_blocks) == 0,
+		 percpu_counter_sum(&conf->wbcc_used_pages) == 0,
 		 "max_inodes: %lu free_inodes:%lu\n",
 		 conf->wbcc_max_inodes, conf->wbcc_free_inodes);
 	wbc_super_reset_common_conf(conf);
@@ -792,7 +819,7 @@ static void wbc_super_conf_default(struct wbc_conf *conf)
 static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 {
 	/*
-	 * Memery limits for inodes/blocks are not allowed to be decreased
+	 * Memery limits for inodes/pages are not allowed to be decreased
 	 * less then used value in the runtime.
 	 */
 	if (cmd->wbcc_flags & WBC_CMD_OP_INODES_LIMIT &&
@@ -800,9 +827,9 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 	    cmd->wbcc_conf.wbcc_max_inodes)
 		return -EINVAL;
 
-	if (cmd->wbcc_flags & WBC_CMD_OP_BLOCKS_LIMIT &&
-	    percpu_counter_compare(&conf->wbcc_used_blocks,
-				   cmd->wbcc_conf.wbcc_max_blocks) > 0)
+	if (cmd->wbcc_flags & WBC_CMD_OP_PAGES_LIMIT &&
+	    percpu_counter_compare(&conf->wbcc_used_pages,
+				   cmd->wbcc_conf.wbcc_max_pages) > 0)
 		return -EINVAL;
 
 	if (cmd->wbcc_flags & WBC_CMD_OP_INODES_LIMIT) {
@@ -811,8 +838,8 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_max_inodes = cmd->wbcc_conf.wbcc_max_inodes;
 	}
 
-	if (cmd->wbcc_flags & WBC_CMD_OP_BLOCKS_LIMIT)
-		conf->wbcc_max_blocks = cmd->wbcc_conf.wbcc_max_blocks;
+	if (cmd->wbcc_flags & WBC_CMD_OP_PAGES_LIMIT)
+		conf->wbcc_max_pages = cmd->wbcc_conf.wbcc_max_pages;
 
 	if (conf->wbcc_cache_mode == WBC_MODE_NONE)
 		conf->wbcc_cache_mode = WBC_MODE_DEFAULT;
@@ -830,7 +857,7 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 
 void wbc_super_fini(struct wbc_super *super)
 {
-	percpu_counter_destroy(&super->wbcs_conf.wbcc_used_blocks);
+	percpu_counter_destroy(&super->wbcs_conf.wbcc_used_pages);
 }
 
 int wbc_super_init(struct wbc_super *super)
@@ -839,9 +866,9 @@ int wbc_super_init(struct wbc_super *super)
 	int rc;
 
 #ifdef HAVE_PERCPU_COUNTER_INIT_GFP_FLAG
-	rc = percpu_counter_init(&conf->wbcc_used_blocks, 0, GFP_KERNEL);
+	rc = percpu_counter_init(&conf->wbcc_used_pages, 0, GFP_KERNEL);
 #else
-	rc = percpu_counter_init(&conf->wbcc_used_blocks, 0);
+	rc = percpu_counter_init(&conf->wbcc_used_pages, 0);
 #endif
 	if (rc)
 		return -ENOMEM;
@@ -911,12 +938,27 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 			return -EINVAL;
 
 		cmd->wbcc_flags |= WBC_CMD_OP_INODES_LIMIT;
-	} else if (strcmp(key, "max_blocks") == 0) {
-		conf->wbcc_max_blocks = memparse(val, &rest);
+	} else if (strcmp(key, "max_pages") == 0) {
+		conf->wbcc_max_pages = memparse(val, &rest);
 		if (*rest)
 			return -EINVAL;
 
-		cmd->wbcc_flags |= WBC_CMD_OP_BLOCKS_LIMIT;
+		cmd->wbcc_flags |= WBC_CMD_OP_PAGES_LIMIT;
+	} else if (strcmp(key, "size") == 0) {
+		unsigned long long size;
+
+		size = memparse(val, &rest);
+		if (*rest == '%') {
+			size <<= PAGE_SHIFT;
+			size *= cfs_totalram_pages();
+			do_div(size, 100);
+			rest++;
+		}
+		if (*rest)
+			return -EINVAL;
+
+		conf->wbcc_max_pages = DIV_ROUND_UP(size, PAGE_SIZE);
+		cmd->wbcc_flags |= WBC_CMD_OP_PAGES_LIMIT;
 	} else {
 		return -EINVAL;
 	}

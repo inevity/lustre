@@ -233,6 +233,32 @@ out_exit:
 	RETURN(rc);
 }
 
+bool wbc_inode_acct_page(struct inode *inode, long nr_pages)
+{
+	struct wbc_conf *conf = &ll_i2wbcs(inode)->wbcs_conf;
+
+	if (conf->wbcc_max_pages) {
+		if (percpu_counter_compare(&conf->wbcc_used_pages,
+					   conf->wbcc_max_pages - nr_pages) > 0)
+			return false;
+
+		percpu_counter_add(&conf->wbcc_used_pages, nr_pages);
+	}
+
+	return true;
+}
+
+void wbc_inode_unacct_pages(struct inode *inode, long nr_pages)
+{
+	struct wbc_conf *conf = &ll_i2wbcs(inode)->wbcs_conf;
+
+	ENTRY;
+
+	if (conf->wbcc_max_pages)
+		percpu_counter_sub(&conf->wbcc_used_pages, nr_pages);
+	EXIT;
+}
+
 static struct dentry *memfs_lookup_nd(struct inode *parent,
 				      struct dentry *dentry, unsigned int flags)
 {
@@ -408,32 +434,106 @@ static int memfs_rename(struct inode *src, struct dentry *src_dchild,
 	RETURN(wbcfs_d_init(tgt_dchild));
 }
 
+/*
+ * Find page in cache, or allocate.
+ */
+static int memfs_write_getpage(struct inode *inode, pgoff_t index,
+			       struct page **pagep)
+{
+	struct address_space *mapping = inode->i_mapping;
+	gfp_t gfp_mask = mapping_gfp_mask(mapping);
+	struct page *page;
+	int rc;
+
+	ENTRY;
+
+repeat:
+	page = find_lock_page(mapping, index);
+	if (page)
+		GOTO(found, rc = 0);
+
+	/*
+	 * Fast cache lookup did not find it: allocate it.
+	 */
+	if (!wbc_inode_acct_page(inode, 1))
+		RETURN(-ENOSPC);
+
+	page = __page_cache_alloc(gfp_mask);
+	if (!page)
+		GOTO(unacct_page, rc = -ENOMEM);
+
+	rc = add_to_page_cache_lru(page, mapping, index, gfp_mask);
+	if (unlikely(rc)) {
+		put_page(page);
+		GOTO(unacct_page, rc);
+	}
+found:
+	wait_for_stable_page(page);
+	*pagep = page;
+	RETURN(0);
+
+unacct_page:
+	wbc_inode_unacct_pages(inode, 1);
+	if (rc == -EEXIST)
+		GOTO(repeat, rc);
+
+	RETURN(rc);
+}
+
 static int memfs_write_begin(struct file *file, struct address_space *mapping,
 			     loff_t pos, unsigned len, unsigned flags,
 			     struct page **pagep, void **fsdata)
 {
 	struct inode *inode = file_inode(file);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	pgoff_t index = pos >> PAGE_SHIFT;
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	LASSERT(wbc_inode_data_caching(wbci));
 
-	RETURN(simple_write_begin(file, mapping, pos, len,
-				  flags, pagep, fsdata));
+	rc = memfs_write_getpage(inode, index, pagep);
+	if (rc == -ENOSPC) {
+		int rc2;
+
+		up_read(&wbci->wbci_rw_sem);
+		rc2 = wbc_make_data_commit(file->f_path.dentry);
+		down_read(&wbci->wbci_rw_sem);
+		if (rc2)
+			rc = rc2;
+	}
+
+	RETURN(rc);
 }
 
 static int memfs_write_end(struct file *file, struct address_space *mapping,
 			   loff_t pos, unsigned len, unsigned copied,
-			   struct page *vmpage, void *fsdata)
+			   struct page *page, void *fsdata)
 {
 	struct inode *inode = file_inode(file);
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	LASSERT(wbc_inode_data_caching(ll_i2wbci(inode)));
 
-	RETURN(simple_write_end(file, mapping, pos, len,
-				copied, vmpage, fsdata));
+	if (pos + copied > inode->i_size)
+		i_size_write(inode, pos + copied);
+
+	if (!PageUptodate(page)) {
+		if (copied < PAGE_SIZE) {
+			unsigned from = pos & (PAGE_SIZE - 1);
+
+			zero_user_segments(page, 0, from,
+					from + copied, PAGE_SIZE);
+		}
+		SetPageUptodate(page);
+	}
+	set_page_dirty(page);
+	unlock_page(page);
+	put_page(page);
+
+	return copied;
 }
 
 static loff_t memfs_file_seek(struct file *file, loff_t offset, int origin)
@@ -553,7 +653,11 @@ static int memfs_file_open(struct inode *inode, struct file *file)
 	if (fd == NULL)
 		RETURN(-ENOMEM);
 
+	fd->fd_file = file;
 	file->private_data = fd;
+	ll_readahead_init(inode, &fd->fd_ras);
+	fd->fd_omode = file->f_flags & (FMODE_READ | FMODE_WRITE | FMODE_EXEC);
+
 	/* Pin dentry, thus it will keep in MemFS until unlink. */
 	dget(file_dentry(file));
 
@@ -598,8 +702,7 @@ static int memfs_getpage(struct inode *inode, pgoff_t index,
 }
 
 /* linux/mm/shmem.c shmem_file_read_iter() */
-static ssize_t memfs_file_read_iter(struct kiocb *iocb,
-				    struct iov_iter *to)
+static ssize_t __memfs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
@@ -617,7 +720,7 @@ static ssize_t memfs_file_read_iter(struct kiocb *iocb,
 	/*
 	 * Might this read be for a stacking filesystem?  Then when reading
 	 * holes of a sparse file, we actually need to allocate those pages,
-	 * and even mark them dirty, so it cannot exceed the max_blocks limit.
+	 * and even mark them dirty, so it cannot exceed the max_pages limit.
 	 */
 
 	index = *ppos >> PAGE_SHIFT;
@@ -707,16 +810,44 @@ static ssize_t memfs_file_read_iter(struct kiocb *iocb,
 	return retval ? retval : error;
 }
 
-static ssize_t memfs_file_write_iter(struct kiocb *iocb,
-				     struct iov_iter *iter)
+static ssize_t memfs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_data_caching(wbci))
+		rc = __memfs_file_read_iter(iocb, to);
+	else
+		rc = ll_i2sbi(inode)->ll_fop->read_iter(iocb, to);
+	up_read(&wbci->wbci_rw_sem);
 
-	RETURN(generic_file_write_iter(iocb, iter));
+	RETURN(rc);
+}
+
+static ssize_t memfs_file_write_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
+
+	ENTRY;
+
+	down_read(&wbci->wbci_rw_sem);
+repeat:
+	if (wbc_inode_data_caching(wbci)) {
+		rc = generic_file_write_iter(iocb, iter);
+		if (rc == -ENOSPC)
+			GOTO(repeat, rc);
+	} else {
+		rc = ll_i2sbi(inode)->ll_fop->write_iter(iocb, iter);
+	}
+	up_read(&wbci->wbci_rw_sem);
+
+	RETURN(rc);
 }
 
 #else
@@ -804,7 +935,7 @@ static void do_memfs_file_read(struct file *filp,
 	/*
 	 * Might this read be for a stacking filesystem?  Then when reading
 	 * holes of a sparse file, we actually need to allocate those pages,
-	 * and even mark them dirty, so it cannot exceed the max_blocks limit.
+	 * and even mark them dirty, so it cannot exceed the max_pages limit.
 	 */
 
 	index = *ppos >> PAGE_SHIFT;
@@ -895,8 +1026,9 @@ static void do_memfs_file_read(struct file *filp,
 	file_accessed(filp);
 }
 
-static ssize_t memfs_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
-				   unsigned long nr_segs, loff_t pos)
+static ssize_t __memfs_file_aio_read(struct kiocb *iocb,
+				     const struct iovec *iov,
+				     unsigned long nr_segs, loff_t pos)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct file *filp = iocb->ki_filp;
@@ -934,26 +1066,51 @@ static ssize_t memfs_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 	return retval;
 }
 
+static ssize_t memfs_file_aio_read(struct kiocb *iocb,
+				   const struct iovec *iov,
+				   unsigned long nr_segs, loff_t pos)
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	ENTRY;
+
+	LASSERT(wbc_inode_has_protected(wbci));
+
+	if (wbc_inode_data_committed(wbci))
+		RETURN(ll_i2sbi(inode)->ll_fop->aio_read(iocb, iov,
+							 nr_segs, pos));
+	else
+		RETURN(__memfs_file_aio_read(iocb, iov, nr_segs, pos));
+}
+
 static ssize_t memfs_file_read(struct file *file, char __user *buf,
 			       size_t count, loff_t *ppos)
 {
 	struct inode *inode = file_inode(file);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_data_caching(wbci))
+		rc = do_sync_read(file, buf, count, ppos);
+	else
+		rc = ll_i2sbi(inode)->ll_fop->read(file, buf, count, ppos);
+	up_read(&wbci->wbci_rw_sem);
 
-	RETURN(do_sync_read(file, buf, count, ppos));
+	RETURN(rc);
 }
 
 static ssize_t memfs_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 				    unsigned long nr_segs, loff_t pos)
 {
-	struct inode *inode = file_inode(iocb->ki_filp);
+	struct wbc_inode *wbci = ll_i2wbci(file_inode(iocb->ki_filp));
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	LASSERT(wbc_inode_data_caching(wbci));
 
 	RETURN(generic_file_aio_write(iocb, iov, nr_segs, pos));
 }
@@ -962,12 +1119,23 @@ static ssize_t memfs_file_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *ppos)
 {
 	struct inode *inode = file_inode(file);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	down_read(&wbci->wbci_rw_sem);
+repeat:
+	if (wbc_inode_data_caching(wbci)) {
+		rc = do_sync_write(file, buf, count, ppos);
+		if (rc == -ENOSPC)
+			GOTO(repeat, rc);
+	} else {
+		rc = ll_i2sbi(inode)->ll_fop->write(file, buf, count, ppos);
+	}
+	up_read(&wbci->wbci_rw_sem);
 
-	RETURN(do_sync_write(file, buf, count, ppos));
+	RETURN(rc);
 }
 #endif /* !HAVE_FILE_OPERATIONS_READ_WRITE_ITER */
 
@@ -991,11 +1159,35 @@ static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
 
 	down_read(&wbci->wbci_rw_sem);
 	if (wbc_inode_has_protected(wbci)) {
-		rc = simple_setattr_no_dirty(&init_user_ns, dentry, attr);
+		rc = setattr_prepare(&init_user_ns, dentry, attr);
 		if (rc)
-			RETURN(rc);
+			GOTO(up_rwsem, rc);
 
-		spin_lock(&inode->i_lock);
+		if (S_ISREG(inode->i_mode) && (attr->ia_valid & ATTR_SIZE)) {
+			struct address_space *mapping = inode->i_mapping;
+			unsigned long nr_pages = mapping->nrpages;
+			loff_t oldsize = inode->i_size;
+
+			if (wbc_inode_data_committed(wbci)) {
+				inode_unlock(inode);
+				rc = cl_setattr_ost(ll_i2info(inode)->lli_clob,
+						    attr,
+						    OP_XVALID_OWNEROVERRIDE, 0);
+				inode_lock(inode);
+				inode_dio_wait(inode);
+				inode_has_no_xattr(inode);
+			} else {
+				truncate_setsize(inode, attr->ia_size);
+				if (attr->ia_size < oldsize)
+					wbc_inode_unacct_pages(inode,
+						nr_pages - mapping->nrpages);
+			}
+		}
+
+		if (rc)
+			GOTO(up_rwsem, rc);
+
+		setattr_copy(&init_user_ns, inode, attr);
 		wbci->wbci_dirty_flags |= WBC_DIRTY_FL_ATTR;
 		wbci->wbci_dirty_attr |= attr->ia_valid;
 		spin_unlock(&inode->i_lock);
@@ -1005,6 +1197,7 @@ static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
 		LASSERT(wbc_inode_none(wbci));
 		rc = inode->i_op->setattr(dentry, attr);
 	}
+up_rwsem:
 	up_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
 }

@@ -2867,19 +2867,24 @@ enum lu_wbc_dirty_flags {
 	/* The file is up-to-date. */
 	WBC_DIRTY_FL_UPTODATE	= WBC_DIRTY_FL_NONE,
 	/* The file is being flushed. */
-	WBC_DIRTY_FL_FLUSHING	= 0x1,
+	WBC_DIRTY_FL_FLUSHING	= 0x01,
 	/* The file was created in MemFS but not yet flushed to MDT. */
-	WBC_DIRTY_FL_CREAT	= 0x2,
+	WBC_DIRTY_FL_CREAT	= 0x02,
 	/*
 	 * Attributes was modified since the file was created in MemFS or
 	 * flushed to MDT last time.
 	 */
-	WBC_DIRTY_FL_ATTR	= 0x4,
+	WBC_DIRTY_FL_ATTR	= 0x04,
 	/*
 	 * New hardlinks were added since the file was create in MemFS or
 	 * flushed to MDT last time.
 	 */
-	WBC_DIRTY_FL_HARDLINK	= 0x8,
+	WBC_DIRTY_FL_HARDLINK	= 0x08,
+	/*
+	 * The file contains dirty pages which are charged and managed
+	 * by MemFS.
+	 */
+	WBC_DIRTY_FL_DATA	= 0x10,
 };
 
 struct lu_wbc_state {
@@ -2901,7 +2906,7 @@ struct lu_wbc_state {
 	enum lu_wbc_flush_mode	wbcs_flush_mode;
 	/* Reserved for local open count. */
 	__u32			wbcs_open_count;
-	/* Reserved for the path on PCC after supported. */
+	/* Reserved for the path of data on PCC after supported. */
 	char			wbcs_path[PATH_MAX];
 };
 

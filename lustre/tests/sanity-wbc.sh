@@ -259,6 +259,10 @@ get_free_inodes() {
 	wbc_conf_show | grep "inodes_free:" | awk '{print $2}'
 }
 
+get_free_pages() {
+	wbc_conf_show | grep "pages_free:" | awk '{print $2}'
+}
+
 test_1_base() {
 	local file1="$tdir/file1"
 	local dir1="$tdir/dir1"
@@ -1190,8 +1194,130 @@ test_15c() {
 }
 run_test 15c "Inode limits for lock keep modes with multiple level directories"
 
+test_16_base() {
+	local flush_mode=$1
+	local nr_files=$2
+	local blksz=$3
+	local count=$4
+	local nr_pages=$(( blksz * count / 4096))
+	local max_pages=$(( nr_files * nr_pages ))
+	local free_pages
+	local fileset
+	local file
+
+	echo "flush_mode=$1 max_pages=$max_pages nr_files=$2 bs=$3 count=$4"
+	setup_wbc "flush_mode=$flush_mode max_pages=$max_pages"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	for i in $(seq 1 $nr_files); do
+		file=$DIR/$tdir/$tfile.i$i
+		fileset+="$file "
+		dd if=/dev/zero of=$file bs=$blksz count=$count conv=notrunc
+	done
+
+	echo "Free pages: $(get_free_pages) Write $max_pages pages"
+	$LFS wbc state $fileset
+	file=$DIR/$tdir/$tfile.i0
+	dd if=/dev/zero of=$file bs=$blksz count=$count conv=notrunc
+	$LFS wbc state $file $fileset
+	echo "Free pages: $(get_free_pages) Write $nr_pages pages more"
+
+	for file in $fileset; do
+		echo "write $file"
+		dd if=/dev/zero of=$file bs=$blksz count=$(( count + 1 )) \
+			conv=notrunc
+	done
+
+	$LFS wbc state $fileset
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+	free_pages=$(get_free_pages)
+	[ $free_pages == $max_pages ] ||
+		error "Free pages is $free_pages, expect $max_pages"
+}
+
+test_16() {
+	test_16_base "lazy_keep" 1 4096 1
+	test_16_base "lazy_keep" 8 4096 16
+	test_16_base "aging_keep" 12 4096 32
+	test_16_base "aging_keep" 12 1048576 8
+}
+run_test 16 "page limits for regular files in the lock keep mode"
+
+test_17_base() {
+	local flush_mode=$1
+	local file1="$DIR/$tdir/$tfile.i1"
+	local file2="$DIR/$tdir/$tfile.i2"
+	local max_pages=1024
+	local free_pages
+
+	setup_wbc "flush_mode=$flush_mode max_pages=$max_pages"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	echo "Write $file1 $file2 bs=4k count=512"
+	dd if=/dev/zero of=$file1 bs=4k count=512 || error "Write $file1 failed"
+	wbc_conf_show
+	dd if=/dev/zero of=$file2 bs=4k count=512 || error "Write $file2 failed"
+	$LFS wbc state $file1 $file2
+	wbc_conf_show
+	free_pages=$(get_free_pages)
+	[ $free_pages == 0 ] || error "Free pages got $free_pages, expect 0"
+
+	echo "Write $file1 $file2 bs=4k count=513"
+	dd if=/dev/zero of=$file1 bs=4k count=513 || error "Write $file1 failed"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 512 ] || error "Free pages got $free_pages, expect 512"
+	dd if=/dev/zero of=$file2 bs=4k count=513 || error "Write $file2 failed"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 511 ] || error "Free pages got $free_pages, expect 511"
+	$LFS wbc state $file1 $file2
+
+	echo "Write $file1 $file2 bs=4k count=1025"
+	dd if=/dev/zero of=$file1 bs=4k count=1025 ||
+		error "Write $file1 failed"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 511 ] || error "Free pages got $free_pages, expect 511"
+	dd if=/dev/zero of=$file2 bs=4k count=1025 ||
+		error "Write $file2 failed"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 1024 ] ||
+		error "Free pages got $free_pages, expect 1024"
+	$LFS wbc state $file1 $file2
+
+	echo "Truncate $file2"
+	rm $file2 ||  error "rm $file2 failed"
+	dd if=/dev/zero of=$file2 bs=4k count=1024 ||
+		error "Write $file2 failed"
+	$TRUNCATE $file2 $(( 1048576 * 2 )) || error "Could not truncate $file2"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 512 ] || error "Free pages got $free_pages, expect 512"
+	$TRUNCATE $file2 $(( 1048576 * 2 + 4096 )) ||
+		error "Could not truncate $file2"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 512 ] || error "Free pages got $free_pages, expect 512"
+	$TRUNCATE $file2 $(( 1048576 * 2 - 4095 )) ||
+		error "Could not truncate $file2"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 512 ] || error "Free pages got $free_pages, expect 512"
+	$TRUNCATE $file2 $(( 1048576 * 2 - 4096 )) ||
+		error "Could not truncate $file2"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 513 ] || error "Free pages got $free_pages, expect 512"
+	$TRUNCATE $file2 $(( 1048576 * 2 - 4097 )) ||
+		error "Could not truncate $file2"
+	free_pages=$(get_free_pages)
+	[ $free_pages == 513 ] || error "Free pages got $free_pages, expect 512"
+
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_17() {
+	test_17_base "lazy_keep"
+	test_17_base "aging_keep"
+}
+run_test 17 "Verify page limits work correctly for truncate in lock keep mode"
+
 test_sanity() {
-	local cmd="$LCTL wbc enable $MOUNT"
+	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 
 	ONLY="17a 17b 17c 17d 17e 17f 25a 25b 26a 26b 26c 26d 26e 26f 32e 32f \
 		32g 32h 32m 32n 32o 32p" WBC="yes" CONF="$cmd" bash sanity.sh

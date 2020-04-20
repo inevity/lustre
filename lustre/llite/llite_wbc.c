@@ -841,6 +841,7 @@ static int wbc_do_create(struct inode *inode)
 int wbcfs_commit_cache_pages(struct inode *inode)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
+	struct address_space *mapping = inode->i_mapping;
 	struct lu_env *env = NULL;
 	struct cl_io *io = NULL;
 	struct cl_lock *lock = NULL;
@@ -922,10 +923,9 @@ int wbcfs_commit_cache_pages(struct inode *inode)
 		struct page *vmpage = NULL;
 
 #ifdef HAVE_PAGEVEC_LOOKUP_THREE_PARAM
-		nr_pages = pagevec_lookup(&pvec, inode->i_mapping, &index);
+		nr_pages = pagevec_lookup(&pvec, mapping, &index);
 #else
-		nr_pages = pagevec_lookup(&pvec, inode->i_mapping, index,
-					  PAGEVEC_SIZE);
+		nr_pages = pagevec_lookup(&pvec, mapping, index, PAGEVEC_SIZE);
 #endif
 
 		for (i = 0 ; i < nr_pages ; i++) {
@@ -1009,10 +1009,30 @@ out:
 	/* XXX failure handling. */
 	spin_lock(&inode->i_lock);
 	wbci->wbci_flags |= WBC_STATE_FL_DATA_COMMITTED;
+	wbc_inode_unacct_pages(inode, mapping->nrpages);
+	mapping->a_ops = &ll_aops;
 	spin_unlock(&inode->i_lock);
-	mapping_clear_unevictable(inode->i_mapping);
+	mapping_clear_unevictable(mapping);
 
 	RETURN(rc);
+}
+
+void wbc_free_inode_pages_final(struct inode *inode,
+				struct address_space *mapping)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	if (wbc_inode_has_protected(wbci)) {
+		LASSERT(!wbc_inode_data_committed(wbci));
+
+		if (inode->i_nlink) {
+			(void) wbcfs_commit_cache_pages(inode);
+			cl_sync_file_range(inode, 0, OBD_OBJECT_EOF,
+					   CL_FSYNC_LOCAL, 1);
+		} else {
+			wbc_inode_unacct_pages(inode, mapping->nrpages);
+		}
+	}
 }
 
 int wbcfs_inode_flush_lockless(struct inode *inode,
@@ -1338,10 +1358,10 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 	seq_printf(m, "rmpol: %s\n", wbc_rmpol2string(conf->wbcc_rmpol));
 	seq_printf(m, "inodes_max: %lu\n", conf->wbcc_max_inodes);
 	seq_printf(m, "inodes_free: %lu\n", conf->wbcc_free_inodes);
-	seq_printf(m, "blocks_max: %lu\n", conf->wbcc_max_blocks);
-	seq_printf(m, "blocks_free: %lu\n",
-		   (unsigned long)(conf->wbcc_max_blocks -
-		   percpu_counter_sum(&conf->wbcc_used_blocks)));
+	seq_printf(m, "pages_max: %lu\n", conf->wbcc_max_pages);
+	seq_printf(m, "pages_free: %lu\n",
+		   (unsigned long)(conf->wbcc_max_pages -
+		   percpu_counter_sum(&conf->wbcc_used_pages)));
 
 	return 0;
 }
