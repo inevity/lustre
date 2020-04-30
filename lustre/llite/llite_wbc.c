@@ -859,7 +859,7 @@ int wbcfs_commit_cache_pages(struct inode *inode)
 	ENTRY;
 
 	/* The file data has already assimilated from MemFS into Lustre. */
-	if (wbc_inode_data_committed(wbci))
+	if (wbc_inode_data_committed(wbci) || wbc_inode_none(wbci))
 		RETURN(0);
 
 	isize = i_size_read(inode);

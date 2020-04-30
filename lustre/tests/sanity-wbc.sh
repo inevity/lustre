@@ -264,6 +264,7 @@ get_free_pages() {
 }
 
 test_1_base() {
+	local flush_mode=$1
 	local file1="$tdir/file1"
 	local dir1="$tdir/dir1"
 	local file2="$dir1/file2"
@@ -272,6 +273,8 @@ test_1_base() {
 	local file4="$tdir/file4"
 	local file5="$tdir/file5"
 	local file6="$tdir/file6"
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	# WBC flags:
 	# 0x00000000: not in WBC
@@ -347,23 +350,22 @@ test_1_base() {
 }
 
 test_1() {
-	setup_wbc
-	test_1_base
-
-	setup_wbc "flush_mode=aging_drop"
-	test_1_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_1_base
+	test_1_base "lazy_drop"
+	test_1_base "lazy_keep"
+	test_1_base "aging_drop"
+	test_1_base "aging_keep"
 }
 run_test 1 "Basic test for WBC with LAZY flush mode"
 
 test_2_base() {
+	local flush_mode=$1
 	local dir="$DIR/$tdir"
 	local file="$dir/$tfile"
 	local file2="$DIR2/$tdir/$tfile"
 	local oldmd5
 	local newmd5
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	mkdir $dir || error "mkdir $dir failed"
 	check_wbc_flags $dir "0x0000000f"
@@ -410,23 +412,22 @@ test_2_base() {
 }
 
 test_2() {
-	setup_wbc
-	test_2_base
-
-	setup_wbc "flush_mode=aging_drop"
-	test_2_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_2_base
+	test_2_base "lazy_drop"
+	test_2_base "lazy_keep"
+	test_2_base "aging_drop"
+	test_2_base "aging_keep"
 }
 run_test 2 "Verify remote read works correctly"
 
 test_3_base() {
+	local flush_mode=$1
 	local dir="$DIR/$tdir"
 	local file="$dir/$tfile"
 	local file2="$DIR2/$tdir/$tfile"
 	local oldmd5
 	local newmd5
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	mkdir $dir || error "mkdir $dir failed"
 	check_wbc_flags $dir "0x0000000f"
@@ -462,18 +463,15 @@ test_3_base() {
 }
 
 test_3() {
-	setup_wbc
-	test_3_base
-
-	setup_wbc "flush_mode=aging_drop"
-	test_3_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_3_base
+	test_3_base "lazy_drop"
+	test_3_base "lazy_keep"
+	test_3_base "aging_drop"
+	test_3_base "aging_keep"
 }
 run_test 3 "Remote read for WBC cached regular file with holes"
 
 test_4_base() {
+	local flush_mode=$1
 	local dir11="$DIR/$tdir"
 	local dir21="$DIR2/$tdir"
 	local file11="$dir11/$tfile"
@@ -482,6 +480,8 @@ test_4_base() {
 	local dir22="$dir21/dir2"
 	local file12="$dir12/file2"
 	local file22="$dir22/file2"
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	mkdir $dir11 || error "mkdir $dir11 failed"
 	rmdir $dir21 || error "rmdir $dir21 failed"
@@ -539,14 +539,10 @@ test_4_base() {
 }
 
 test_4() {
-	setup_wbc
-	test_4_base
-
-	setup_wbc "flush_mode=aging_drop"
-	test_4_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_4_base
+	test_4_base "lazy_drop"
+	test_4_base "lazy_keep"
+	test_4_base "aging_drop"
+	test_4_base "aging_keep"
 }
 run_test 4 "Verify unlink() works correctly"
 
@@ -564,6 +560,7 @@ test_5() {
 run_test 5 "Hanle -ENOENT lookup failure correctly"
 
 test_6_base() {
+	local flush_mode=$1
 	local file1="$tdir/file1"
 	local dir1="$tdir/dir1"
 	local file2="$dir1/file2"
@@ -578,6 +575,7 @@ test_6_base() {
 	interval=$(sysctl -n vm.dirty_expire_centisecs)
 	echo "dirty_writeback_centisecs: $interval"
 
+	setup_wbc "flush_mode=$flush_mode"
 	wbc_conf_show | grep "flush_mode: aging_keep" &&
 		flags="0x00000017"
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
@@ -612,15 +610,13 @@ test_6_base() {
 }
 
 test_6() {
-	setup_wbc "flush_mode=aging_drop"
-	test_6_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_6_base
+	test_6_base "aging_drop"
+	test_6_base "aging_keep"
 }
 run_test 6 "Verify aging flush mode"
 
 test_7_base() {
+	local flush_mode=$1
 	local dir="$DIR/$tdir"
 	local dir1="$dir/dir1"
 	local file1="$dir/file1"
@@ -628,6 +624,8 @@ test_7_base() {
 	local expected="400"
 	local accd
 	local accf
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	mkdir $dir || error "mkdir $dir failed"
 	mkdir $dir1 || error "mkdir $dir1 failed"
@@ -667,19 +665,18 @@ test_7_base() {
 }
 
 test_7() {
-	setup_wbc
-	test_7_base
-
-	setup_wbc "flush_mode=aging_drop"
-	test_7_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_7_base
+	test_7_base "lazy_drop"
+	test_7_base "lazy_keep"
+	test_7_base "aging_drop"
+	test_7_base "aging_keep"
 }
 run_test 7 "setattr() on the root WBC file"
 
 test_8_base() {
+	local flush_mode=$1
 	local fileset="$DIR/$tdir/$tfile $DIR/$tdir/l-exist"
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	touch $DIR/$tdir/$tfile || error "touch $DIR/$tdir/$tfile failed"
@@ -706,14 +703,10 @@ test_8_base() {
 }
 
 test_8() {
-	setup_wbc
-	test_8_base
-
-	setup_wbc "flush_mode=aging_drop"
-	test_8_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_8_base
+	test_8_base "lazy_drop"
+	test_8_base "lazy_keep"
+	test_8_base "aging_drop"
+	test_8_base "aging_keep"
 }
 run_test 8 "Verify symlink works correctly"
 
@@ -832,12 +825,15 @@ test_11() {
 run_test 11 "Verify umount works correctly"
 
 test_12_base() {
+	local flush_mode=$1
 	local dir="$DIR/$tdir"
 	local file1="$dir/file1"
 	local dir1="$dir/dir1"
 	local file2="$dir1/file2"
 	local dir2="$dir1/dir2"
 	local fileset="$dir $file1 $dir1 $file2 $dir2"
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	mkdir $dir || error "mkdir $dir failed"
 	echo "QQQQQ" > $file1 || error "write $file1 failed"
@@ -860,21 +856,15 @@ test_12_base() {
 }
 
 test_12() {
-	setup_wbc "flush_mode=lazy_drop"
-	test_12_base
-
-	setup_wbc "flush_mode=aging_drop rmpol=sync"
-	test_12_base
-
-	setup_wbc "flush_mode=lazy_keep rmpol=sync"
-	test_12_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_12_base
+	test_12_base "lazy_drop"
+	test_12_base "lazy_keep"
+	test_12_base "aging_drop"
+	test_12_base "aging_keep"
 }
 run_test 12 "Verify sync(2) works correctly"
 
-test_13() {
+test_13_base() {
+	local flush_mode=$1
 	local dir="$DIR/$tdir"
 	local file1="$dir/file1"
 	local dir1="$dir/dir1"
@@ -885,7 +875,7 @@ test_13() {
 	local file4="$dir3/file4"
 	local fileset="$dir $file1 $dir1 $file2 $dir2 $file3 $dir3 $file4"
 
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
+	setup_wbc "flush_mode=$flush_mode"
 
 	echo -e "\n===== Test fsync(2) on a regular file ====="
 	mkdir $dir || error "mkdir $dir failed"
@@ -916,10 +906,19 @@ test_13() {
 	$MULTIOP $dir3 oyc || error "$MULTIOP $dir Dyc failed"
 	$LFS wbc state $fileset
 	check_fileset_wbc_flushed "$fileset"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
 }
-run_test 13 "Verify fsync(2) works correctly for aging keep flush mode"
+
+test_13() {
+	test_13_base "lazy_drop"
+	test_13_base "lazy_keep"
+	test_13_base "aging_drop"
+	test_13_base "aging_keep"
+}
+run_test 13 "Verify fsync(2) works correctly for four flush modes"
 
 test_14_base() {
+	local flush_mode=$1
 	local dir="$DIR/$tdir"
 	local file1="$dir/file1"
 	local dir1="$dir/dir1"
@@ -929,6 +928,8 @@ test_14_base() {
 	local dir3="$dir2/dir3"
 	local file4="$dir3/file4"
 	local fileset="$dir $file1 $dir1 $file2 $dir2 $file3 $dir3 $file4"
+
+	setup_wbc "flush_mode=$flush_mode"
 
 	mkdir -p $dir3 || error "mkdir -p $dir3 failed"
 	echo "QQQQQ" > $file1 || error "write $file1 failed"
@@ -945,22 +946,22 @@ test_14_base() {
 }
 
 test_14() {
-	setup_wbc
-	test_14_base
-
-	setup_wbc "flush_mode=aging_drop"
-	test_14_base
-
-	setup_wbc "flush_mode=aging_keep rmpol=sync"
-	test_14_base
+	test_14_base "lazy_drop"
+	test_14_base "lazy_keep"
+	test_14_base "aging_drop"
+	test_14_base "aging_keep"
 }
 run_test 14 "Verify the command 'lctl wbc clear' cleans all cached files"
 
 test_15a_base() {
+	local flush_mode=$1
+	local nr_inodes=$2
 	local dir="$DIR/$tdir"
-	local nr_inodes=$1
 	local prefix="wbcent"
 	local fileset
+
+	echo -e "\n===== Inode limits for $flush_mode flush mode ====="
+	setup_wbc "flush_mode=$flush_mode max_inodes=$nr_inodes"
 
 	for i in $(seq 1 $nr_inodes); do
 		fileset+="$dir/$prefix.i$i "
@@ -1026,29 +1027,22 @@ test_15a_base() {
 test_15a() {
 	local nr_inodes=10
 
-	echo "===== Inode limits for lazy drop flush mode ====="
-	setup_wbc "flush_mode=lazy_drop max_inodes=$nr_inodes"
-	test_15a_base $nr_inodes
-
-	echo -e "\n===== Inode limits for aging drop flush mode ====="
-	setup_wbc "flush_mode=aging_drop max_inodes=$nr_inodes"
-	test_15a_base $nr_inodes
-
-	echo -e "\n===== Inode limits for lazy keep flush mode ====="
-	setup_wbc "flush_mode=lazy_keep max_inodes=$nr_inodes"
-	test_15a_base $nr_inodes
-
-	echo -e "\n===== Inode limits for aging keep flush mode ====="
-	setup_wbc "flush_mode=aging_keep max_inodes=$nr_inodes"
-	test_15a_base $nr_inodes
+	test_15a_base "lazy_drop" $nr_inodes
+	test_15a_base "lazy_keep" $nr_inodes
+	test_15a_base "aging_drop" $nr_inodes
+	test_15a_base "aging_keep" $nr_inodes
 }
 run_test 15a "Inode limits for various flush modes"
 
 test_15b_base() {
+	local flush_mode=$1
+	local nr_inodes=$2
 	local dir="$DIR/$tdir"
-	local nr_inodes=$1
 	local prefix="wbcent"
 	local fileset
+
+	echo -e "\n===== Inode limits for $flush_mode flush mode ====="
+	setup_wbc "flush_mode=$flush_mode max_inodes=$nr_inodes"
 
 	echo "Free inodes: $(get_free_inodes) before create regular files"
 	for i in $(seq 1 $nr_inodes); do
@@ -1074,13 +1068,8 @@ test_15b_base() {
 test_15b() {
 	local nr_inodes=10
 
-	echo -e "\n===== Inode limits for lazy keep flush mode ====="
-	setup_wbc "flush_mode=lazy_keep max_inodes=$nr_inodes"
-	test_15b_base $nr_inodes
-
-	echo -e "\n===== Inode limits for aging keep flush mode ====="
-	setup_wbc "flush_mode=aging_keep max_inodes=$nr_inodes"
-	test_15b_base $nr_inodes
+	test_15b_base "lazy_keep" $nr_inodes
+	test_15b_base "aging_keep" $nr_inodes
 }
 run_test 15b "Inode limits for various lock keep flush modes"
 
@@ -1315,6 +1304,94 @@ test_17() {
 	test_17_base "aging_keep"
 }
 run_test 17 "Verify page limits work correctly for truncate in lock keep mode"
+
+test_18_base() {
+	local pid1
+	local pid2
+	local flush_mode=$1
+	local file1="$DIR/$tdir/$tfile"
+	local file2="$DIR2/$tdir/$tfile"
+
+	echo -e "\n=== reopen test: flush_mode=$flush_mode ==="
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	echo -n reopen_test_data > $file1 || error "write $file1 failed"
+	$LFS wbc state $file1
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $file1
+	$MULTIOP $file1 O_c &
+	pid1=$!
+	stat $file2 || error "stat $file2 failed"
+	$LFS wbc state $file1
+	kill -USR1 $pid1 && wait $pid1 || error "multiop failure"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	echo -n reopen2_test_data > $file1 || error "write $file1 failed"
+	$LFS wbc state $file1
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $file1
+	$MULTIOP $file1 O_c &
+	pid1=$!
+	$MULTIOP $file1 O_c &
+	pid2=$!
+	sleep 2
+	stat $file2 || error "stat $file2 failed"
+	$LFS wbc state $file1
+	kill -USR1 $pid1 && wait $pid1|| error "multiop failure"
+	kill -USR1 $pid2 && wait $pid2 || error "multiop failure"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_18() {
+	test_18_base "lazy_drop"
+	test_18_base "lazy_keep"
+	test_18_base "aging_drop"
+	test_18_base "aging_keep"
+}
+run_test 18 "reopen files when EX WBC lock is revoking for regular files"
+
+test_19() {
+	local pid
+	local flush_mode="lazy_keep"
+	local file1="$DIR/$tdir/$tfile"
+	local file2="$DIR2/$tdir/$tfile"
+
+	echo -e "\n=== reopen on remote remove: flush_mode=$flush_mode ==="
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	$MULTIOP $file1 Ow40960_c &
+	pid=$!
+	sleep 2
+	ls $DIR/$tdir
+	$LFS wbc state $DIR/$tdir $file1
+	unlink $file2 || error "unlink $file2 failed"
+	kill -USR1 $pid && wait $pid || error "multiop failure"
+}
+run_test 19 "reopen on remote unlink"
+
+test_20_base() {
+	local flush_mode=$1
+	local file="$DIR/$tdir/$tfile"
+	local file2="$DIR2/$tdir/$tfile"
+
+	echo -e "\n=== reopen upon remote remove: flush_mode=$flush_mode ==="
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	openunlink $file $file2 || error "openunlink $file $file2"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_20() {
+	test_20_base "lazy_drop"
+	test_20_base "lazy_keep"
+	test_20_base "aging_drop"
+	test_20_base "aging_keep"
+}
+run_test 20 "remove open file on other client node"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"

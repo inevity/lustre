@@ -440,19 +440,72 @@ static int wbc_inode_update_metadata(struct inode *inode,
 	RETURN(rc);
 }
 
+static int wbc_reopen_file_handler(struct inode *inode,
+				   struct ldlm_lock *lock,
+				   struct writeback_control_ext *wbcx)
+{
+	struct dentry *dentry;
+	int rc = 0;
+
+	ENTRY;
+
+	spin_lock(&inode->i_lock);
+	hlist_for_each_entry(dentry, &inode->i_dentry, d_alias) {
+		struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
+		struct ll_file_data *fd, *tmp;
+
+		dget(dentry);
+		spin_unlock(&inode->i_lock);
+
+		/*
+		 * Do not need @wbcd_open_lock locking as it is under the
+		 * protection of the lock @wbci_rw_sem.
+		 */
+		list_for_each_entry_safe(fd, tmp, &wbcd->wbcd_open_files,
+					 fd_wbc_open_item) {
+			struct file *file = fd->fd_file;
+
+			list_del_init(&fd->fd_wbc_open_item);
+			/* FIXME: Is it safe to switch file operatoins here? */
+			if (S_ISDIR(inode->i_mode))
+				file->f_op = &ll_dir_operations;
+			else if (S_ISREG(inode->i_mode))
+				file->f_op = ll_i2sbi(inode)->ll_fop;
+
+			rc = file->f_op->open(inode, file);
+			if (rc)
+				GOTO(out_dput, rc);
+
+			dput(dentry); /* Unpin from open in MemFS. */
+		}
+out_dput:
+		dput(dentry);
+		if (rc)
+			RETURN(rc);
+		spin_lock(&inode->i_lock);
+	}
+	spin_unlock(&inode->i_lock);
+
+	RETURN(rc);
+}
+
 static int wbc_flush_regular_file(struct inode *inode, struct ldlm_lock *lock,
 				  struct writeback_control_ext *wbcx)
 {
 	int rc;
 
+	ENTRY;
+
 	rc = wbc_inode_update_metadata(inode, lock, wbcx);
 	if (rc)
-		return rc;
+		RETURN(rc);
 
 	rc = wbcfs_commit_cache_pages(inode);
-	//wbcfs_inode_operations_switch(inode);
+	if (rc)
+		RETURN(rc);
 
-	return rc;
+	rc = wbc_reopen_file_handler(inode, lock, wbcx);
+	RETURN(rc);
 }
 
 static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
@@ -512,6 +565,10 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 	/* TODO: error handling when @dirty_children_list is not empty. */
 	LASSERT(list_empty(&dirty_children_list));
 
+	if (rc == 0 && !(wbcx->for_decomplete &&
+			 wbc_mode_lock_keep(ll_i2wbci(dir))))
+		rc = wbc_reopen_file_handler(dir, lock, wbcx);
+
 	RETURN(rc);
 }
 
@@ -520,7 +577,7 @@ static int wbc_inode_flush(struct inode *inode, struct ldlm_lock *lock,
 {
 	if (S_ISDIR(inode->i_mode))
 		return wbc_flush_dir(inode, lock, wbcx);
-	else if (S_ISREG(inode->i_mode))
+	if (S_ISREG(inode->i_mode))
 		return wbc_flush_regular_file(inode, lock, wbcx);
 
 	return -ENOTSUPP;
@@ -671,6 +728,8 @@ void wbc_dentry_init(struct dentry *dentry)
 	lld->lld_dentry = dentry;
 	INIT_LIST_HEAD(&lld->lld_wbc_dentry.wbcd_flush_item);
 	INIT_LIST_HEAD(&lld->lld_wbc_dentry.wbcd_fsync_item);
+	INIT_LIST_HEAD(&lld->lld_wbc_dentry.wbcd_open_files);
+	spin_lock_init(&lld->lld_wbc_dentry.wbcd_open_lock);
 }
 
 static inline struct wbc_inode *wbc_inode(struct list_head *head)

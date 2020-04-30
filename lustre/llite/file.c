@@ -655,6 +655,7 @@ retry:
 	}
 	op_data->op_data = lmm;
 	op_data->op_data_size = lmmsize;
+	op_data->op_bias |= wbc_md_op_bias(ll_i2wbci(de->d_inode));
 
 	OBD_FAIL_TIMEOUT(OBD_FAIL_LLITE_OPEN_DELAY, cfs_fail_val);
 
@@ -747,11 +748,8 @@ static int ll_local_open(struct file *file, struct lookup_intent *it,
 			 struct ll_file_data *fd, struct obd_client_handle *och)
 {
 	struct inode *inode = file_inode(file);
+
 	ENTRY;
-
-	LASSERT(!file->private_data);
-
-	LASSERT(fd != NULL);
 
 	if (och) {
 		int rc;
@@ -760,6 +758,13 @@ static int ll_local_open(struct file *file, struct lookup_intent *it,
 		if (rc != 0)
 			RETURN(rc);
 	}
+
+	if (wbc_inode_root(ll_i2wbci(inode)))
+		RETURN(0);
+
+	LASSERT(!file->private_data);
+
+	LASSERT(fd != NULL);
 
 	file->private_data = fd;
 	ll_readahead_init(inode, &fd->fd_ras);
@@ -807,11 +812,11 @@ void ll_track_file_opens(struct inode *inode)
 int ll_file_open(struct inode *inode, struct file *file)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
-	struct lookup_intent *it, oit = { .it_op = IT_OPEN,
-					  .it_flags = file->f_flags };
+	struct lookup_intent *it = NULL, oit = { .it_op = IT_OPEN,
+						 .it_flags = file->f_flags };
 	struct obd_client_handle **och_p = NULL;
 	__u64 *och_usecount = NULL;
-	struct ll_file_data *fd;
+	struct ll_file_data *fd = NULL;
 	ktime_t kstart = ktime_get();
 	int rc;
 
@@ -819,6 +824,9 @@ int ll_file_open(struct inode *inode, struct file *file)
 
 	CDEBUG(D_VFSTRACE, "VFS Op:inode="DFID"(%p), flags %o\n",
 	       PFID(ll_inode2fid(inode)), inode, file->f_flags);
+
+	if (wbc_inode_root(ll_i2wbci(inode)))
+		GOTO(fill_it, rc = 0);
 
 	it = file->private_data; /* XXX: compat macro */
 	file->private_data = NULL; /* prevent ll_local_open assertion */
@@ -846,6 +854,7 @@ int ll_file_open(struct inode *inode, struct file *file)
 		RETURN(0);
 	}
 
+fill_it:
 	if (!it || !it->it_disposition) {
 		/* Convert f_flags into access mode. We cannot use file->f_mode,
 		 * because everything but O_ACCMODE mask was stripped from

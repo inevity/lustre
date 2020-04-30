@@ -933,11 +933,12 @@ struct ll_file_data {
 	/* The layout version when resync starts. Resync I/O should carry this
 	 * layout version for verification to OST objects */
 	__u32 fd_layout_version;
-	struct pcc_file fd_pcc_file;
 	/* striped directory may read partially if some stripe inaccessible,
 	 * -errno is saved here, and will return to user in close().
 	 */
 	int fd_partial_readdir_rc;
+	struct pcc_file fd_pcc_file;
+	struct list_head fd_wbc_open_item;
 };
 
 void llite_tunables_unregister(void);

@@ -573,17 +573,19 @@ static int memfs_fsync(struct file *file, loff_t start,
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(wbci));
-
 	if (!(wbc_inode_was_flushed(wbci)))
 		rc = wbc_make_inode_sync(dentry);
-	else if (S_ISREG(inode->i_mode))
+
+	if (S_ISREG(inode->i_mode)) {
+		down_write(&wbci->wbci_rw_sem);
 		rc = wbcfs_commit_cache_pages(inode);
+		up_write(&wbci->wbci_rw_sem);
+	}
 
 	if (rc)
 		RETURN(rc);
 
-	LASSERT(wbc_inode_was_flushed(wbci));
+	LASSERT(wbc_inode_written_out(wbci));
 	RETURN(ll_fsync(file, start, end, datasync));
 }
 
@@ -643,40 +645,78 @@ static int memfs_getattr(struct vfsmount *mnt, struct dentry *de,
 
 static int memfs_file_open(struct inode *inode, struct file *file)
 {
-	struct ll_file_data *fd;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_has_protected(wbci)) {
+		struct ll_file_data *fd;
+		struct dentry *dentry = file_dentry(file);
+		struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
+		__u64 flags = file->f_flags;
 
-	fd = ll_file_data_get();
-	if (fd == NULL)
-		RETURN(-ENOMEM);
+		fd = ll_file_data_get();
+		if (fd == NULL)
+			GOTO(up_rwsem, rc = -ENOMEM);
 
-	fd->fd_file = file;
-	file->private_data = fd;
-	ll_readahead_init(inode, &fd->fd_ras);
-	fd->fd_omode = file->f_flags & (FMODE_READ | FMODE_WRITE | FMODE_EXEC);
+		fd->fd_file = file;
+		file->private_data = fd;
+		ll_readahead_init(inode, &fd->fd_ras);
 
-	/* Pin dentry, thus it will keep in MemFS until unlink. */
-	dget(file_dentry(file));
+		if ((flags + 1)  & O_ACCMODE)
+			flags++;
+		if (file->f_flags & O_TRUNC)
+			flags |= FMODE_WRITE;
+		fd->fd_omode = flags & (FMODE_READ | FMODE_WRITE | FMODE_EXEC);
 
-	RETURN(0);
+		/* ll_cl_context intiialize */
+		INIT_LIST_HEAD(&fd->fd_wbc_open_item);
+
+		/* Pin dentry, thus it will keep in MemFS until unlink. */
+		dget(dentry);
+		spin_lock(&wbcd->wbcd_open_lock);
+		list_add(&fd->fd_wbc_open_item, &wbcd->wbcd_open_files);
+		spin_unlock(&wbcd->wbcd_open_lock);
+
+		GOTO(up_rwsem, rc = 0);
+	} else {
+		rc = ll_i2sbi(inode)->ll_fop->open(inode, file);
+	}
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
 }
 
 static int memfs_file_release(struct inode *inode, struct file *file)
 {
-	struct ll_file_data *fd;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_has_protected(wbci)) {
+		struct ll_file_data *fd;
+		struct dentry *dentry = file_dentry(file);
+		struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
 
-	fd = file->private_data;
-	ll_file_data_put(fd);
-	file->private_data = NULL;
-	dput(file_dentry(file)); /* Unpin from open(). */
-	RETURN(0);
+		fd = file->private_data;
+		spin_lock(&wbcd->wbcd_open_lock);
+		list_del_init(&fd->fd_wbc_open_item);
+		spin_unlock(&wbcd->wbcd_open_lock);
+		ll_file_data_put(fd);
+		file->private_data = NULL;
+		dput(dentry); /* Unpin from open(). */
+
+		GOTO(up_rwsem, rc = 0);
+	} else {
+		rc = ll_i2sbi(inode)->ll_fop->release(inode, file);
+	}
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
 }
 
 #ifdef HAVE_FILE_OPERATIONS_READ_WRITE_ITER
@@ -1230,7 +1270,7 @@ static int memfs_mknod(struct inode *dir, struct dentry *dchild,
 					  old_encode_dev(rdev),
 					  LUSTRE_OPC_MKNOD);
 		} else if (rc == 0) {
-			LASSERT(wbc_inode_was_flushed(wbci));
+			LASSERT(wbc_inode_written_out(wbci));
 			rc = ll_dir_inode_operations.mknod(dir, dchild,
 							   mode, rdev);
 		}

@@ -79,7 +79,7 @@ struct wbc_super {
 	struct list_head	wbcs_lazy_roots;
 };
 
-/* Extend for the data structure writeback_control */
+/* Extend for the data structure writeback_control in Linux kernel */
 struct writeback_control_ext {
 	long nr_to_write;		/* Write this many pages, and decrement
 					   this for each page written */
@@ -142,6 +142,8 @@ struct wbc_inode {
 struct wbc_dentry {
 	struct list_head	wbcd_flush_item;
 	struct list_head	wbcd_fsync_item;
+	struct list_head	wbcd_open_files;
+	spinlock_t		wbcd_open_lock;
 };
 
 enum wbc_cmd_type {
