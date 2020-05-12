@@ -458,14 +458,14 @@ static int wbc_reopen_file_handler(struct inode *inode,
 		spin_unlock(&inode->i_lock);
 
 		/*
-		 * Do not need @wbcd_open_lock locking as it is under the
-		 * protection of the lock @wbci_rw_sem.
+		 * Do not need to acquire @wbcd_open_lock spinlock as it is
+		 * under the protection of the lock @wbci_rw_sem.
 		 */
 		list_for_each_entry_safe(fd, tmp, &wbcd->wbcd_open_files,
-					 fd_wbc_open_item) {
+					 fd_wbc_file.wbcf_open_item) {
 			struct file *file = fd->fd_file;
 
-			list_del_init(&fd->fd_wbc_open_item);
+			list_del_init(&fd->fd_wbc_file.wbcf_open_item);
 			/* FIXME: Is it safe to switch file operatoins here? */
 			if (S_ISDIR(inode->i_mode))
 				file->f_op = &ll_dir_operations;
@@ -476,6 +476,7 @@ static int wbc_reopen_file_handler(struct inode *inode,
 			if (rc)
 				GOTO(out_dput, rc);
 
+			wbcfs_dcache_dir_close(inode, file);
 			dput(dentry); /* Unpin from open in MemFS. */
 		}
 out_dput:
@@ -660,6 +661,27 @@ up_rwsem:
 	RETURN(rc);
 }
 
+int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent)
+{
+	int rc;
+
+	ENTRY;
+
+	LASSERT(parent != NULL && parent->d_inode == dir);
+
+	if (!d_mountpoint(parent)) {
+		if (wbc_mode_lock_drop(ll_i2wbci(dir)))
+			rc = wbc_make_inode_sync(parent->d_parent);
+		else /* lock keep flush mode */
+			rc = wbc_make_inode_sync(parent);
+		if (rc)
+			RETURN(rc);
+	}
+
+	rc = wbc_make_inode_decomplete(dir);
+	RETURN(rc);
+}
+
 int wbc_make_data_commit(struct dentry *dentry)
 {
 	struct inode *inode = dentry->d_inode;
@@ -836,6 +858,7 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 {
 	conf->wbcc_rmpol = WBC_RMPOL_DEFAULT;
+	conf->wbcc_readdir_pol = WBC_READDIR_POL_DEFAULT;
 	conf->wbcc_max_rpcs = WBC_DEFAULT_MAX_RPCS;
 	conf->wbcc_background_async_rpc = 0;
 	conf->wbcc_batch_update = 0;
@@ -910,6 +933,8 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_max_rpcs = cmd->wbcc_conf.wbcc_max_rpcs;
 	if (cmd->wbcc_flags & WBC_CMD_OP_RMPOL)
 		conf->wbcc_rmpol = cmd->wbcc_conf.wbcc_rmpol;
+	if (cmd->wbcc_flags & WBC_CMD_OP_READDIR_POL)
+		conf->wbcc_readdir_pol = cmd->wbcc_conf.wbcc_readdir_pol;
 
 	return 0;
 }
@@ -991,6 +1016,15 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 			return -EINVAL;
 
 		cmd->wbcc_flags |= WBC_CMD_OP_RMPOL;
+	} else if (strcmp(key, "readdir_pol") == 0) {
+		if (strcmp(val, "dcache_compat") == 0)
+			conf->wbcc_readdir_pol = WBC_READDIR_DCACHE_COMPAT;
+		else if (strcmp(val, "dcache_decomp") == 0)
+			conf->wbcc_readdir_pol = WBC_READDIR_DCACHE_DECOMPLETE;
+		else
+			return -EINVAL;
+
+		cmd->wbcc_flags |= WBC_CMD_OP_READDIR_POL;
 	} else if (strcmp(key, "max_inodes") == 0) {
 		conf->wbcc_max_inodes = memparse(val, &rest);
 		if (*rest)

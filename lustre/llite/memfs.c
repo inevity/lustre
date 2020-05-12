@@ -61,19 +61,7 @@ static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
 		RETURN(rc);
 
 	up_read(&wbci->wbci_rw_sem);
-	LASSERT(parent != NULL && parent->d_inode == dir);
-
-	if (!d_mountpoint(parent)) {
-		if (wbc_mode_lock_drop(wbci))
-			rc = wbc_make_inode_sync(parent->d_parent);
-		else if (wbc_mode_lock_keep(wbci))
-			rc = wbc_make_inode_sync(parent);
-		if (rc)
-			GOTO(down_rwsem, rc);
-	}
-
-	rc = wbc_make_inode_decomplete(dir);
-down_rwsem:
+	rc = wbc_make_dir_decomplete(dir, parent);
 	down_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
 }
@@ -81,6 +69,25 @@ down_rwsem:
 static void wbc_cache_leave(struct inode *dir, enum md_op_code opc)
 {
 	up_read(&ll_i2wbci(dir)->wbci_rw_sem);
+}
+
+static inline void
+wbc_dirent_account_inc(struct inode *dir, struct dentry *dchild)
+{
+	/*
+	 * User linux_dirent64 to avoid overflowing the buffer provided
+	 * by a user as far as possible.
+	 */
+	dir->i_size += DIRENT64_SIZE(dchild->d_name.len);
+	ll_d2wbcd(dchild->d_parent)->wbcd_dirent_num++;
+}
+
+static inline void
+wbc_dirent_account_dec(struct inode *dir, struct dentry *dchild)
+{
+	dir->i_size -= DIRENT64_SIZE(dchild->d_name.len);
+	LASSERT(dir->i_size >= 0);
+	ll_d2wbcd(dchild->d_parent)->wbcd_dirent_num--;
 }
 
 /*
@@ -146,8 +153,13 @@ static struct inode *wbc_get_inode(struct inode *dir, int mode, dev_t dev,
 	wbc_inode_operations_set(inode, mode, dev);
 
 	/* directory inodes start off with i_nlink == 2 (for "." entry) */
-	if (S_ISDIR(inode->i_mode))
+	if (S_ISDIR(inode->i_mode)) {
 		inc_nlink(inode);
+		/* Something misbehave is size == 0 on a directory.
+		 * Set size with strlen(".") + strlen("..").
+		 */
+		inode->i_size = DIRENT64_SIZE(1) + DIRENT64_SIZE(2);
+	}
 
 	/*
 	 * Add the inode to some list to ensure it is flushed to the server
@@ -186,6 +198,7 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 	if (rc)
 		GOTO(out_iput, rc);
 
+	wbc_dirent_account_inc(dir, dchild);
 	d_instantiate(dchild, inode);
 	dget(dchild); /* Extra count - pin the dentry in core. */
 	/* Mark @dir as dirty to update the mtime/ctime for @dir on MDT? */
@@ -225,8 +238,10 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 	}
 
 out_iput:
-	if (rc)
+	if (rc) {
+		wbc_dirent_account_dec(dir, dchild);
 		iput(inode);
+	}
 out_exit:
 	ll_finish_md_op_data(op_data);
 
@@ -283,7 +298,7 @@ static struct dentry *memfs_lookup_nd(struct inode *parent,
 		/*
 		 * If @parent is in the state WBC_STATE_FL_NONE, or not
 		 * Complete(C) but Protected(C) state, perform the lookup()
-		 * on MDT.
+		 * from MDT.
 		 */
 		de = ll_dir_inode_operations.lookup(parent, dentry, flags);
 	}
@@ -362,6 +377,8 @@ static int memfs_rmdir(struct inode *dir, struct dentry *dchild)
 			GOTO(up_rwsem, rc);
 
 		rc = simple_rmdir(dir, dchild);
+		if (rc == 0)
+			wbc_dirent_account_dec(dir, dchild);
 	} else {
 		LASSERT(wbc_inode_written_out(wbci));
 		rc = ll_dir_inode_operations.rmdir(dir, dchild);
@@ -391,6 +408,8 @@ static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 			GOTO(up_rwsem, rc);
 
 		rc = simple_unlink(dir, dchild);
+		if (rc == 0)
+			wbc_dirent_account_dec(dir, dchild);
 	} else {
 		rc = ll_dir_inode_operations.unlink(dir, dchild);
 		if (rc)
@@ -651,42 +670,23 @@ static int memfs_file_open(struct inode *inode, struct file *file)
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_has_protected(wbci)) {
-		struct ll_file_data *fd;
-		struct dentry *dentry = file_dentry(file);
-		struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
-		__u64 flags = file->f_flags;
-
-		fd = ll_file_data_get();
-		if (fd == NULL)
-			GOTO(up_rwsem, rc = -ENOMEM);
-
-		fd->fd_file = file;
-		file->private_data = fd;
-		ll_readahead_init(inode, &fd->fd_ras);
-
-		if ((flags + 1)  & O_ACCMODE)
-			flags++;
-		if (file->f_flags & O_TRUNC)
-			flags |= FMODE_WRITE;
-		fd->fd_omode = flags & (FMODE_READ | FMODE_WRITE | FMODE_EXEC);
-
-		/* ll_cl_context intiialize */
-		INIT_LIST_HEAD(&fd->fd_wbc_open_item);
-
-		/* Pin dentry, thus it will keep in MemFS until unlink. */
-		dget(dentry);
-		spin_lock(&wbcd->wbcd_open_lock);
-		list_add(&fd->fd_wbc_open_item, &wbcd->wbcd_open_files);
-		spin_unlock(&wbcd->wbcd_open_lock);
-
-		GOTO(up_rwsem, rc = 0);
-	} else {
+	if (wbc_inode_has_protected(wbci))
+		rc = wbcfs_file_private_set(inode, file);
+	else
 		rc = ll_i2sbi(inode)->ll_fop->open(inode, file);
-	}
-up_rwsem:
 	up_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
+}
+
+static inline int memfs_local_release_common(struct inode *inode,
+					     struct file *file)
+{
+	ENTRY;
+
+	wbcfs_file_private_put(inode, file);
+	dput(file_dentry(file)); /* Unpin from open(). */
+
+	RETURN(0);
 }
 
 static int memfs_file_release(struct inode *inode, struct file *file)
@@ -697,24 +697,10 @@ static int memfs_file_release(struct inode *inode, struct file *file)
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_has_protected(wbci)) {
-		struct ll_file_data *fd;
-		struct dentry *dentry = file_dentry(file);
-		struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
-
-		fd = file->private_data;
-		spin_lock(&wbcd->wbcd_open_lock);
-		list_del_init(&fd->fd_wbc_open_item);
-		spin_unlock(&wbcd->wbcd_open_lock);
-		ll_file_data_put(fd);
-		file->private_data = NULL;
-		dput(dentry); /* Unpin from open(). */
-
-		GOTO(up_rwsem, rc = 0);
-	} else {
+	if (wbc_inode_has_protected(wbci))
+		rc = memfs_local_release_common(inode, file);
+	else
 		rc = ll_i2sbi(inode)->ll_fop->release(inode, file);
-	}
-up_rwsem:
 	up_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
 }
@@ -1305,6 +1291,318 @@ static int memfs_create_nd(struct inode *dir, struct dentry *dentry,
 	RETURN(rc);
 }
 
+static int memfs_dir_open(struct inode *inode, struct file *file)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
+
+	ENTRY;
+
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_has_protected(wbci)) {
+		rc = wbcfs_file_private_set(inode, file);
+		if (rc)
+			GOTO(up_rwsem, rc);
+
+		if (wbc_inode_complete(wbci)) {
+			rc = wbcfs_dcache_dir_open(inode, file);
+			if (rc)
+				wbcfs_file_private_put(inode, file);
+		}
+	} else {
+		rc = ll_dir_operations.open(inode, file);
+	}
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	return rc;
+}
+
+static int memfs_dir_close(struct inode *inode, struct file *file)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
+
+	ENTRY;
+
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_has_protected(wbci)) {
+		rc = wbcfs_dcache_dir_close(inode, file);
+		if (rc)
+			GOTO(up_rwsem, rc);
+
+		rc = memfs_local_release_common(inode, file);
+	} else {
+		rc = ll_dir_operations.release(inode, file);
+	}
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
+}
+
+struct getdents_callback64 {
+	struct dir_context ctx;
+	struct linux_dirent64 __user *current_dir;
+	struct linux_dirent64 __user *previous;
+	int count;
+	int error;
+};
+
+/* Relationship between i_mode and the DT_xxx types */
+static inline unsigned char dt_type(struct inode *inode)
+{
+	return (inode->i_mode >> 12) & 15;
+}
+
+/*
+ * Directory is locked and all positive dentries in it are safe, since
+ * for ramfs-type trees they can't go away without unlink() or rmdir(),
+ * both impossible due to the lock on directory.
+ */
+#ifdef HAVE_DIR_CONTEXT
+/* parent is locked at least shared */
+/* linux/fs/libfs.c
+ * Returns an element of siblings' list.
+ * We are looking for <count>th positive after <p>; if
+ * found, dentry is grabbed and returned to caller.
+ * If no such element exists, NULL is returned.
+ */
+static struct dentry *scan_positives(struct dentry *cursor,
+				     struct list_head *p,
+				     loff_t count,
+				     struct dentry *last)
+{
+	struct dentry *dentry = cursor->d_parent, *found = NULL;
+
+	spin_lock(&dentry->d_lock);
+	while ((p = p->next) != &dentry->d_subdirs) {
+		struct dentry *d = list_entry(p, struct dentry, d_child);
+
+		/* we must at least skip cursors, to avoid livelocks */
+		if (d->d_flags & DCACHE_DENTRY_CURSOR)
+			continue;
+		if (simple_positive(d) && !--count) {
+			spin_lock_nested(&d->d_lock, DENTRY_D_LOCK_NESTED);
+			if (simple_positive(d))
+				found = dget_dlock(d);
+			spin_unlock(&d->d_lock);
+			if (likely(found))
+				break;
+			count = 1;
+		}
+		if (need_resched()) {
+			list_move(&cursor->d_child, p);
+			p = &cursor->d_child;
+			spin_unlock(&dentry->d_lock);
+			cond_resched();
+			spin_lock(&dentry->d_lock);
+		}
+	}
+	spin_unlock(&dentry->d_lock);
+	dput(last);
+	return found;
+}
+
+/* linux/fs/libfs.c: dcache_readdir() */
+int memfs_dcache_readdir(struct file *file, struct dir_context *ctx)
+{
+	struct dentry *dentry = file->f_path.dentry;
+	struct ll_file_data *fd = file->private_data;
+	struct dentry *cursor = fd->fd_wbc_file.wbcf_private_data;
+	struct list_head *anchor = &dentry->d_subdirs;
+	struct dentry *next = NULL;
+	struct list_head *p;
+
+	if (!dir_emit_dots(file, ctx))
+		return 0;
+
+	if (ctx->pos == 2)
+		p = anchor;
+	else if (!list_empty(&cursor->d_child))
+		p = &cursor->d_child;
+	else
+		return 0;
+
+	while ((next = scan_positives(cursor, p, 1, next)) != NULL) {
+		if (!dir_emit(ctx, next->d_name.name, next->d_name.len,
+			      d_inode(next)->i_ino, dt_type(d_inode(next))))
+			break;
+		ctx->pos++;
+		p = &next->d_child;
+	}
+	spin_lock(&dentry->d_lock);
+	if (next)
+		list_move_tail(&cursor->d_child, &next->d_child);
+	else
+		list_del_init(&cursor->d_child);
+	spin_unlock(&dentry->d_lock);
+	dput(next);
+
+	return 0;
+}
+
+static int memfs_readdir(struct file *filp, struct dir_context *ctx)
+{
+	struct inode *dir = file_inode(filp);
+	struct dentry *dentry = filp->f_path.dentry;
+	struct wbc_inode *wbci = ll_i2wbci(dir);
+	int rc;
+
+	ENTRY;
+
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_complete(wbci)) {
+		struct ll_file_data *fd = filp->private_data;
+		struct getdents_callback64 *buf;
+
+		switch (fd->fd_wbc_file.wbcf_readdir_pol) {
+		case WBC_READDIR_DCACHE_COMPAT:
+			rc = memfs_dcache_readdir(filp, ctx);
+			break;
+		case WBC_READDIR_DCACHE_DECOMPLETE:
+			buf = container_of(ctx, struct getdents_callback64,
+					   ctx);
+			if (dir->i_size < buf->count) {
+				rc = memfs_dcache_readdir(filp, ctx);
+			} else {
+				up_read(&wbci->wbci_rw_sem);
+				rc = wbc_make_dir_decomplete(dir, dentry);
+				if (rc)
+					GOTO(up_rwsem, rc);
+
+				down_read(&wbci->wbci_rw_sem);
+				LASSERT(!wbc_inode_complete(wbci));
+				rc = ll_dir_operations.iterate_shared(filp,
+								      ctx);
+			}
+			break;
+		default:
+			rc = -ENOTSUPP;
+			break;
+		}
+	} else {
+		rc = ll_dir_operations.iterate_shared(filp, ctx);
+	}
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
+}
+
+#else
+
+/* linux/fs/libfs.c: simple_positive() */
+static inline int simple_positive(struct dentry *dentry)
+{
+	return dentry->d_inode && !d_unhashed(dentry);
+}
+
+/* linux/fs/libfs.c: dcache_readdir() */
+int memfs_dcache_readdir(struct file *filp, void *dirent, filldir_t filldir)
+{
+	struct dentry *dentry = filp->f_path.dentry;
+	struct ll_file_data *fd = filp->private_data;
+	struct dentry *cursor = fd->fd_wbc_file.wbcf_private_data;
+	struct list_head *p, *q = &cursor->d_child;
+	ino_t ino;
+	int i = filp->f_pos;
+
+	switch (i) {
+	case 0:
+		ino = dentry->d_inode->i_ino;
+		if (filldir(dirent, ".", 1, i, ino, DT_DIR) < 0)
+			break;
+		filp->f_pos++;
+		i++;
+		/* fallthrough */
+	case 1:
+		ino = parent_ino(dentry);
+		if (filldir(dirent, "..", 2, i, ino, DT_DIR) < 0)
+			break;
+		filp->f_pos++;
+		i++;
+		/* fallthrough */
+	default:
+		spin_lock(&dentry->d_lock);
+		if (filp->f_pos == 2)
+			list_move(q, &dentry->d_subdirs);
+
+		for (p = q->next; p != &dentry->d_subdirs; p = p->next) {
+			struct dentry *next;
+
+			next = list_entry(p, struct dentry, d_child);
+			spin_lock_nested(&next->d_lock, DENTRY_D_LOCK_NESTED);
+			if (!simple_positive(next)) {
+				spin_unlock(&next->d_lock);
+				continue;
+			}
+
+			spin_unlock(&next->d_lock);
+			spin_unlock(&dentry->d_lock);
+			if (filldir(dirent, next->d_name.name,
+				    next->d_name.len, filp->f_pos,
+				    next->d_inode->i_ino,
+				    dt_type(next->d_inode)) < 0)
+				return 0;
+			spin_lock(&dentry->d_lock);
+			spin_lock_nested(&next->d_lock, DENTRY_D_LOCK_NESTED);
+			/* next is still alive */
+			list_move(q, p);
+			spin_unlock(&next->d_lock);
+			p = q;
+			filp->f_pos++;
+		}
+		spin_unlock(&dentry->d_lock);
+	}
+	return 0;
+}
+
+static int memfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
+{
+	struct inode *dir = file_inode(filp);
+	struct dentry *dentry = filp->f_path.dentry;
+	struct wbc_inode *wbci = ll_i2wbci(dir);
+	int rc;
+
+	ENTRY;
+
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_complete(wbci)) {
+		struct ll_file_data *fd = filp->private_data;
+		struct getdents_callback64 *buf;
+
+		switch (fd->fd_wbc_file.wbcf_readdir_pol) {
+		case WBC_READDIR_DCACHE_COMPAT:
+			rc = memfs_dcache_readdir(filp, dirent, filldir);
+			break;
+		case WBC_READDIR_DCACHE_DECOMPLETE:
+			buf = (struct getdents_callback64 *)dirent;
+			if (dir->i_size < buf->count) {
+				rc = memfs_dcache_readdir(filp, dirent,
+							  filldir);
+			} else {
+				up_read(&wbci->wbci_rw_sem);
+				rc = wbc_make_dir_decomplete(dir, dentry);
+				if (rc)
+					GOTO(up_rwsem, rc);
+
+				down_read(&wbci->wbci_rw_sem);
+				LASSERT(!wbc_inode_complete(wbci));
+				rc = ll_dir_operations.readdir(filp, dirent,
+							       filldir);
+			}
+			break;
+		default:
+			rc = -ENOTSUPP;
+			break;
+		}
+	} else {
+		rc = ll_dir_operations.readdir(filp, dirent, filldir);
+	}
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+	RETURN(rc);
+}
+#endif /* !HAVE_DIR_CONTEXT */
+
 static int memfs_symlink(struct inode *dir, struct dentry *dchild,
 			 const char *oldpath)
 {
@@ -1339,14 +1637,14 @@ static void *memfs_follow_link(struct dentry *dentry, struct nameidata *nd)
 #endif /* HAVE_IOP_GET_LINK */
 
 static const struct file_operations memfs_dir_operations = {
-	.open		= dcache_dir_open,
-	.release	= dcache_dir_close,
+	.open		= memfs_dir_open,
+	.release	= memfs_dir_close,
 	.llseek		= dcache_dir_lseek,
 	.read		= generic_read_dir,
 #ifdef HAVE_DIR_CONTEXT
-	.iterate_shared	= dcache_readdir,
+	.iterate_shared	= memfs_readdir,
 #else
-	.readdir	= dcache_readdir,
+	.readdir	= memfs_readdir,
 #endif
 	.fsync		= memfs_fsync,
 	.unlocked_ioctl	= wbc_ioctl,

@@ -53,10 +53,71 @@ enum wbc_remove_policy {
 	WBC_RMPOL_DEFAULT = WBC_RMPOL_SYNC,
 };
 
+/*
+ * Under the protection of the root EX WBC lock, the open()/close() system
+ * call does not need to communicate with MDS, can be executed locally in MemFS
+ * on the client.
+ * However, Lustre is a stateful filesystem. Each open keeps a certain state
+ * on the MDS. WBC feature should keep transparency for applications. To
+ * achieve this goal, it must reopen the non-closed files from MDS when the
+ * root EX WBC lock is revoking.
+ * WBC defines a Complete(C) state flag. It means:
+ * - The directory or file is cached in MemFS;
+ * - The directory or file is under the protection of a root EX WBC lock;
+ * - The directory contains the Complete children subdirs;
+ * - Results of readdir() and lookup() operations under this directory can
+ *   directly be obtained from client-side MemFS. All metadata operations
+ *   can be performed on MemFS without communication with the server.
+ * For directories, it needs to be handled specially for the readdir() call
+ * once it has opened.
+ * Currently the mechanism adopted by MemFS (tmpfs) is to simply scan the
+ * in-memory children dentries of the directory in dcache linearly to fill the
+ * content returned to readdir call: ->dcache_readdir().
+ * While Lustre new readdir implementation is much complex. It does readdir in
+ * hash order and uses hash of a file name as a telldir/seekdir cookie stored
+ * in the file handle.
+ * Thus, it would better to bridge two implementation for readdir() call
+ * carefully.
+ */
+enum wbc_readdir_policy {
+	/*
+	 * For benchmark only, use dcache_readdir() to read dentries from
+	 * dcache linearly. It may read repeated or inconsistent dentries.
+	 * It contains Lustre special private file data for compatibility.
+	 */
+	WBC_READDIR_DCACHE_COMPAT	= 1,
+	/*
+	 * In this policy, the sum size of all children dentries is kept
+	 * accouts when create/remove a file under a directory.
+	 * For small directories, it will call dcache_readdir() to read all
+	 * entries in one blow if the buffer size the caller provided is large
+	 * enough to fill all entries.
+	 * If a directory is too large to fill all dentries in a blow, it will
+	 * decomplete the directory, which means that flush all children
+	 * dentries to MDT and unmask Complete(C) flag from the directory.
+	 * And then it will read the children dentries from MDT in hash order.
+	 */
+	WBC_READDIR_DCACHE_DECOMPLETE	= 2,
+	/*
+	 * Build the hashed index rbtree during readdir() call in runtime,
+	 * return the dentries in hash order. Upon closing the file, destroy
+	 * the hashed index rbtree.
+	 */
+	WBC_READDIR_HTREE_RUNTIME	= 3,
+	/*
+	 * Use hashed index rbtree sorting according to the hash of file name.
+	 * It is resident in memory for th whole life of the directory.
+	 */
+	WBC_READDIR_HTREE_RESIDENT	= 4,
+	/* Default readdir policy. */
+	WBC_READDIR_POL_DEFAULT		= WBC_READDIR_DCACHE_COMPAT,
+};
+
 struct wbc_conf {
 	enum lu_wbc_cache_mode	wbcc_cache_mode;
 	enum lu_wbc_flush_mode	wbcc_flush_mode;
 	enum wbc_remove_policy	wbcc_rmpol;
+	enum wbc_readdir_policy	wbcc_readdir_pol;
 	__u32			wbcc_max_rpcs;
 	__u32			wbcc_background_async_rpc:1,
 				wbcc_batch_update;
@@ -144,6 +205,13 @@ struct wbc_dentry {
 	struct list_head	wbcd_fsync_item;
 	struct list_head	wbcd_open_files;
 	spinlock_t		wbcd_open_lock;
+	__u32			wbcd_dirent_num;
+};
+
+struct wbc_file {
+	struct list_head	 wbcf_open_item;
+	enum wbc_readdir_policy	 wbcf_readdir_pol;
+	void			*wbcf_private_data;
 };
 
 enum wbc_cmd_type {
@@ -161,7 +229,7 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_RMPOL	= 0x08,
 	WBC_CMD_OP_INODES_LIMIT	= 0x10,
 	WBC_CMD_OP_PAGES_LIMIT	= 0x20,
-	WBC_CMD_OP_DECOMPLETE	= 0x40,
+	WBC_CMD_OP_READDIR_POL	= 0x40,
 };
 
 struct wbc_cmd {
@@ -304,6 +372,18 @@ static inline const char *wbc_rmpol2string(enum wbc_remove_policy pol)
 	}
 }
 
+static inline const char *wbc_readdir_pol2string(enum wbc_readdir_policy pol)
+{
+	switch (pol) {
+	case WBC_READDIR_DCACHE_COMPAT:
+		return "dcache_compat";
+	case WBC_READDIR_DCACHE_DECOMPLETE:
+		return "dcache_decomp";
+	default:
+		return "unknow";
+	}
+}
+
 /* wbc.c */
 void wbc_super_root_add(struct inode *inode);
 void wbc_super_root_del(struct inode *inode);
@@ -321,6 +401,7 @@ int wbc_make_inode_sync(struct dentry *dentry);
 int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
 			  struct writeback_control_ext *wbcx);
 int wbc_make_inode_decomplete(struct inode *inode);
+int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent);
 int wbc_make_data_commit(struct dentry *dentry);
 int wbc_super_init(struct wbc_super *super);
 void wbc_super_fini(struct wbc_super *super);
@@ -347,6 +428,10 @@ int wbcfs_flush_dir_children(struct inode *dir,
 			     struct list_head *childlist,
 			     struct ldlm_lock *lock,
 			     struct writeback_control_ext *wbcx);
+int wbcfs_file_private_set(struct inode *inode, struct file *file);
+void wbcfs_file_private_put(struct inode *inode, struct file *file);
+int wbcfs_dcache_dir_open(struct inode *inode, struct file *file);
+int wbcfs_dcache_dir_close(struct inode *inode, struct file *file);
 void wbc_free_inode_pages_final(struct inode *inode,
 				struct address_space *mapping);
 

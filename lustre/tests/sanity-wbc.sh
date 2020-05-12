@@ -1066,7 +1066,7 @@ test_15b_base() {
 }
 
 test_15b() {
-	local nr_inodes=10
+	local nr_inodes=1
 
 	test_15b_base "lazy_keep" $nr_inodes
 	test_15b_base "aging_keep" $nr_inodes
@@ -1181,7 +1181,7 @@ test_15c() {
 	test_15c_base "aging_drop" 5 7
 	test_15c_base "aging_drop" 6 8
 }
-run_test 15c "Inode limits for lock keep modes with multiple level directories"
+run_test 15c "Inode limits with multiple level directories"
 
 test_16_base() {
 	local flush_mode=$1
@@ -1392,6 +1392,60 @@ test_20() {
 	test_20_base "aging_keep"
 }
 run_test 20 "remove open file on other client node"
+
+test_21_base() {
+	local flush_mode=$1
+	local readdir_pol=$2
+	local num_dirents=$3
+	local comp_expect=$4
+
+	echo "=== readdir() flush_mode=$flush_mode num_dirents=$num_dirents ==="
+	setup_wbc "flush_mode=$flush_mode readdir_pol=$2"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	for i in $(seq -f "%04g" 1 $num_dirents); do
+		touch $DIR/$tdir/$tfile.$i
+	done
+
+	# For a 4-6 bytes file name entry, it is occupied 24 bytes to fill
+	# linux_dirent64 data structure.
+	# In libc, it provides 32K buffer for reading linux_dirent64
+	# structures from the directory. It is large enough to hold nearly
+	# 1356 dirents.
+	local num_ls=$(ls $DIR/$tdir | wc -l)
+	local num_uniq=$(ls $DIR/$tdir | sort -u | wc -l)
+	local num_all=$(ls -a $DIR/$tdir | wc -l)
+
+	if [ $num_ls -ne $num_dirents ] || [ $num_uniq -ne $num_dirents ] ||
+		[ $num_all -ne $((num_dirents + 2)) ]; then
+		error "Expected $num_dirents files, got $num_ls " \
+		      "($num_uniq unique $num_all .&..)"
+	fi
+
+	$LFS wbc state $DIR/$tdir
+	check_wbc_inode_complete $DIR/$tdir $comp_expect
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_21() {
+	test_21_base "lazy_drop" "dcache_compat" 1500 1
+	test_21_base "lazy_keep" "dcache_compat" 1500 1
+	test_21_base "aging_drop" "dcache_compat" 1500 1
+	test_21_base "aging_keep" "dcache_compat" 1500 1
+
+	test_21_base "lazy_drop" "dcache_decomp" 500 1
+	test_21_base "lazy_keep" "dcache_decomp" 500 1
+	test_21_base "aging_drop" "dcache_decomp" 500 1
+	test_21_base "aging_keep" "dcache_decomp" 500 1
+
+	# The directory is too big to read dir entries in one blow.
+	# We must first decomplete the directory and then read from MDT.
+	test_21_base "lazy_drop" "dcache_decomp" 1500 0
+	test_21_base "lazy_keep" "dcache_decomp" 1500 0
+	test_21_base "aging_drop" "dcache_decomp" 1500 0
+	test_21_base "aging_keep" "dcache_decomp" 1500 0
+}
+run_test 21 "Verfiy readdir() works correctly for various readdir policies"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"

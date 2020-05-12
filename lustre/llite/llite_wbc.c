@@ -1202,6 +1202,76 @@ out_rqset:
 	RETURN(rc);
 }
 
+int wbcfs_file_private_set(struct inode *inode, struct file *file)
+{
+	struct ll_file_data *fd;
+	struct dentry *dentry = file_dentry(file);
+	struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
+	__u64 flags = file->f_flags;
+
+	ENTRY;
+
+	fd = ll_file_data_get();
+	if (fd == NULL)
+		RETURN(-ENOMEM);
+
+	fd->fd_file = file;
+	file->private_data = fd;
+	ll_readahead_init(inode, &fd->fd_ras);
+
+	if ((flags + 1)  & O_ACCMODE)
+		flags++;
+	if (file->f_flags & O_TRUNC)
+		flags |= FMODE_WRITE;
+	fd->fd_omode = flags & (FMODE_READ | FMODE_WRITE | FMODE_EXEC);
+
+	/* ll_cl_context intiialize */
+	INIT_LIST_HEAD(&fd->fd_wbc_file.wbcf_open_item);
+
+	/* Pin dentry, thus it will keep in MemFS until unlink. */
+	dget(dentry);
+	spin_lock(&wbcd->wbcd_open_lock);
+	list_add(&fd->fd_wbc_file.wbcf_open_item, &wbcd->wbcd_open_files);
+	spin_unlock(&wbcd->wbcd_open_lock);
+
+	fd->fd_wbc_file.wbcf_readdir_pol = ll_i2wbcc(inode)->wbcc_readdir_pol;
+
+	RETURN(0);
+}
+
+void wbcfs_file_private_put(struct inode *inode, struct file *file)
+{
+	struct ll_file_data *fd;
+	struct dentry *dentry = file_dentry(file);
+	struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
+
+	fd = file->private_data;
+	spin_lock(&wbcd->wbcd_open_lock);
+	list_del_init(&fd->fd_wbc_file.wbcf_open_item);
+	spin_unlock(&wbcd->wbcd_open_lock);
+	ll_file_data_put(fd);
+	file->private_data = NULL;
+}
+
+int wbcfs_dcache_dir_open(struct inode *inode, struct file *file)
+{
+	struct ll_file_data *fd = file->private_data;
+	int rc;
+
+	rc = dcache_dir_open(inode, file);
+	fd->fd_wbc_file.wbcf_private_data = file->private_data;
+	file->private_data = fd;
+	return rc;
+}
+
+int wbcfs_dcache_dir_close(struct inode *inode, struct file *file)
+{
+	struct ll_file_data *fd = file->private_data;
+
+	dput(fd->fd_wbc_file.wbcf_private_data);
+	return 0;
+}
+
 void wbc_inode_lock_callback(struct inode *inode, struct ldlm_lock *lock,
 			     bool *cached)
 {
@@ -1355,7 +1425,9 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 	seq_printf(m, "flush_mode: %s\n",
 		   wbc_flushmode2string(conf->wbcc_flush_mode));
 	seq_printf(m, "max_rpcs: %u\n", conf->wbcc_max_rpcs);
-	seq_printf(m, "rmpol: %s\n", wbc_rmpol2string(conf->wbcc_rmpol));
+	seq_printf(m, "remove_pol: %s\n", wbc_rmpol2string(conf->wbcc_rmpol));
+	seq_printf(m, "readdir_pol: %s\n",
+		   wbc_readdir_pol2string(conf->wbcc_readdir_pol));
 	seq_printf(m, "inodes_max: %lu\n", conf->wbcc_max_inodes);
 	seq_printf(m, "inodes_free: %lu\n", conf->wbcc_free_inodes);
 	seq_printf(m, "pages_max: %lu\n", conf->wbcc_max_pages);

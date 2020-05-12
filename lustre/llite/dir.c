@@ -393,6 +393,7 @@ static int ll_readdir(struct file *filp, void *cookie, filldir_t filldir)
 	}
 
 	op_data->op_fid3 = pfid;
+	op_data->op_bias |= wbc_md_op_bias(ll_i2wbci(inode));
 
 #ifdef HAVE_DIR_CONTEXT
 	ctx->pos = pos;

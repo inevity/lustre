@@ -1455,6 +1455,7 @@ static int mdc_read_page(struct obd_export *exp, struct md_op_data *op_data,
 	struct lustre_handle	lockh;
 	struct ptlrpc_request	*enq_req = NULL;
 	struct readpage_param	rp_param;
+	bool lockless = op_data->op_bias & MDS_WBC_LOCKLESS;
 	int rc;
 
 	ENTRY;
@@ -1463,6 +1464,9 @@ static int mdc_read_page(struct obd_export *exp, struct md_op_data *op_data,
 
 	LASSERT(dir != NULL);
 	mapping = dir->i_mapping;
+
+	if (lockless)
+		GOTO(direct_rdpage, rc = 0);
 
 	rc = mdc_intent_lock(exp, op_data, &it, &enq_req,
 			     mrinfo->mr_blocking_ast, 0);
@@ -1479,6 +1483,7 @@ static int mdc_read_page(struct obd_export *exp, struct md_op_data *op_data,
 	lockh.cookie = it.it_lock_handle;
 	mdc_set_lock_data(exp, &lockh, dir, NULL);
 
+direct_rdpage:
 	rp_param.rp_off = hash_offset;
 	rp_param.rp_hash64 = op_data->op_cli_flags & CLI_HASH64;
 	page = mdc_page_locate(mapping, &rp_param.rp_off, &start, &end,
@@ -1565,7 +1570,8 @@ hash_collision:
 	}
 	*ppage = page;
 out_unlock:
-	ldlm_lock_decref(&lockh, it.it_lock_mode);
+	if (!lockless)
+		ldlm_lock_decref(&lockh, it.it_lock_mode);
 	return rc;
 fail:
 	kunmap(page);
