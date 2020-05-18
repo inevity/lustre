@@ -244,6 +244,8 @@ static void mdt_reconstruct_create(struct mdt_thread_info *mti,
 	struct mdt_body *body;
 	int rc;
 
+	ENTRY;
+
 	mdt_req_from_lrd(req, mti->mti_reply_data);
 	if (req->rq_status)
 		return;
@@ -279,6 +281,8 @@ static void mdt_reconstruct_create(struct mdt_thread_info *mti,
 	mdt_pack_attr2body(mti, body, &mti->mti_attr.ma_attr,
 			   mdt_object_fid(child));
 	mdt_object_put(mti->mti_env, child);
+
+	RETURN_EXIT;
 }
 
 static void mdt_reconstruct_setattr(struct mdt_thread_info *mti,

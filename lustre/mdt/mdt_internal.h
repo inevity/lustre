@@ -495,7 +495,8 @@ struct mdt_thread_info {
 				   mti_big_acl_used:1,
 				   mti_som_valid:1,
 	/* Batch processing environment */
-				   mti_batch_env:1;
+				   mti_batch_env:1,
+				   mti_intent_lock:1;
 
 	/* opdata for mdt_reint_open(), has the same as
 	 * ldlm_reply:lock_policy_res1.  mdt_update_last_rcvd() stores this
@@ -895,6 +896,8 @@ int mdt_lock_new_child(struct mdt_thread_info *info,
 		       struct mdt_lock_handle *child_lockh);
 void mdt_mfd_set_mode(struct mdt_file_data *mfd, u64 open_flags);
 int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc);
+void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
+			      struct mdt_object *obj, struct md_attr *ma);
 struct mdt_file_data *mdt_open_handle2mfd(struct mdt_export_data *med,
 					const struct lustre_handle *open_handle,
 					bool is_replay);

@@ -5805,6 +5805,37 @@ test_112() {
 }
 run_test 112 "update max-inherit in default LMV"
 
+test_113() {
+	[ $MDSCOUNT -lt 2 ] && skip "needs >= 2 MDTs" && return 0
+	[[ "$MDS1_VERSION" -ge $(version_code 2.14.51) ]] ||
+		skip "Need MDS version at least 2.14.51"
+
+	local mdt_idx
+	local save="$TMP/$TESTSUITE-$TESTNAME.parameters"
+
+	save_lustre_params client "llite.*.intent_mkdir" > $save
+	stack_trap "restore_lustre_params < $save; rm -f $save" EXIT
+
+	$LFS mkdir -c$MDSCOUNT -i0 $DIR/$tdir ||
+		error "$LFS mkdir $DIR/$tdir failed"
+	echo "MD layout $DIR/$tdir:"
+	$LFS getdirstripe $DIR/$tdir
+	echo "mkdir $DIR/$tdir/tdir0"
+	mkdir $DIR/$tdir/tdir0 || error "mkdir tdir0 failed"
+	echo "setdirstripe -D -i1 $DIR2/$tdir/tdir0"
+	$LFS setdirstripe -D -i1 $DIR2/$tdir/tdir0 ||
+		error "$LFS setdirstripe $DIR2/$tdir/tdir0 failed"
+	echo "mkdir $DIR/$tdir/tdir0/tdir11"
+	mkdir $DIR/$tdir/tdir0/tdir11 || error "mkdir tdir0/tdir11 failed"
+	$LFS getdirstripe $DIR/$tdir/tdir0
+	$LFS getdirstripe $DIR/$tdir/tdir0/tdir11
+
+	mdt_idx=$($LFS getstripe -m $DIR/$tdir/tdir0/tdir11)
+	[ $mdt_idx == 1 ] ||
+		error "$DIR/$tdir/tdir0/tdir11 on wrong MDT $mdt_idx"
+}
+run_test 113 "DNE: Set default LMV layout from a remote client"
+
 log "cleanup: ======================================================"
 
 # kill and wait in each test only guarentee script finish, but command in script

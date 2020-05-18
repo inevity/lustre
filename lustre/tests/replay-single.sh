@@ -5004,6 +5004,98 @@ test_135() {
 }
 run_test 135 "Server failure in lock replay phase"
 
+check_striped_create_136() {
+	local stripe_count
+
+	cancel_lru_locks mdc
+	$CHECKSTAT -t dir $DIR/$tdir/striped_dir/dir0 ||
+		error "Create under striped dir failed"
+	$LFS getdirstripe $DIR/$tdir/striped_dir/dir0
+	stripe_count=$($LFS getdirstripe -c $DIR/$tdir/striped_dir/dir0)
+	[ $stripe_count -eq 0 ] || error "$stripe_count != 0 after recovery"
+
+	$CHECKSTAT -t dir $DIR/$tdir/striped_dir/dir1 ||
+		error "Create under striped dir failed"
+	$LFS getdirstripe $DIR/$tdir/striped_dir/dir1
+	stripe_count=$($LFS getdirstripe -c $DIR/$tdir/striped_dir/dir1)
+	[ $stripe_count -eq 0 ] || error "$stripe_count != 0 after recovery"
+}
+
+test_136a() {
+	[ $MDSCOUNT -lt 2 ] && skip "needs >= 2 MDTs" && return 0
+	[[ "$MDS1_VERSION" -ge $(version_code 2.13.55) ]] ||
+		skip "Need MDS version at least 2.13.55"
+
+	([ $FAILURE_MODE == "HARD" ] &&
+		[ "$(facet_host mds1)" == "$(facet_host mds2)" ]) &&
+		skip "MDTs needs to be on diff hosts for HARD fail mode" &&
+		return 0
+
+	mkdir -p $DIR/$tdir
+	$LFS mkdir -i1 -c$MDSCOUNT $DIR/$tdir/striped_dir
+	replay_barrier mds1
+	mkdir $DIR/$tdir/striped_dir/dir0
+	mkdir $DIR/$tdir/striped_dir/dir1
+	fail mds1
+
+	check_striped_create_136 || error "check striped dir0 failed"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+run_test 136a "DNE: create under striped dir, fail MDT1"
+
+test_136b() {
+	[ $MDSCOUNT -lt 2 ] && skip "needs >= 2 MDTs" && return 0
+	[[ "$MDS1_VERSION" -ge $(version_code 2.13.55) ]] ||
+		skip "Need MDS version at least 2.13.55"
+
+	([ $FAILURE_MODE == "HARD" ] &&
+		[ "$(facet_host mds1)" == "$(facet_host mds2)" ]) &&
+		skip "MDTs needs to be on diff hosts for HARD fail mode" &&
+		return 0
+
+	mkdir -p $DIR/$tdir
+	$LFS mkdir -i1 -c$MDSCOUNT $DIR/$tdir/striped_dir
+	replay_barrier mds2
+	mkdir $DIR/$tdir/striped_dir/dir0
+	mkdir $DIR/$tdir/striped_dir/dir1
+	fail mds2
+
+	check_striped_create_136 ||
+		error "check create under striped_dir failed"
+
+	rm -rf $DIR/$tdir || error "rmdir failed"
+
+	return 0
+}
+run_test 136b "DNE: create under striped dir, fail MDT2"
+
+test_136c() {
+	[ $MDSCOUNT -lt 2 ] && skip "needs >= 2 MDTs" && return 0
+	[[ "$MDS1_VERSION" -ge $(version_code 2.13.55) ]] ||
+		skip "Need MDS version at least 2.13.55"
+
+	([ $FAILURE_MODE == "HARD" ] &&
+		[ "$(facet_host mds1)" == "$(facet_host mds2)" ]) &&
+		skip "MDTs needs to be on diff hosts for HARD fail mode" &&
+		return 0
+
+	mkdir -p $DIR/$tdir
+	$LFS mkdir -i1 -c$MDSCOUNT $DIR/$tdir/striped_dir
+	replay_barrier mds1
+	replay_barrier mds2
+	mkdir $DIR/$tdir/striped_dir/dir0
+	mkdir $DIR/$tdir/striped_dir/dir1
+	fail mds2,mds1
+
+	check_striped_create_136 ||
+		error "check create under striped_dir failed"
+
+	rm -rf $DIR/$tdir || error "rmdir failed"
+
+	return 0
+}
+run_test 136c "DNE: create under striped dir, fail MDT1/MDT2"
+
 complete $SECONDS
 check_and_cleanup_lustre
 exit_status

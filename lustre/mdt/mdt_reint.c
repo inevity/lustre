@@ -495,7 +495,7 @@ unlock_parent:
  * 2 - child. Version of child by FID. Must be ENOENT. It is mostly sanity
  * check.
  */
-static int mdt_create(struct mdt_thread_info *info)
+static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 {
 	struct mdt_device *mdt = info->mti_mdt;
 	struct mdt_object *parent;
@@ -505,6 +505,7 @@ static int mdt_create(struct mdt_thread_info *info)
 	struct md_attr *ma = &info->mti_attr;
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct md_op_spec *spec = &info->mti_spec;
+	struct ldlm_reply *dlmrep = NULL;
 	bool restripe = false;
 	int rc;
 
@@ -558,6 +559,15 @@ static int mdt_create(struct mdt_thread_info *info)
 	}
 
 	repbody = req_capsule_server_get(info->mti_pill, &RMF_MDT_BODY);
+	/*
+	 * TODO: rewrite ll_mknod(), ll_create_nd(), ll_symlink(),
+	 * ll_dir_setdirstripe() to all use intent lock.
+	 */
+	if (info->mti_intent_lock) {
+		dlmrep = req_capsule_server_get(info->mti_pill, &RMF_DLM_REP);
+		mdt_set_disposition(info, dlmrep,
+				    DISP_IT_EXECD | DISP_LOOKUP_EXECD);
+	}
 
 	parent = mdt_object_find(info->mti_env, info->mti_mdt, rr->rr_fid1);
 	if (IS_ERR(parent))
@@ -601,6 +611,9 @@ static int mdt_create(struct mdt_thread_info *info)
 			GOTO(unlock_parent, rc);
 	}
 
+	if (info->mti_intent_lock)
+		mdt_set_disposition(info, dlmrep, DISP_OPEN_CREATE);
+
 	child = mdt_object_new(info->mti_env, mdt, rr->rr_fid2);
 	if (unlikely(IS_ERR(child)))
 		GOTO(unlock_parent, rc = PTR_ERR(child));
@@ -626,11 +639,39 @@ static int mdt_create(struct mdt_thread_info *info)
 
 	rc = mdo_create(info->mti_env, mdt_object_child(parent), &rr->rr_name,
 			mdt_object_child(child), &info->mti_spec, ma);
-	if (rc == 0)
-		rc = mdt_attr_get_complex(info, child, ma);
-
 	if (rc < 0)
 		GOTO(put_child, rc);
+
+	if (info->mti_intent_lock)
+		mdt_prep_ma_buf_from_rep(info, child, ma);
+	rc = mdt_attr_get_complex(info, child, ma);
+	if (rc)
+		GOTO(put_child, rc);
+
+	if (ma->ma_valid & MA_LOV) {
+		LASSERT(info->mti_intent_lock && ma->ma_lmm_size != 0);
+		repbody->mbo_eadatasize = ma->ma_lmm_size;
+		if (S_ISREG(ma->ma_attr.la_mode))
+			repbody->mbo_valid |= OBD_MD_FLEASIZE;
+		else if (S_ISDIR(ma->ma_attr.la_mode))
+			repbody->mbo_valid |= OBD_MD_FLDIREA;
+	}
+
+	if (ma->ma_valid & MA_LMV) {
+		LASSERT(ma->ma_lmv_size != 0);
+		repbody->mbo_eadatasize = ma->ma_lmv_size;
+		LASSERT(S_ISDIR(ma->ma_attr.la_mode));
+		repbody->mbo_valid |= OBD_MD_FLDIREA | OBD_MD_MEA;
+	}
+
+	if (ma->ma_valid & MA_LMV_DEF) {
+		/* Return -ENOTSUPP for old client. */
+		if (!mdt_is_striped_client(mdt_info_req(info)->rq_export))
+			GOTO(put_child, rc = -ENOTSUPP);
+
+		LASSERT(S_ISDIR(ma->ma_attr.la_mode));
+		repbody->mbo_valid |= OBD_MD_FLDIREA | OBD_MD_DEFAULT_MEA;
+	}
 
 	/*
 	 * On DNE, we need to eliminate dependey between 'mkdir a' and
@@ -642,7 +683,7 @@ static int mdt_create(struct mdt_thread_info *info)
 	 *    committed to disk.
 	 */
 	if (mdt_slc_is_enabled(mdt) && S_ISDIR(ma->ma_attr.la_mode)) {
-		struct mdt_lock_handle *lhc;
+		struct mdt_lock_handle *lhc2;
 		struct ldlm_enqueue_info *einfo = &info->mti_einfo[0];
 		bool cos_incompat;
 
@@ -663,27 +704,66 @@ static int mdt_create(struct mdt_thread_info *info)
 			}
 		}
 
-		lhc = &info->mti_lh[MDT_LH_CHILD];
-		mdt_lock_handle_init(lhc);
-		mdt_lock_reg_init(lhc, LCK_PW);
-		rc = mdt_reint_striped_lock(info, child, lhc,
+		lhc2 = &info->mti_lh[MDT_LH_CHILD];
+		mdt_lock_handle_init(lhc2);
+		mdt_lock_reg_init(lhc2, LCK_PW);
+		rc = mdt_reint_striped_lock(info, child, lhc2,
 					    MDS_INODELOCK_UPDATE, einfo,
 					    cos_incompat);
 		if (rc)
 			GOTO(put_child, rc);
 
-		mdt_reint_striped_unlock(info, child, lhc, einfo, rc);
+		mdt_reint_striped_unlock(info, child, lhc2, einfo, rc);
 	}
 
 	/* Return fid & attr to client. */
 	if (ma->ma_valid & MA_INODE)
 		mdt_pack_attr2body(info, repbody, &ma->ma_attr,
 				   mdt_object_fid(child));
+
+	if (info->mti_intent_lock) {
+		mdt_set_disposition(info, dlmrep, DISP_LOOKUP_NEG);
+		rc = mdt_check_resent_lock(info, child, lhc);
+		/*
+		 * rc < 0 is error and we fall right back through,
+		 * rc == 0 is the open lock might already be gotten in
+		 * ldlm_handle_enqueue due to this being a resend.
+		 */
+		if (rc <= 0)
+			GOTO(put_child, rc);
+
+		/*
+		 * For the normal intent create (mkdir):
+		 * - Grant LOOKUP lock with CR mode to the client at
+		 *   least.
+		 * - Grant the lock similar to getattr():
+		 *   lock mode: PR;
+		 *   inodebits: LOOK | UPDATE | PERM [| LAYOUT].
+		 * However, it can not grant LCK_CR to the client as during
+		 * the setting of LMV layout for a directory from a client,
+		 * it will acquire LCK_PW mode lock which is compat with LCK_CR
+		 * lock mode, this may result that the cached LMV layout on a
+		 * client will not be released when set (default) LMV layout on
+		 * a directory.
+		 * Due to the above reason, it grants a lock with LCK_PR mode to
+		 * the client.
+		 * Currently it can not grant MDS_INODELOCK_UPDATE lock to the
+		 * client in DNE environment with 'sync_lock_cancel' enabled as
+		 * the previous obtained LCK_PW lock will keep the lock
+		 * referenced until client ACK.
+		 */
+		mdt_lock_reg_init(lhc, LCK_PR);
+		rc = mdt_object_lock(info, child, lhc, MDS_INODELOCK_LOOKUP |
+				     MDS_INODELOCK_PERM);
+	}
+
 	EXIT;
 put_child:
 	mdt_object_put(info->mti_env, child);
 unlock_parent:
 	mdt_object_unlock(info, parent, lh, rc);
+	if (rc && dlmrep)
+		mdt_clear_disposition(info, dlmrep, DISP_OPEN_CREATE);
 put_parent:
 	mdt_object_put(info->mti_env, parent);
 	return rc;
@@ -713,9 +793,13 @@ static int mdt_attr_set(struct mdt_thread_info *info, struct mdt_object *mo,
 	/* Even though the new MDT will grant PERM lock to the old
 	 * client, but the old client will almost ignore that during
 	 * So it needs to revoke both LOOKUP and PERM lock here, so
-	 * both new and old client can cancel the dcache
+	 * both new and old client can cancel the dcache.
+	 * When mkdir() is implemented using intent lock, it will grant
+	 * both LOOKUP and PERM lock to the client. Thus here it needs
+	 * to revoke both LOOKUP and PERM lock for project setting, so
+	 * the client can cancel the dcache.
 	 */
-	if (ma->ma_attr.la_valid & (LA_MODE|LA_UID|LA_GID))
+	if (ma->ma_attr.la_valid & (LA_MODE | LA_UID | LA_GID | LA_PROJID))
 		lockpart |= MDS_INODELOCK_LOOKUP | MDS_INODELOCK_PERM;
 	/* Clear xattr cache on clients, so the virtual project ID xattr
 	 * can get the new project ID
@@ -1067,7 +1151,7 @@ static int mdt_reint_create(struct mdt_thread_info *info,
 		RETURN(err_serious(-EOPNOTSUPP));
 	}
 
-	rc = mdt_create(info);
+	rc = mdt_create(info, lhc);
 	if (rc == 0) {
 		if ((info->mti_attr.ma_attr.la_mode & S_IFMT) == S_IFDIR)
 			mdt_counter_incr(req, LPROC_MDT_MKDIR,

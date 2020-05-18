@@ -28157,6 +28157,31 @@ test_904() {
 }
 run_test 904 "virtual project ID xattr"
 
+test_905() {
+	[ $MDSCOUNT -lt 2 ] && skip "needs >= 2 MDTs" && return 0
+	[[ "$MDS1_VERSION" -ge $(version_code 2.13.55) ]] ||
+		skip "Need MDS version at least 2.13.55"
+
+	local save="$TMP/$TESTSUITE-$TESTNAME.parameters"
+
+	save_lustre_params client "llite.*.intent_mkdir" > $save
+	stack_trap "restore_lustre_params < $save; rm -f $save" EXIT
+
+	test_mkdir -p -c$MDSCOUNT $DIR/$tdir
+	if [ $MDSCOUNT -ge 2 ]; then
+		$LFS setdirstripe -D -c$MDSCOUNT $DIR/$tdir ||
+			error "set default dirstripe failed"
+	fi
+
+	mkdir $DIR/$tdir/tdir || error "mkdir tdir failed"
+	mkdir $DIR/$tdir/tdir/tfile || error "mkdir tdir/tfile failed"
+	touch -d "2020-08-25 15:08" $DIR/$tdir/tdir/tfile ||
+		error "touch time failed"
+	chown 0:0 $DIR/$tdir/tdir/tfile || error "chown 0:0 tdir/tfile failed"
+	chmod 755 $DIR/$tdir/tdir/tfile || error "chmod 755 tdir/tfile failed"
+}
+run_test 905 "mkdir using intent lock for striped directory"
+
 complete $SECONDS
 [ -f $EXT2_DEV ] && rm $EXT2_DEV || true
 check_and_cleanup_lustre

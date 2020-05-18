@@ -305,9 +305,9 @@ void mdt_mfd_set_mode(struct mdt_file_data *mfd, u64 open_flags)
 /**
  * prep ma_lmm/ma_lmv for md_attr from reply
  */
-static void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
-				     struct mdt_object *obj,
-				     struct md_attr *ma)
+void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
+			      struct mdt_object *obj,
+			      struct md_attr *ma)
 {
 	if (ma->ma_lmv || ma->ma_lmm) {
 		CDEBUG(D_INFO, DFID " %s already set.\n",
@@ -326,6 +326,19 @@ static void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
 						       RCL_SERVER);
 		if (ma->ma_lmv_size > 0)
 			ma->ma_need |= MA_LMV;
+
+		if (req_capsule_has_field(info->mti_pill, &RMF_DEFAULT_MDT_MD,
+					  RCL_SERVER)) {
+			ma->ma_default_lmv =
+				req_capsule_server_get(info->mti_pill,
+						       &RMF_DEFAULT_MDT_MD);
+			ma->ma_default_lmv_size =
+				req_capsule_get_size(info->mti_pill,
+						     &RMF_DEFAULT_MDT_MD,
+						     RCL_SERVER);
+			if (ma->ma_default_lmv_size > 0)
+				ma->ma_need |= MA_LMV_DEF;
+		}
 	} else {
 		ma->ma_lmm = req_capsule_server_get(info->mti_pill,
 						    &RMF_MDT_MD);
