@@ -136,6 +136,7 @@ static int lfs_pcc_list_commands(int argc, char **argv);
 static int lfs_migrate_to_dom(int fd, int fdv, char *name,
 			      __u64 migration_flags);
 static int lfs_wbc_state(int argc, char **argv);
+static int lfs_wbc_unreserve(int argc, char **argv);
 static int lfs_wbc(int argc, char **argv);
 static int lfs_wbc_list_commands(int argc, char **argv);
 
@@ -321,6 +322,9 @@ command_t wbc_cmdlist[] = {
 	{ .pc_name = "state", .pc_func = lfs_wbc_state,
 	  .pc_help = "Display the WBC state for given files.\n"
 		"usage: lfs wbc state <file> ...\n"},
+	{ .pc_name = "unreserve", .pc_func = lfs_wbc_unreserve,
+	  .pc_help = "Unreserve the given file(s) from WBC.\n"
+		"usage: lfs wbc unreserve <file> ...\n"},
 	{ .pc_name = "list-commands", .pc_func = lfs_wbc_list_commands,
 	  .pc_help = "list commands supported by lfs wbc"},
 	{ .pc_name = "help", .pc_func = Parser_help, .pc_help = "help" },
@@ -12760,6 +12764,60 @@ static int lfs_wbc_state(int argc, char **argv)
 		printf(", flush_mode: %s",
 		       wbc_flushmode2string(state.wbcs_flush_mode));
 		printf("\n");
+	}
+	return rc;
+}
+
+static int lfs_wbc_unreserve(int argc, char **argv)
+{
+	int c;
+	int rc = 0;
+	const char *path;
+	char fullpath[PATH_MAX];
+	struct option long_opts[] = {
+	{ .val = 'R', .name = "unrsv_siblings", .has_arg = no_argument },
+	{ .name = NULL } };
+	char short_opts[] = "R";
+	unsigned int unrsv_siblings = 0;
+
+	optind = 0;
+	while ((c = getopt_long(argc, argv, short_opts,
+				long_opts, NULL)) != -1) {
+		switch (c) {
+		case 'R':
+			unrsv_siblings = 1;
+			break;
+		case '?':
+			return CMD_HELP;
+		default:
+			fprintf(stderr, "%s: option '%s' unrecognized\n",
+				argv[0], argv[optind - 1]);
+			return CMD_HELP;
+		}
+	}
+
+	while (optind < argc) {
+		int rc2;
+
+		path = argv[optind++];
+		if (realpath(path, fullpath) == NULL) {
+			fprintf(stderr, "%s: could not find path '%s': %s\n",
+				argv[0], path, strerror(errno));
+			if (rc == 0)
+				rc = -EINVAL;
+			continue;
+		}
+
+		/* Unreserve all files/dirs under the parent. */
+		rc2 = llapi_wbc_unreserve_file(fullpath, unrsv_siblings);
+		if (rc2 < 0) {
+			rc2 = -errno;
+			fprintf(stderr,
+				"%s: cannot unreserve '%s' from WBC: %s\n",
+				argv[0], path, strerror(errno));
+			if (rc == 0)
+				rc = rc2;
+		}
 	}
 	return rc;
 }

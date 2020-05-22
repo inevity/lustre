@@ -1447,6 +1447,149 @@ test_21() {
 }
 run_test 21 "Verfiy readdir() works correctly for various readdir policies"
 
+test_22_base() {
+	local flush_mode=$1
+	local unrsv_flag=$2
+	local nr_files=1
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile.i0
+	local fileset
+
+	echo -e "\n===== Unreserve testing for $flush_mode flush mode ====="
+	setup_wbc "flush_mode=$flush_mode"
+
+	# One level directory test.
+	for i in $(seq 1 $nr_files); do
+		fileset+="$dir/$tfile.i$i "
+	done
+
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir
+	touch $fileset $file || error "touch $fileset $file failed"
+	echo "=== Regular file: lfs wbc unreserve $unrsv_flag $file ==="
+	$LFS wbc unreserve $unrsv_flag $file || error "unreserve $file failed"
+	$LFS wbc state $file $fileset
+	check_wbc_inode_complete $dir 0
+	check_wbc_inode_reserved $file 0
+	[[ -z $unrsv_flag ]] || check_fileset_inode_reserved "$fieset" 0
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	fileset=""
+	file="$dir/$tdir.i0"
+	for i in $(seq 1 $nr_files); do
+		fileset+="$dir/$tdir.i$i "
+	done
+
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir
+	mkdir $fileset $file || error "mkdir $fileset $file failed"
+	echo "=== Directory: lfs wbc unreserve $unrsv_flag $file ==="
+	$LFS wbc unreserve $unrsv_flag $file || error "unreserve $file failed"
+	check_wbc_inode_complete $dir 0
+	check_wbc_inode_reserved $file 0
+	[[ -z $unrsv_flag ]] || check_fileset_inode_reserved "$fieset" 0
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_22() {
+	#test_22_base "lazy_drop"
+	test_22_base "lazy_keep"
+	test_22_base "lazy_drop" "-R"
+	test_22_base "lazy_keep" "-R"
+
+	test_22_base "aging_drop"
+	test_22_base "aging_keep"
+	test_22_base "aging_drop" "-R"
+	test_22_base "aging_keep" "-R"
+}
+run_test 22 "lfs unreserve command with 1 level directory"
+
+test_23_base() {
+	local flush_mode=$1
+	local level=$2
+	local nr_level=$3
+	local unrsv_level=$4
+	local unrsv_flag=$5
+	local path="$DIR/$tdir"
+	local fileset
+	local unrsvset
+	local subset
+	local file
+
+	echo -e "\n===== Inode limits for $flush_mode flush mode ====="
+	setup_wbc "flush_mode=$flush_mode"
+
+	for l in $(seq 1 $level); do
+		subset=""
+		for i in $(seq 1 $nr_level); do
+			fileset+="$path/dir_l$l.i$i "
+			subset+="$path/dir_l$l.i$i "
+		done
+		if [ $l == $unrsv_level ]; then
+			file="$path/dir_l$l.i1"
+			unrsvset="$subset"
+		fi
+		path+="/dir_l$l.i1"
+	done
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $fileset || error "mkdir $fileset failed"
+	$LFS wbc state $DIR/$tdir $fileset
+	check_fileset_inode_reserved "$fileset" 1
+	echo "=== Directory: lfs wbc unreserve $unrsv_flag $file ==="
+	$LFS wbc unreserve $unrsv_flag $file || error "unreserve $file failed"
+	$LFS wbc state $DIR/$tdir $fileset
+	check_wbc_inode_complete $(dirname $file) 0
+	check_wbc_inode_reserved $file 0
+	[ -z $unrsv_flag ] || check_fileset_inode_reserved "$unrsvset" 0
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	file="$(dirname $file)/dir_l$unrsv_level.i0"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $fileset || error "mkdir $fileset failed"
+	echo -n unreserve_reg_data > $file || error "write $file failed"
+	$LFS wbc state $DIR/$tdir $fileset $file
+	check_fileset_inode_reserved "$fileset" 1
+	echo "=== Regular file: lfs wbc unreserve $unrsv_flag $file ==="
+	$LFS wbc unreserve $unrsv_flag $file || error "unreserve $file failed"
+	$LFS wbc state $DIR/$tdir $fileset $file
+	check_wbc_inode_complete $(dirname $file) 0
+	check_wbc_inode_reserved $file 0
+	[[ -z $unrsv_flag ]] || check_fileset_inode_reserved "$unrsvset" 0
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_23() {
+	test_23_base "lazy_drop" 3 3 3
+	test_23_base "lazy_drop" 3 3 3 "-R"
+	test_23_base "lazy_drop" 3 3 2
+	test_23_base "lazy_drop" 3 3 2 "-R"
+	test_23_base "lazy_drop" 3 3 1
+	test_23_base "lazy_drop" 3 3 1 "-R"
+
+	test_23_base "lazy_keep" 3 3 3
+	test_23_base "lazy_keep" 3 3 3 "-R"
+	test_23_base "lazy_keep" 3 3 2
+	test_23_base "lazy_keep" 3 3 2 "-R"
+	test_23_base "lazy_keep" 3 3 1
+	test_23_base "lazy_keep" 3 3 1 "-R"
+
+	test_23_base "aging_drop" 3 3 3
+	test_23_base "aging_drop" 3 3 3 "-R"
+	test_23_base "aging_drop" 3 3 2
+	test_23_base "aging_drop" 3 3 2 "-R"
+	test_23_base "aging_drop" 3 3 1
+	test_23_base "aging_drop" 3 3 1 "-R"
+
+	test_23_base "aging_keep" 3 3 3
+	test_23_base "aging_keep" 3 3 3 "-R"
+	test_23_base "aging_keep" 3 3 2
+	test_23_base "aging_keep" 3 3 2 "-R"
+	test_23_base "aging_keep" 3 3 1
+	test_23_base "aging_keep" 3 3 1 "-R"
+}
+run_test 23 "lfs unreserve command with multiple level directories"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

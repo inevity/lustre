@@ -394,14 +394,13 @@ void wbc_inode_unreserve_dput(struct inode *inode, struct dentry *dentry);
 long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 			  struct writeback_control_ext *wbcx,
 			  unsigned int *valid);
-long wbc_flush_opcode_data_lockless(struct inode *inode, unsigned int *valid,
-				    struct writeback_control_ext *wbcx);
 void wbc_inode_writeback_complete(struct inode *inode);
 int wbc_make_inode_sync(struct dentry *dentry);
 int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
 			  struct writeback_control_ext *wbcx);
-int wbc_make_inode_decomplete(struct inode *inode);
-int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent);
+int wbc_make_inode_decomplete(struct inode *inode, unsigned int unrsv_children);
+int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent,
+			    unsigned int unrsv_children);
 int wbc_make_data_commit(struct dentry *dentry);
 int wbc_super_init(struct wbc_super *super);
 void wbc_super_fini(struct wbc_super *super);

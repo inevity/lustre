@@ -73,3 +73,44 @@ int llapi_wbc_state_get(const char *path, struct lu_wbc_state *state)
 	close(fd);
 	return rc;
 }
+
+/**
+ * Unreserve the given file from WBC.
+ *
+ * \param fd			File handle.
+ * \param all_same_level	Whether unreserve all siblings.
+ *
+ * \return 0 on success, an error code otherwise.
+ */
+int llapi_wbc_unreserve_file_fd(int fd, __u32 unrsv_siblings)
+{
+	struct lu_wbc_unreserve unrsv;
+	int rc;
+
+	unrsv.wbcu_unrsv_siblings = unrsv_siblings;
+	rc = ioctl(fd, LL_IOC_WBC_UNRESERVE, &unrsv);
+	/* If error, save errno value */
+	rc = rc ? -errno : 0;
+
+	return rc;
+}
+
+/**
+ * Unreserve the given file pointed by \a path from WBC.
+ *
+ * see llapi_wbc_unreserve_file_fd() for args use and return.
+ */
+int llapi_wbc_unreserve_file(const char *path, __u32 unrsv_siblings)
+{
+	int fd;
+	int rc;
+
+	fd = open(path, O_RDONLY | O_NONBLOCK);
+	if (fd < 0)
+		return -errno;
+
+	rc = llapi_wbc_unreserve_file_fd(fd, unrsv_siblings);
+
+	close(fd);
+	return rc;
+}

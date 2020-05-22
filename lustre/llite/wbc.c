@@ -249,62 +249,6 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 	RETURN(opc);
 }
 
-static void wbc_flush_lockless_check(struct inode *inode,
-				     struct writeback_control_ext *wbcx)
-{
-	LASSERT(inode->i_state & I_SYNC && !wbcx->for_callback &&
-		!wbcx->for_decomplete);
-	if (wbcx->for_fsync)
-		LASSERT(ll_i2wbci(inode)->wbci_flags & WBC_STATE_FL_WRITEBACK);
-}
-
-long wbc_flush_opcode_data_lockless(struct inode *inode, unsigned int *valid,
-				    struct writeback_control_ext *wbcx)
-{
-	struct wbc_inode *wbci = ll_i2wbci(inode);
-	long opc = MD_OP_NONE;
-
-	wbc_flush_lockless_check(inode, wbcx);
-	spin_lock(&inode->i_lock);
-	if (!wbcx->for_fsync && wbci->wbci_flags & WBC_STATE_FL_WRITEBACK)
-		__wbc_inode_wait_for_writeback(inode);
-
-	/*
-	 * The inode was redirtied.
-	 * TODO: handle more dirty flags: I_DIRTY_TIME | I_DIRTY_TIME_EXPIRED
-	 * in the latest Linux kernel.
-	 */
-	if (inode->i_state & I_DIRTY) {
-		inode->i_state &= ~I_DIRTY;
-		/* Paired with smp_mb() in __mark_inode_dirty(). */
-		smp_mb();
-	}
-
-	if (wbc_inode_none(wbci)) {
-		opc = MD_OP_NONE;
-	} else if (wbc_inode_was_flushed(wbci)) {
-		if (wbc_inode_attr_dirty(wbci)) {
-			opc = MD_OP_SETATTR_LOCKLESS;
-			*valid = wbci->wbci_dirty_attr;
-			wbci->wbci_dirty_attr = 0;
-			wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
-		}
-		/* TODO: Hardlink. */
-	} else {
-		/*
-		 * TODO: Update the metadata attributes on MDT together with
-		 * the file creation.
-		 */
-		*valid = wbci->wbci_dirty_attr;
-		wbci->wbci_dirty_attr = 0;
-		wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
-		opc = MD_OP_CREATE_LOCKLESS;
-	}
-	spin_unlock(&inode->i_lock);
-
-	return opc;
-}
-
 static int wbc_flush_ancestors_topdown(struct list_head *fsync_list)
 {
 	struct writeback_control wbc = {
@@ -616,13 +560,15 @@ int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
 	return rc;
 }
 
-int wbc_make_inode_decomplete(struct inode *inode)
+int wbc_make_inode_decomplete(struct inode *inode,
+			      unsigned int unrsv_children)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 	struct writeback_control_ext wbcx = {
 		.sync_mode = WB_SYNC_ALL,
 		.nr_to_write = 0, /* metadata-only */
 		.for_decomplete = 1,
+		.unrsv_children_decomp = unrsv_children,
 	};
 	struct ldlm_lock *lock = NULL;
 	int rc;
@@ -661,7 +607,8 @@ up_rwsem:
 	RETURN(rc);
 }
 
-int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent)
+int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent,
+			    unsigned int unrsv_children)
 {
 	int rc;
 
@@ -678,7 +625,7 @@ int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent)
 			RETURN(rc);
 	}
 
-	rc = wbc_make_inode_decomplete(dir);
+	rc = wbc_make_inode_decomplete(dir, unrsv_children);
 	RETURN(rc);
 }
 

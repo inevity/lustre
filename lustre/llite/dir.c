@@ -2266,6 +2266,8 @@ out_detach:
 		return llcrypt_ioctl_get_key_status(file, (void __user *)arg);
 #endif
 	case LL_IOC_WBC_STATE:
+		/* fall through */
+	case LL_IOC_WBC_UNRESERVE:
 		RETURN(wbc_ioctl(file, cmd, arg));
 	default:
 		RETURN(obd_iocontrol(cmd, sbi->ll_dt_exp, 0, NULL,

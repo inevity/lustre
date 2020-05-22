@@ -32,6 +32,19 @@
 
 #include "llite_internal.h"
 
+static inline int wbc_ioctl_unreserve(struct dentry *dchild,
+				      unsigned int unrsv_children)
+{
+	struct dentry *parent = dchild->d_parent;
+	int rc;
+
+	rc = wbc_make_dir_decomplete(parent->d_inode, parent, unrsv_children);
+	if (rc == 0 && unrsv_children == 0)
+		wbc_inode_unreserve_dput(dchild->d_inode, dchild);
+
+	return rc;
+}
+
 long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = file_inode(file);
@@ -60,6 +73,30 @@ long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			GOTO(out_state, rc = -EFAULT);
 out_state:
 		OBD_FREE_PTR(state);
+		RETURN(rc);
+	}
+	case LL_IOC_WBC_UNRESERVE: {
+		struct lu_wbc_unreserve *unrsv;
+
+		if (wbc_inode_none(ll_i2wbci(inode)))
+			RETURN(0);
+
+		OBD_ALLOC_PTR(unrsv);
+		if (unrsv == NULL)
+			RETURN(-ENOMEM);
+
+		if (copy_from_user(unrsv,
+				   (const struct lu_wbc_unreserve __user *)arg,
+				   sizeof(*unrsv)))
+			GOTO(out_unrsv_free, rc = -EFAULT);
+
+		if (!inode_owner_or_capable(&init_user_ns, inode))
+			GOTO(out_unrsv_free, rc = -EPERM);
+
+		rc = wbc_ioctl_unreserve(file->f_path.dentry,
+					 unrsv->wbcu_unrsv_siblings);
+out_unrsv_free:
+		OBD_FREE_PTR(unrsv);
 		RETURN(rc);
 	}
 	default:
@@ -1045,25 +1082,29 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 
 	ENTRY;
 
-	opc = wbc_flush_opcode_data_lockless(inode, &valid, wbcx);
+	opc = wbc_flush_opcode_get(inode, NULL, wbcx, &valid);
 	switch (opc) {
 	case MD_OP_NONE:
 		break;
 	case MD_OP_CREATE_LOCKLESS:
 		rc = wbc_do_create(inode);
 		spin_lock(&inode->i_lock);
-		LASSERT(wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
+		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
+			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
 		wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
 		if (rc == 0)
 			wbci->wbci_flags |= WBC_STATE_FL_SYNC;
 		spin_unlock(&inode->i_lock);
+		wbc_inode_writeback_complete(inode);
 		break;
 	case MD_OP_SETATTR_LOCKLESS: {
 		rc = wbc_do_setattr(inode, valid);
 		spin_lock(&inode->i_lock);
-		LASSERT(wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
+		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
+			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
 		wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
 		spin_unlock(&inode->i_lock);
+		wbc_inode_writeback_complete(inode);
 		break;
 	}
 	default:

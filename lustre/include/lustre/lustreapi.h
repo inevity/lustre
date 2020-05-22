@@ -672,6 +672,8 @@ int llapi_pccdev_get(const char *mntpath);
 /* WBC */
 int llapi_wbc_state_get_fd(int fd, struct lu_wbc_state *state);
 int llapi_wbc_state_get(const char *path, struct lu_wbc_state *state);
+int llapi_wbc_unreserve_file(const char *path, __u32 unrsv_siblings);
+int llapi_wbc_unreserve_file_fd(int fd, __u32 unrsv_siblings);
 /** @} llapi */
 
 /* llapi_layout user interface */

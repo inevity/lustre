@@ -61,7 +61,7 @@ static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
 		RETURN(rc);
 
 	up_read(&wbci->wbci_rw_sem);
-	rc = wbc_make_dir_decomplete(dir, parent);
+	rc = wbc_make_dir_decomplete(dir, parent, 0);
 	down_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
 }
@@ -1214,6 +1214,7 @@ static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
 			GOTO(up_rwsem, rc);
 
 		setattr_copy(&init_user_ns, inode, attr);
+		spin_lock(&inode->i_lock);
 		wbci->wbci_dirty_flags |= WBC_DIRTY_FL_ATTR;
 		wbci->wbci_dirty_attr |= attr->ia_valid;
 		spin_unlock(&inode->i_lock);
@@ -1465,7 +1466,7 @@ static int memfs_readdir(struct file *filp, struct dir_context *ctx)
 				rc = memfs_dcache_readdir(filp, ctx);
 			} else {
 				up_read(&wbci->wbci_rw_sem);
-				rc = wbc_make_dir_decomplete(dir, dentry);
+				rc = wbc_make_dir_decomplete(dir, dentry, 0);
 				if (rc)
 					GOTO(up_rwsem, rc);
 
@@ -1580,7 +1581,7 @@ static int memfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 							  filldir);
 			} else {
 				up_read(&wbci->wbci_rw_sem);
-				rc = wbc_make_dir_decomplete(dir, dentry);
+				rc = wbc_make_dir_decomplete(dir, dentry, 0);
 				if (rc)
 					GOTO(up_rwsem, rc);
 
