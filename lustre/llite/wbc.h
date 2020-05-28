@@ -113,6 +113,8 @@ enum wbc_readdir_policy {
 	WBC_READDIR_POL_DEFAULT		= WBC_READDIR_DCACHE_COMPAT,
 };
 
+#define WBC_DEFAULT_HIWM_RATIO	0	/* Disable reclaimation. */
+
 struct wbc_conf {
 	enum lu_wbc_cache_mode	wbcc_cache_mode;
 	enum lu_wbc_flush_mode	wbcc_flush_mode;
@@ -129,6 +131,14 @@ struct wbc_conf {
 	unsigned long		wbcc_max_pages;
 	/* How many pages are allocated. */
 	struct percpu_counter	wbcc_used_pages;
+	/*
+	 * As a percentage of the total cache in MemFS, the number of caches
+	 * at which the WBC reclaimer begins writeback of dirty data to reclaim
+	 * space in MemFS.
+	 */
+	int			wbcc_hiwm_ratio; /* High watermark. */
+	__u32			wbcc_hiwm_inodes_count;
+	__u32			wbcc_hiwm_pages_count;
 };
 
 struct wbc_super {
@@ -137,7 +147,12 @@ struct wbc_super {
 	struct wbc_conf		 wbcs_conf;
 	struct dentry		*wbcs_debugfs_dir;
 	struct list_head	 wbcs_roots;
-	struct list_head	wbcs_lazy_roots;
+	struct list_head	 wbcs_lazy_roots;
+
+	/* For cache shrinking and reclaimation. */
+	/* LRU list head for reserved inodes. */
+	struct list_head	 wbcs_rsvd_inode_lru;
+	struct task_struct	*wbcs_reclaim_task;
 };
 
 /* Extend for the data structure writeback_control in Linux kernel */
@@ -196,6 +211,7 @@ struct wbc_inode {
 	enum lu_wbc_dirty_flags	wbci_dirty_flags;
 	unsigned int		wbci_dirty_attr;
 	struct list_head	wbci_root_list;
+	struct list_head	wbci_rsvd_lru;
 	struct lustre_handle	wbci_lock_handle;
 	struct rw_semaphore	wbci_rw_sem;
 };
@@ -223,13 +239,14 @@ enum wbc_cmd_type {
 };
 
 enum wbc_cmd_op {
-	WBC_CMD_OP_CACHE_MODE	= 0x01,
-	WBC_CMD_OP_FLUSH_MODE	= 0x02,
-	WBC_CMD_OP_MAX_RPCS	= 0x04,
-	WBC_CMD_OP_RMPOL	= 0x08,
-	WBC_CMD_OP_INODES_LIMIT	= 0x10,
-	WBC_CMD_OP_PAGES_LIMIT	= 0x20,
-	WBC_CMD_OP_READDIR_POL	= 0x40,
+	WBC_CMD_OP_CACHE_MODE		= 0x0001,
+	WBC_CMD_OP_FLUSH_MODE		= 0x0002,
+	WBC_CMD_OP_MAX_RPCS		= 0x0004,
+	WBC_CMD_OP_RMPOL		= 0x0008,
+	WBC_CMD_OP_INODES_LIMIT		= 0x0010,
+	WBC_CMD_OP_PAGES_LIMIT		= 0x0020,
+	WBC_CMD_OP_READDIR_POL		= 0x0040,
+	WBC_CMD_OP_RECLAIM_RATIO	= 0x0080,
 };
 
 struct wbc_cmd {
@@ -384,11 +401,21 @@ static inline const char *wbc_readdir_pol2string(enum wbc_readdir_policy pol)
 	}
 }
 
+static inline bool wbc_cache_too_much_inodes(struct wbc_conf *conf)
+{
+	if (conf->wbcc_hiwm_ratio)
+		return conf->wbcc_max_inodes - conf->wbcc_free_inodes >
+		       conf->wbcc_hiwm_inodes_count;
+	return false;
+}
+
 /* wbc.c */
 void wbc_super_root_add(struct inode *inode);
 void wbc_super_root_del(struct inode *inode);
 int wbc_reserve_inode(struct wbc_super *super);
 void wbc_unreserve_inode(struct inode *inode);
+void wbc_reserved_inode_lru_add(struct inode *inode);
+void wbc_reserved_inode_lru_del(struct inode *inode);
 void wbc_free_inode(struct inode *inode);
 void wbc_inode_unreserve_dput(struct inode *inode, struct dentry *dentry);
 long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,

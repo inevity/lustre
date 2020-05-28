@@ -588,10 +588,6 @@ mdc_intent_setattr_pack(struct obd_export *exp,
 		dlm->lock_handle[1] = op_data->op_open_handle;
 	}
 
-	spin_lock(&req->rq_lock);
-	req->rq_replay = req->rq_import->imp_replayable;
-	spin_unlock(&req->rq_lock);
-
 	/* Pack the intent */
 	lit = req_capsule_client_get(&req->rq_pill, &RMF_LDLM_INTENT);
 	lit->opc = (__u64)it->it_op;

@@ -135,6 +135,8 @@ int wbc_reserve_inode(struct wbc_super *super)
 		else
 			conf->wbcc_free_inodes--;
 		spin_unlock(&super->wbcs_lock);
+		if (wbc_cache_too_much_inodes(conf))
+			wake_up_process(super->wbcs_reclaim_task);
 	}
 	return rc;
 }
@@ -142,9 +144,37 @@ int wbc_reserve_inode(struct wbc_super *super)
 void wbc_unreserve_inode(struct inode *inode)
 {
 	struct wbc_super *super = ll_i2wbcs(inode);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	wbci->wbci_flags &= ~WBC_STATE_FL_INODE_RESERVED;
+	if (super->wbcs_conf.wbcc_max_inodes) {
+		spin_lock(&super->wbcs_lock);
+		if (!list_empty(&wbci->wbci_rsvd_lru))
+			list_del_init(&wbci->wbci_rsvd_lru);
+		super->wbcs_conf.wbcc_free_inodes++;
+		spin_unlock(&super->wbcs_lock);
+	}
+}
+
+void wbc_reserved_inode_lru_add(struct inode *inode)
+{
+	struct wbc_super *super = ll_i2wbcs(inode);
 
 	if (super->wbcs_conf.wbcc_max_inodes) {
 		spin_lock(&super->wbcs_lock);
+		list_add_tail(&ll_i2wbci(inode)->wbci_rsvd_lru,
+			      &super->wbcs_rsvd_inode_lru);
+		spin_unlock(&super->wbcs_lock);
+	}
+}
+
+void wbc_reserved_inode_lru_del(struct inode *inode)
+{
+	struct wbc_super *super = ll_i2wbcs(inode);
+
+	if (super->wbcs_conf.wbcc_max_inodes) {
+		spin_lock(&super->wbcs_lock);
+		list_del_init(&ll_i2wbci(inode)->wbci_rsvd_lru);
 		super->wbcs_conf.wbcc_free_inodes++;
 		spin_unlock(&super->wbcs_lock);
 	}
@@ -166,7 +196,6 @@ void wbc_inode_unreserve_dput(struct inode *inode,
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 
 	if (wbc_inode_reserved(wbci)) {
-		LASSERT(wbc_inode_written_out(wbci));
 		wbci->wbci_flags &= ~WBC_STATE_FL_INODE_RESERVED;
 		wbc_unreserve_inode(inode);
 		/* Unpin the dentry now as it is stable. */
@@ -685,6 +714,7 @@ void wbc_inode_init(struct wbc_inode *wbci)
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
 	wbci->wbci_dirty_flags = WBC_DIRTY_FL_NONE;
 	INIT_LIST_HEAD(&wbci->wbci_root_list);
+	INIT_LIST_HEAD(&wbci->wbci_rsvd_lru);
 	init_rwsem(&wbci->wbci_rw_sem);
 }
 
@@ -802,6 +832,83 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 	RETURN(rc);
 }
 
+static int wbc_reclaim_inodes_below(struct wbc_super *super, __u32 low)
+{
+	struct wbc_conf *conf = &super->wbcs_conf;
+	int rc = 0;
+
+	ENTRY;
+
+	spin_lock(&super->wbcs_lock);
+	while (conf->wbcc_free_inodes < low) {
+		struct inode *inode;
+		struct wbc_inode *wbci;
+		struct ll_inode_info *lli;
+		struct dentry *dchild;
+
+		if (list_empty(&super->wbcs_rsvd_inode_lru))
+			break;
+
+		wbci = list_entry(super->wbcs_rsvd_inode_lru.next,
+				  struct wbc_inode, wbci_rsvd_lru);
+
+		list_del_init(&wbci->wbci_rsvd_lru);
+		lli = container_of(wbci, struct ll_inode_info, lli_wbc_inode);
+		inode = ll_info2i(lli);
+		dchild = d_find_any_alias(inode);
+		if (!dchild)
+			continue;
+
+		spin_unlock(&super->wbcs_lock);
+
+		rc = wbc_make_dir_decomplete(dchild->d_parent->d_inode,
+					     dchild->d_parent, 1);
+		dput(dchild);
+		if (rc) {
+			CERROR("Reclaim inodes failed: rc = %d\n", rc);
+			RETURN(rc);
+		}
+
+		cond_resched();
+		spin_lock(&super->wbcs_lock);
+	}
+	spin_unlock(&super->wbcs_lock);
+
+	RETURN(rc);
+}
+
+static int wbc_reclaim_inodes(struct wbc_super *super)
+{
+	__u32 low = super->wbcs_conf.wbcc_max_inodes >> 1;
+
+	return wbc_reclaim_inodes_below(super, low);
+}
+
+#ifndef TASK_IDLE
+#define TASK_IDLE TASK_INTERRUPTIBLE
+#endif
+
+static int ll_wbc_reclaim_main(void *arg)
+{
+	struct wbc_super *super = arg;
+
+	ENTRY;
+
+	while (({set_current_state(TASK_IDLE);
+		 !kthread_should_stop(); })) {
+		if (wbc_cache_too_much_inodes(&super->wbcs_conf)) {
+			__set_current_state(TASK_RUNNING);
+			wbc_reclaim_inodes(super);
+			cond_resched();
+		} else {
+			schedule();
+		}
+	}
+	__set_current_state(TASK_RUNNING);
+
+	RETURN(0);
+}
+
 static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 {
 	conf->wbcc_rmpol = WBC_RMPOL_DEFAULT;
@@ -812,6 +919,9 @@ static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 	conf->wbcc_max_inodes = 0;
 	conf->wbcc_free_inodes = 0;
 	conf->wbcc_max_pages = 0;
+	conf->wbcc_hiwm_ratio = WBC_DEFAULT_HIWM_RATIO;
+	conf->wbcc_hiwm_inodes_count = 0;
+	conf->wbcc_hiwm_pages_count = 0;
 }
 
 /* called with @wbcs_lock hold. */
@@ -870,6 +980,12 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 	if (cmd->wbcc_flags & WBC_CMD_OP_PAGES_LIMIT)
 		conf->wbcc_max_pages = cmd->wbcc_conf.wbcc_max_pages;
 
+	if (cmd->wbcc_flags & WBC_CMD_OP_RECLAIM_RATIO) {
+		conf->wbcc_hiwm_ratio = cmd->wbcc_conf.wbcc_hiwm_ratio;
+		conf->wbcc_hiwm_inodes_count = conf->wbcc_max_inodes *
+					       conf->wbcc_hiwm_ratio / 100;
+	}
+
 	if (conf->wbcc_cache_mode == WBC_MODE_NONE)
 		conf->wbcc_cache_mode = WBC_MODE_DEFAULT;
 	if (cmd->wbcc_flags & WBC_CMD_OP_CACHE_MODE)
@@ -888,6 +1004,11 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 
 void wbc_super_fini(struct wbc_super *super)
 {
+	if (super->wbcs_reclaim_task) {
+		kthread_stop(super->wbcs_reclaim_task);
+		super->wbcs_reclaim_task = NULL;
+	}
+
 	percpu_counter_destroy(&super->wbcs_conf.wbcc_used_pages);
 }
 
@@ -896,13 +1017,15 @@ int wbc_super_init(struct wbc_super *super)
 	struct wbc_conf *conf = &super->wbcs_conf;
 	int rc;
 
+	ENTRY;
+
 #ifdef HAVE_PERCPU_COUNTER_INIT_GFP_FLAG
 	rc = percpu_counter_init(&conf->wbcc_used_pages, 0, GFP_KERNEL);
 #else
 	rc = percpu_counter_init(&conf->wbcc_used_pages, 0);
 #endif
 	if (rc)
-		return -ENOMEM;
+		RETURN(-ENOMEM);
 
 	conf->wbcc_cache_mode = WBC_MODE_NONE;
 	conf->wbcc_flush_mode = WBC_FLUSH_NONE;
@@ -910,8 +1033,21 @@ int wbc_super_init(struct wbc_super *super)
 	spin_lock_init(&super->wbcs_lock);
 	INIT_LIST_HEAD(&super->wbcs_roots);
 	INIT_LIST_HEAD(&super->wbcs_lazy_roots);
+	INIT_LIST_HEAD(&super->wbcs_rsvd_inode_lru);
 
-	return 0;
+	super->wbcs_reclaim_task = kthread_run(ll_wbc_reclaim_main, super,
+					       "ll_wbc_reclaimer");
+	if (IS_ERR(super->wbcs_reclaim_task)) {
+		rc = PTR_ERR(super->wbcs_reclaim_task);
+		super->wbcs_reclaim_task = NULL;
+		CERROR("Cannot start WBC reclaim thread: rc = %d\n", rc);
+		GOTO(out_err, rc);
+	}
+
+	RETURN(0);
+out_err:
+	wbc_super_fini(super);
+	RETURN(rc);
 }
 
 static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
@@ -972,6 +1108,16 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 			return -EINVAL;
 
 		cmd->wbcc_flags |= WBC_CMD_OP_READDIR_POL;
+	} else if (strcmp(key, "hiwm_ratio") == 0) {
+		rc = kstrtoul(val, 10, &num);
+		if (rc)
+			return rc;
+
+		if (num >= 100)
+			return -ERANGE;
+
+		conf->wbcc_hiwm_ratio = num;
+		cmd->wbcc_flags |= WBC_CMD_OP_RECLAIM_RATIO;
 	} else if (strcmp(key, "max_inodes") == 0) {
 		conf->wbcc_max_inodes = memparse(val, &rest);
 		if (*rest)

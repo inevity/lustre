@@ -1466,11 +1466,13 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 	seq_printf(m, "flush_mode: %s\n",
 		   wbc_flushmode2string(conf->wbcc_flush_mode));
 	seq_printf(m, "max_rpcs: %u\n", conf->wbcc_max_rpcs);
-	seq_printf(m, "remove_pol: %s\n", wbc_rmpol2string(conf->wbcc_rmpol));
 	seq_printf(m, "readdir_pol: %s\n",
 		   wbc_readdir_pol2string(conf->wbcc_readdir_pol));
+	seq_printf(m, "remove_pol: %s\n", wbc_rmpol2string(conf->wbcc_rmpol));
+	seq_printf(m, "hiwm_ratio: %d\n", conf->wbcc_hiwm_ratio);
 	seq_printf(m, "inodes_max: %lu\n", conf->wbcc_max_inodes);
 	seq_printf(m, "inodes_free: %lu\n", conf->wbcc_free_inodes);
+	seq_printf(m, "inodes_hiwm: %u\n", conf->wbcc_hiwm_inodes_count);
 	seq_printf(m, "pages_max: %lu\n", conf->wbcc_max_pages);
 	seq_printf(m, "pages_free: %lu\n",
 		   (unsigned long)(conf->wbcc_max_pages -

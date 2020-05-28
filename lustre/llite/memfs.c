@@ -199,6 +199,7 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 		GOTO(out_iput, rc);
 
 	wbc_dirent_account_inc(dir, dchild);
+	wbc_reserved_inode_lru_add(inode);
 	d_instantiate(dchild, inode);
 	dget(dchild); /* Extra count - pin the dentry in core. */
 	/* Mark @dir as dirty to update the mtime/ctime for @dir on MDT? */
@@ -240,6 +241,7 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 out_iput:
 	if (rc) {
 		wbc_dirent_account_dec(dir, dchild);
+		wbc_reserved_inode_lru_del(inode);
 		iput(inode);
 	}
 out_exit:
@@ -363,6 +365,19 @@ static int memfs_remove_policy(struct inode *dir, struct dentry *dchild,
 	}
 }
 
+static inline void memfs_remove_from_dcache(struct inode *dir,
+					    struct dentry *dchild)
+{
+	struct inode *inode = dchild->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	inode->i_ctime = dir->i_ctime = dir->i_mtime = current_time(dir);
+	drop_nlink(inode);
+	LASSERT(wbc_inode_reserved(wbci));
+	wbc_inode_unreserve_dput(inode, dchild);
+	wbc_dirent_account_dec(dir, dchild);
+}
+
 static int memfs_rmdir(struct inode *dir, struct dentry *dchild)
 {
 	struct wbc_inode *wbci = ll_i2wbci(dir);
@@ -376,9 +391,11 @@ static int memfs_rmdir(struct inode *dir, struct dentry *dchild)
 		if (rc)
 			GOTO(up_rwsem, rc);
 
-		rc = simple_rmdir(dir, dchild);
-		if (rc == 0)
-			wbc_dirent_account_dec(dir, dchild);
+		/* copy from simple_rmdir() */
+		drop_nlink(dchild->d_inode);
+		drop_nlink(dir);
+
+		memfs_remove_from_dcache(dir, dchild);
 	} else {
 		LASSERT(wbc_inode_written_out(wbci));
 		rc = ll_dir_inode_operations.rmdir(dir, dchild);
@@ -407,9 +424,8 @@ static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 		if (rc)
 			GOTO(up_rwsem, rc);
 
-		rc = simple_unlink(dir, dchild);
-		if (rc == 0)
-			wbc_dirent_account_dec(dir, dchild);
+		/* copy from simple_unlink() */
+		memfs_remove_from_dcache(dir, dchild);
 	} else {
 		rc = ll_dir_inode_operations.unlink(dir, dchild);
 		if (rc)

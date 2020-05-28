@@ -1163,7 +1163,7 @@ test_15c_base() {
 test_15c() {
 	stack_trap "cleanup_wbc" EXIT
 	echo -e "\n=== Inode limits for lazy keep flush mode ==="
-	test_15c_base "lazy_keep" 2 3
+	test_15c_base "lazy_keep" 2 2
 	test_15c_base "lazy_keep" 5 6
 
 	echo -e "\n=== Inode limits for aging keep flush mode ==="
@@ -1589,6 +1589,115 @@ test_23() {
 	test_23_base "aging_keep" 3 3 1 "-R"
 }
 run_test 23 "lfs unreserve command with multiple level directories"
+
+test_24_base() {
+	local flush_mode=$1
+	local dir="$DIR/$tdir"
+	local limit=10000
+	local ratio=80
+	local hiwm=$(( limit * ratio / 100 ))
+	local free_inodes
+
+	echo "=== flush_mode=$flush_mode max_inodes=$limit ratio=$ratio ==="
+	setup_wbc "flush_mode=$flush_mode max_inodes=$limit hiwm_ratio=$ratio"
+
+	mkdir $dir || error "mkdir $dir failed"
+	createmany -d $dir/d $hiwm || {
+		unlinkmany -d $dir/d $hiwm
+		error "create $hiwm files in $dir failed"
+	}
+	$LFS wbc state $dir
+	wbc_conf_show
+	unlinkmany -d $dir/d $hiwm ||
+		error "unlink $hiwm files in $dir failed"
+
+	createmany -d $dir/d $(( hiwm + 100 )) || {
+		unlinkmany -d $dir/d $(( hiwm + 100 ))
+		error "create $(( hiwm + 100 )) files in $dir failed"
+	}
+	free_inodes=$(get_free_inodes)
+	[ $free_inodes == 10000 ] ||
+		error "free inodes: $free_inodes, expect 10000"
+	check_wbc_inode_complete $dir 0
+	unlinkmany -d $dir/d $hiwm ||
+		error "unlink $hiwm files in $dir failed"
+
+	createmany -m $dir/f $hiwm || {
+		unlinkmany $dir/f $hiwm
+		error "create $hiwm files in $dir failed"
+	}
+	$LFS wbc state $dir
+	wbc_conf_show
+	unlinkmany $dir/f $hiwm ||
+		error "unlink $hiwm files in $dir failed"
+
+	createmany -m $dir/f $(( hiwm + 100 )) || {
+		unlinkmany $dir/f $(( hiwm + 100 ))
+		error "create $(( hiwm + 100 )) files in $dir failed"
+	}
+	free_inodes=$(get_free_inodes)
+	[ $free_inodes == 10000 ] ||
+		error "free inodes: $free_inodes, expect 10000"
+	check_wbc_inode_complete $dir 0
+	unlinkmany $dir/f $hiwm ||
+		error "unlink $hiwm files in $dir failed"
+
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_24() {
+	test_24_base "lazy_drop"
+	test_24_base "lazy_keep"
+	test_24_base "aging_drop"
+	test_24_base "aging_keep"
+}
+run_test 24 "WBC inodes reclaim mechanism with single level directory"
+
+test_25_base() {
+	local flush_mode=$1
+	local level=$2
+	local nr_level=$3
+	local ratio=80
+	local limit=$(( level * nr_level ))
+	local hiwm=$(( limit * ratio / 100 ))
+	local path="$DIR/$tdir"
+	local fileset
+	local free_inodes
+	local used_inodes
+
+	echo "== flush_mode=$flush_mode max_inodes=$limit hiwm_ratio=$ratio  =="
+	setup_wbc "flush_mode=$flush_mode max_inodes=$limit hiwm_ratio=$ratio"
+
+	for l in $(seq 1 $level); do
+		for i in $(seq 1 $nr_level); do
+			fileset+="$path/dir_l$l.i$i "
+		done
+		path+="/dir_l$l.i1"
+	done
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $fileset || error "mkdir $fileset failed"
+	sleep 5
+	wbc_conf_show
+	free_inodes=$(get_free_inodes)
+	used_inodes=$(( limit - free_inodes ))
+	[ $used_inodes -lt $hiwm ] || error "used:$used_inodes > hiwm:$hiwm"
+	[ $limit -lt 30 ] && $LFS wbc state $fileset $DIR/$tdir
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_25() {
+	test_25_base "lazy_drop" 10 2
+	test_25_base "lazy_drop" 10 1000
+	test_25_base "lazy_keep" 10 2
+	test_25_base "lazy_keep" 10 1000
+
+	test_25_base "aging_keep" 10 2
+	test_25_base "aging_keep" 10 1000
+	test_25_base "aging_drop" 10 2
+	test_25_base "aging_drop" 10 1000
+}
+run_test 25 "WBC inodes reclaim mechanism with multiple level directories"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
