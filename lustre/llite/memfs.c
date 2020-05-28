@@ -260,6 +260,8 @@ bool wbc_inode_acct_page(struct inode *inode, long nr_pages)
 			return false;
 
 		percpu_counter_add(&conf->wbcc_used_pages, nr_pages);
+		if (wbc_cache_too_much_pages(conf))
+			wake_up_process(ll_i2wbcs(inode)->wbcs_reclaim_task);
 	}
 
 	return true;
@@ -426,6 +428,7 @@ static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 
 		/* copy from simple_unlink() */
 		memfs_remove_from_dcache(dir, dchild);
+		wbc_inode_data_lru_del(dchild->d_inode);
 	} else {
 		rc = ll_dir_inode_operations.unlink(dir, dchild);
 		if (rc)
@@ -535,7 +538,7 @@ static int memfs_write_begin(struct file *file, struct address_space *mapping,
 		up_read(&wbci->wbci_rw_sem);
 		rc2 = wbc_make_data_commit(file->f_path.dentry);
 		down_read(&wbci->wbci_rw_sem);
-		if (rc2)
+		if (rc2 < 0)
 			rc = rc2;
 	}
 
@@ -617,7 +620,7 @@ static int memfs_fsync(struct file *file, loff_t start,
 		up_write(&wbci->wbci_rw_sem);
 	}
 
-	if (rc)
+	if (rc < 0)
 		RETURN(rc);
 
 	LASSERT(wbc_inode_written_out(wbci));
@@ -686,10 +689,13 @@ static int memfs_file_open(struct inode *inode, struct file *file)
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_has_protected(wbci))
+	if (wbc_inode_has_protected(wbci)) {
 		rc = wbcfs_file_private_set(inode, file);
-	else
+		if (rc == 0)
+			wbc_inode_data_lru_add(inode, file);
+	} else {
 		rc = ll_i2sbi(inode)->ll_fop->open(inode, file);
+	}
 	up_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
 }

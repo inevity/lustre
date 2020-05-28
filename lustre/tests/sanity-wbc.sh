@@ -1699,6 +1699,43 @@ test_25() {
 }
 run_test 25 "WBC inodes reclaim mechanism with multiple level directories"
 
+test_26_base() {
+	local flush_mode=$1
+	local nr_files=$2
+	local nr_file_pages=$3
+	local ratio=80
+	local limit=$(( nr_files * nr_file_pages ))
+	local hiwm=$(( limit * ratio / 100 ))
+	local dir="$DIR/$tdir"
+	local free_pages
+	local used_pages
+
+	echo "== flush_mode=$flush_mode max_pages=$limit hiwm_ratio=$ratio  =="
+	setup_wbc "flush_mode=$flush_mode max_pages=$limit hiwm_ratio=$ratio"
+
+	mkdir $dir || error "mkdir $dir failed"
+	for i in $(seq 1 $nr_files); do
+		dd if=/dev/zero of=$dir/$tfile.i$i bs=4k count=$nr_file_pages ||
+			error "Write $dir/$tfile.i$i failed"
+	done
+
+	sleep 5
+	wbc_conf_show
+	free_pages=$(get_free_pages)
+	used_pages=$(( limit - free_pages ))
+	[ $used_pages -le $hiwm ] || error "used: $used_pages > hiwm: $hiwm"
+
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_26() {
+	test_26_base "lazy_drop" 10 1024
+	test_26_base "lazy_keep" 10 1024
+	test_26_base "aging_drop" 10 1024
+	test_26_base "aging_keep" 10 1024
+}
+run_test 26 "WBC pages reclaim mechanism with 1 level direcotry"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

@@ -203,6 +203,41 @@ void wbc_inode_unreserve_dput(struct inode *inode,
 	}
 }
 
+void wbc_inode_data_lru_add(struct inode *inode, struct file *file)
+{
+	struct wbc_super *super = ll_i2wbcs(inode);
+	struct ll_file_data *fd = file->private_data;
+
+	/*
+	 * FIXME: It whould better to add @inode into cache shrinking list
+	 * when the file is actual modified, i.e. at close() time with data
+	 * modified, but not at file open time.
+	 */
+	if (super->wbcs_conf.wbcc_max_pages && fd->fd_omode & FMODE_WRITE) {
+		struct wbc_inode *wbci = ll_i2wbci(inode);
+
+		spin_lock(&super->wbcs_data_lru_lock);
+		if (list_empty(&wbci->wbci_data_lru))
+			list_add_tail(&wbci->wbci_data_lru,
+				      &super->wbcs_data_inode_lru);
+		spin_unlock(&super->wbcs_data_lru_lock);
+	}
+}
+
+void wbc_inode_data_lru_del(struct inode *inode)
+{
+	struct wbc_super *super = ll_i2wbcs(inode);
+
+	if (super->wbcs_conf.wbcc_max_pages) {
+		struct wbc_inode *wbci = ll_i2wbci(inode);
+
+		spin_lock(&super->wbcs_data_lru_lock);
+		if (!list_empty(&wbci->wbci_data_lru))
+			list_del_init(&wbci->wbci_data_lru);
+		spin_unlock(&super->wbcs_data_lru_lock);
+	}
+}
+
 static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci,
 					     unsigned int *valid)
 {
@@ -475,7 +510,7 @@ static int wbc_flush_regular_file(struct inode *inode, struct ldlm_lock *lock,
 		RETURN(rc);
 
 	rc = wbcfs_commit_cache_pages(inode);
-	if (rc)
+	if (rc < 0)
 		RETURN(rc);
 
 	rc = wbc_reopen_file_handler(inode, lock, wbcx);
@@ -715,6 +750,7 @@ void wbc_inode_init(struct wbc_inode *wbci)
 	wbci->wbci_dirty_flags = WBC_DIRTY_FL_NONE;
 	INIT_LIST_HEAD(&wbci->wbci_root_list);
 	INIT_LIST_HEAD(&wbci->wbci_rsvd_lru);
+	INIT_LIST_HEAD(&wbci->wbci_data_lru);
 	init_rwsem(&wbci->wbci_rw_sem);
 }
 
@@ -884,6 +920,58 @@ static int wbc_reclaim_inodes(struct wbc_super *super)
 	return wbc_reclaim_inodes_below(super, low);
 }
 
+static int wbc_reclaim_pages_count(struct wbc_super *super, __u32 count)
+{
+	__u32 shrank_count = 0;
+	int rc = 0;
+
+	ENTRY;
+
+	spin_lock(&super->wbcs_data_lru_lock);
+	while (shrank_count < count) {
+		struct inode *inode;
+		struct wbc_inode *wbci;
+		struct ll_inode_info *lli;
+		struct dentry *dentry;
+
+		if (list_empty(&super->wbcs_data_inode_lru))
+			break;
+
+		wbci = list_entry(super->wbcs_data_inode_lru.next,
+				  struct wbc_inode, wbci_data_lru);
+
+		list_del_init(&wbci->wbci_data_lru);
+		lli = container_of(wbci, struct ll_inode_info, lli_wbc_inode);
+		inode = ll_info2i(lli);
+		dentry = d_find_any_alias(inode);
+		if (!dentry)
+			continue;
+
+		spin_unlock(&super->wbcs_data_lru_lock);
+
+		rc = wbc_make_data_commit(dentry);
+		dput(dentry);
+		if (rc < 0) {
+			CERROR("Reclaim pages failed: rc = %d\n", rc);
+			RETURN(rc);
+		}
+
+		shrank_count += rc;
+		cond_resched();
+		spin_lock(&super->wbcs_data_lru_lock);
+	}
+	spin_unlock(&super->wbcs_data_lru_lock);
+
+	RETURN(rc);
+}
+
+static int wbc_reclaim_pages(struct wbc_super *super)
+{
+	__u32 count = super->wbcs_conf.wbcc_max_pages >> 1;
+
+	return wbc_reclaim_pages_count(super, count);
+}
+
 #ifndef TASK_IDLE
 #define TASK_IDLE TASK_INTERRUPTIBLE
 #endif
@@ -898,8 +986,11 @@ static int ll_wbc_reclaim_main(void *arg)
 		 !kthread_should_stop(); })) {
 		if (wbc_cache_too_much_inodes(&super->wbcs_conf)) {
 			__set_current_state(TASK_RUNNING);
-			wbc_reclaim_inodes(super);
+			(void) wbc_reclaim_inodes(super);
 			cond_resched();
+		} else if (wbc_cache_too_much_pages(&super->wbcs_conf)) {
+			__set_current_state(TASK_RUNNING);
+			(void) wbc_reclaim_pages(super);
 		} else {
 			schedule();
 		}
@@ -984,6 +1075,8 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_hiwm_ratio = cmd->wbcc_conf.wbcc_hiwm_ratio;
 		conf->wbcc_hiwm_inodes_count = conf->wbcc_max_inodes *
 					       conf->wbcc_hiwm_ratio / 100;
+		conf->wbcc_hiwm_pages_count = conf->wbcc_max_pages *
+					      conf->wbcc_hiwm_ratio / 100;
 	}
 
 	if (conf->wbcc_cache_mode == WBC_MODE_NONE)
@@ -1004,6 +1097,9 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 
 void wbc_super_fini(struct wbc_super *super)
 {
+	LASSERT(list_empty(&super->wbcs_rsvd_inode_lru));
+	LASSERT(list_empty(&super->wbcs_data_inode_lru));
+
 	if (super->wbcs_reclaim_task) {
 		kthread_stop(super->wbcs_reclaim_task);
 		super->wbcs_reclaim_task = NULL;
@@ -1034,6 +1130,8 @@ int wbc_super_init(struct wbc_super *super)
 	INIT_LIST_HEAD(&super->wbcs_roots);
 	INIT_LIST_HEAD(&super->wbcs_lazy_roots);
 	INIT_LIST_HEAD(&super->wbcs_rsvd_inode_lru);
+	INIT_LIST_HEAD(&super->wbcs_data_inode_lru);
+	spin_lock_init(&super->wbcs_data_lru_lock);
 
 	super->wbcs_reclaim_task = kthread_run(ll_wbc_reclaim_main, super,
 					       "ll_wbc_reclaimer");

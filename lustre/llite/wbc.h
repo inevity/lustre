@@ -152,6 +152,8 @@ struct wbc_super {
 	/* For cache shrinking and reclaimation. */
 	/* LRU list head for reserved inodes. */
 	struct list_head	 wbcs_rsvd_inode_lru;
+	struct list_head	 wbcs_data_inode_lru;
+	spinlock_t		 wbcs_data_lru_lock;
 	struct task_struct	*wbcs_reclaim_task;
 };
 
@@ -212,6 +214,7 @@ struct wbc_inode {
 	unsigned int		wbci_dirty_attr;
 	struct list_head	wbci_root_list;
 	struct list_head	wbci_rsvd_lru;
+	struct list_head	wbci_data_lru;
 	struct lustre_handle	wbci_lock_handle;
 	struct rw_semaphore	wbci_rw_sem;
 };
@@ -409,6 +412,14 @@ static inline bool wbc_cache_too_much_inodes(struct wbc_conf *conf)
 	return false;
 }
 
+static inline bool wbc_cache_too_much_pages(struct wbc_conf *conf)
+{
+	if (conf->wbcc_hiwm_ratio)
+		return percpu_counter_compare(&conf->wbcc_used_pages,
+					      conf->wbcc_hiwm_pages_count) > 0;
+	return false;
+}
+
 /* wbc.c */
 void wbc_super_root_add(struct inode *inode);
 void wbc_super_root_del(struct inode *inode);
@@ -416,6 +427,8 @@ int wbc_reserve_inode(struct wbc_super *super);
 void wbc_unreserve_inode(struct inode *inode);
 void wbc_reserved_inode_lru_add(struct inode *inode);
 void wbc_reserved_inode_lru_del(struct inode *inode);
+void wbc_inode_data_lru_add(struct inode *inode, struct file *file);
+void wbc_inode_data_lru_del(struct inode *inode);
 void wbc_free_inode(struct inode *inode);
 void wbc_inode_unreserve_dput(struct inode *inode, struct dentry *dentry);
 long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,

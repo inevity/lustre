@@ -1044,11 +1044,15 @@ out:
 		       inode->i_ino, rc);
 
 	/* XXX failure handling. */
+	wbc_inode_data_lru_del(inode);
 	spin_lock(&inode->i_lock);
 	wbci->wbci_flags |= WBC_STATE_FL_DATA_COMMITTED;
 	wbc_inode_unacct_pages(inode, mapping->nrpages);
 	mapping->a_ops = &ll_aops;
 	spin_unlock(&inode->i_lock);
+
+	if (rc == 0)
+		rc = mapping->nrpages;
 	mapping_clear_unevictable(mapping);
 
 	RETURN(rc);
@@ -1477,6 +1481,7 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 	seq_printf(m, "pages_free: %lu\n",
 		   (unsigned long)(conf->wbcc_max_pages -
 		   percpu_counter_sum(&conf->wbcc_used_pages)));
+	seq_printf(m, "pages_hiwm: %u\n", conf->wbcc_hiwm_pages_count);
 
 	return 0;
 }
