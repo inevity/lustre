@@ -99,6 +99,14 @@ out_unrsv_free:
 		OBD_FREE_PTR(unrsv);
 		RETURN(rc);
 	}
+	case LL_IOC_GET_MDTIDX:
+		RETURN(ll_dir_operations.unlocked_ioctl(file, cmd, arg));
+	case LL_IOC_LMV_GETSTRIPE:
+		if (wbc_inode_was_flushed(wbci))
+			RETURN(ll_dir_operations.unlocked_ioctl(file, cmd,
+								arg));
+		else
+			RETURN(-ENODATA);
 	default:
 		RETURN(-ENOTTY);
 	}

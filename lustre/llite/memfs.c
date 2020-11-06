@@ -191,6 +191,7 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 	if (IS_ERR(op_data))
 		RETURN(PTR_ERR(op_data));
 
+	op_data->op_cli_flags |= CLI_WBC_TGT;
 	inode = wbc_get_inode(dir, mode, old_decode_dev(rdev), op_data);
 	if (IS_ERR(inode))
 		GOTO(out_exit, rc = PTR_ERR(inode));

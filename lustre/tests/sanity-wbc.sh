@@ -64,7 +64,7 @@ CLIENT1=${CLIENT1:-$HOSTNAME}
 CLIENT2=${CLIENT2:-$CLIENT1}
 
 # Temporal soluation to make all files create on MDT0.
-$LFS setdirstripe -D -i 0 $MOUNT
+#$LFS setdirstripe -D -i 0 $MOUNT
 
 cleanup_wbc()
 {
@@ -139,13 +139,32 @@ check_mdt_fileset_exist() {
 	# skip ZFS backend
 	[ "$mds1_FSTYPE" == "ldiskfs" ] || return 0
 
-	local mdtdev=$(mdsdevname ${SINGLEMDS//mds/})
 	local fileset="$1"
 	local expected=$2
+	local path=$DIR/$tdir
+	local mds_index=$(($($LFS getstripe -m $path) + 1))
+	local mdtdev=$(mdsdevname $mds_index)
+	local fset=""
+	local root
+	local fid
 
-	do_facet mds1 "
+	if [ $mds_index == 1 ]; then
+		root="/ROOT"
+	else
+		fid=$(path2fid $path)
+		root="/REMOTE_PARENT_DIR/$fid"
+		for file in $fileset; do
+			fpath=${file#*/}
+			fset+="$fpath "
+		done
+		fileset=$fset
+	fi
+
+	echo "root: $root mds_index: $mds_index"
+	echo "FSET: $fileset"
+	do_facet mds$mds_index "
 for file in $fileset; do
-	debugfs -c -R \\\"stat ROOT/\\\$file\\\" $mdtdev | grep 'Inode:';
+	debugfs -c -R \\\"stat $root/\\\$file\\\" $mdtdev | grep 'Inode:';
 	if [ \\\$? -ne $expected ] ; then
 		exit 1;
 	fi;
@@ -310,11 +329,12 @@ test_1_base() {
 	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
 	fileset="$file1 $dir1 $file3 $file4 $file5 $file6"
 	check_fileset_wbc_flags "$fileset" "0x0000000f" $DIR
+
 	check_mdt_fileset_exist "$fileset" 0 ||
 		error "'$fileset' should exist under ROOT on MDT"
 	fileset="$file2 $dir2"
 	check_fileset_wbc_flags "$fileset" "0x00000015" $DIR
-	check_mdt_fileset_exist "$filelist" 1 ||
+	check_mdt_fileset_exist "$fileset" 1 ||
 		error "'$filelist' should not exist under ROOT on MDT"
 
 	echo "stat $DIR2/$dir1"
@@ -984,9 +1004,9 @@ test_15a_base() {
 	else
 		# Protected(P):0x01 | Sync(S):0x02 | Root(R):0x08
 		check_wbc_flags $dir "0x0000000b"
-		# Protected(P):0x01 | Sync(S):0x02 | Complete(C):0x04 |
+		# Protected(P):0x01 | Sync(S):0x02 | Complete(C):0x04
 		# Reserved(E): 0x10
-		check_fileset_wbc_flags "$fileset" "0x00000017"
+		check_fileset_wbc_flags "$fileset" "0x00000007"
 		# Protected(P):0x01 | Sync(S):0x02
 		check_wbc_flags $dir/$prefix.i0 "0x00000003"
 	fi
@@ -1014,9 +1034,9 @@ test_15a_base() {
 	else
 		# Protected(P):0x01 | Sync(S):0x02 | Root(R):0x08
 		check_wbc_flags $dir "0x0000000b"
-		# Protected(P):0x01 | Sync(S):0x02 | Complete(C):0x04 |
+		# Protected(P):0x01 | Sync(S):0x02 | Complete(C):0x04
 		# Reserved(E):0x10
-		check_fileset_wbc_flags "$fileset" "0x00000017"
+		check_fileset_wbc_flags "$fileset" "0x00000007"
 		# Protected(P):0x01 | Sync(S):0x02
 		check_wbc_flags $dir/$prefix.i0 "0x00000003"
 	fi
@@ -1871,6 +1891,56 @@ test_102() {
 		$dir_l1/${tdir}_l2.i1/file2
 }
 run_test 102 "create files under a decompleted directory"
+
+test_103_base() {
+	local flush_mode=$1
+	local dir="$DIR/$tdir"
+	local nr_level=$2
+	local level=$3
+
+	[ $MDSCOUNT -lt 2 ] && skip_env "needs >= 2 MDTs"
+
+	echo "== flush_mode=$flush_mode nr_level=$nr_level level=$level  =="
+	setup_wbc "flush_mode=$flush_mode"
+
+	$LFS mkdir -c $MDSCOUNT -H crush $dir || error "mkdir $dir failed"
+	check_wbc_flags $dir "0x00000000"
+	echo "$dir LMV info:"
+	$LFS getdirstripe $DIR/$tdir
+
+	local idx
+	local cidx
+	local parent
+	local child
+
+	for i in $(seq 1 $nr_level); do
+		parent="$dir/wbcroot.i$i"
+		mkdir $parent || error "mkdir $parent failed"
+		check_wbc_flags $parent "0x0000000f"
+		idx=$($LFS getstripe -m $parent)
+		echo -e "\nParent $parent mdt_index: $idx"
+		for l in $(seq 1 $level); do
+			for n in $(seq 1 $nr_level); do
+				child=$parent/dir_l$l.i$n
+				mkdir $child || error "mkdir $child failed"
+				cidx=$($LFS getstripe -m $child)
+				echo "Child $child mdt_index: $cidx"
+				[ $idx == $cidx ] || error "diff mdx idx"
+			done
+			parent+="/dir_l$l.i1"
+		done
+	done
+
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_103() {
+	test_103_base "lazy_drop" 4 3
+	test_103_base "lazy_keep" 4 3
+	test_103_base "aging_drop" 4 3
+	test_103_base "aging_keep" 4 3
+}
+run_test 103 "DNE: Fids allocated on the target same with root WBC directory"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"

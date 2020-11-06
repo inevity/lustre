@@ -1068,7 +1068,23 @@ int lmv_fid_alloc(const struct lu_env *env, struct obd_export *exp,
 	LASSERT(op_data);
 	LASSERT(fid);
 
-	tgt = lmv_tgt(lmv, op_data->op_mds);
+	/*
+	 * All files under a root WBC directory are with FIDs located on the
+	 * same target (MDT).
+	 * TODO: Files under a root WBC directory could be distributed across
+	 * MDT targets other than the one which the root WBC directory located
+	 * on.
+	 */
+	if (op_data->op_cli_flags & CLI_WBC_TGT) {
+		/* It does not support default LMV on the parent currently. */
+		if (op_data->op_default_mea1)
+			RETURN(-EINVAL);
+
+		tgt = lmv_locate_tgt(lmv, op_data);
+	} else {
+		tgt = lmv_tgt(lmv, op_data->op_mds);
+	}
+
 	if (!tgt)
 		RETURN(-ENODEV);
 
