@@ -987,6 +987,7 @@ struct md_op_item {
 	md_op_item_cb_t			 mop_cb;
 	void				*mop_cbdata;
 	struct inode			*mop_dir;
+	__u64				 mop_lock_flags;
 };
 
 enum lu_batch_flags {

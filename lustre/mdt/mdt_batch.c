@@ -40,11 +40,23 @@
 #include <lustre_mds.h>
 #include "mdt_internal.h"
 
+static struct ldlm_callback_suite mdt_dlm_cbs = {
+	.lcs_completion	= ldlm_server_completion_ast,
+	.lcs_blocking	= tgt_blocking_ast,
+	.lcs_glimpse	= ldlm_server_glimpse_ast
+};
+
 static int mdt_batch_unpack(struct mdt_thread_info *info, __u32 opc)
 {
 	int rc = 0;
 
 	switch (opc) {
+	case BUT_GETATTR:
+		info->mti_dlm_req = req_capsule_client_get(info->mti_pill,
+							   &RMF_DLM_REQ);
+		if (info->mti_dlm_req == NULL)
+			RETURN(-EFAULT);
+		break;
 	default:
 		CERROR("Unexpected opcode %d\n", opc);
 		rc = -EOPNOTSUPP;
@@ -57,6 +69,20 @@ static int mdt_batch_unpack(struct mdt_thread_info *info, __u32 opc)
 static int mdt_batch_pack_repmsg(struct mdt_thread_info *info)
 {
 	return 0;
+}
+
+static int mdt_batch_getattr(struct tgt_session_info *tsi)
+{
+	struct mdt_thread_info *info = mdt_th_info(tsi->tsi_env);
+	struct req_capsule *pill = &info->mti_sub_pill;
+	int rc;
+
+	ENTRY;
+
+	rc = ldlm_handle_enqueue(info->mti_exp->exp_obd->obd_namespace,
+				 pill, info->mti_dlm_req, &mdt_dlm_cbs);
+
+	RETURN(rc);
 }
 
 /* Batch UpdaTe Request with a format known in advance */
@@ -72,7 +98,9 @@ static int mdt_batch_pack_repmsg(struct mdt_thread_info *info)
 	.th_hp		= NULL,				\
 }
 
-static struct tgt_handler mdt_batch_handlers[BUT_LAST_OPC];
+static struct tgt_handler mdt_batch_handlers[] = {
+TGT_BUT_HDL(HAS_KEY | HAS_REPLY,	BUT_GETATTR,	mdt_batch_getattr),
+};
 
 static struct tgt_handler *mdt_batch_handler_find(__u32 opc)
 {
