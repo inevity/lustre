@@ -288,6 +288,7 @@ struct client_obd {
 	struct obd_histogram	cl_write_page_hist;
 	struct obd_histogram	cl_read_offset_hist;
 	struct obd_histogram	cl_write_offset_hist;
+	struct obd_histogram	cl_batch_rpc_hist;
 
 	/** LRU for osc caching pages */
 	struct cl_client_cache  *cl_cache;

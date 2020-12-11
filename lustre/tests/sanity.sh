@@ -12839,6 +12839,8 @@ test_123a_base() { # was test 123, statahead(bug 11401)
 		SLOWOK=1
 	fi
 
+	$LCTL set_param mdc.*.batch_stats=0
+
 	rm -rf $DIR/$tdir
 	test_mkdir $DIR/$tdir
 	NUMFREE=$(df -i -P $DIR | tail -n 1 | awk '{ print $4 }')
@@ -12914,6 +12916,7 @@ test_123a_base() { # was test 123, statahead(bug 11401)
 	log "rm -r $DIR/$tdir/: $delta seconds"
 	log "rm done"
 	lctl get_param -n llite.*.statahead_stats
+	$LCTL get_param mdc.*.batch_stats
 }
 
 test_123aa() {

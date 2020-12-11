@@ -513,6 +513,50 @@ static int mdc_rpc_stats_seq_show(struct seq_file *seq, void *v)
 }
 LPROC_SEQ_FOPS(mdc_rpc_stats);
 
+static ssize_t mdc_batch_stats_seq_write(struct file *file,
+					 const char __user *buf,
+					 size_t len, loff_t *off)
+{
+	struct seq_file *seq = file->private_data;
+	struct obd_device *obd = seq->private;
+	struct client_obd *cli = &obd->u.cli;
+
+	lprocfs_oh_clear(&cli->cl_batch_rpc_hist);
+
+	return len;
+}
+
+static int mdc_batch_stats_seq_show(struct seq_file *seq, void *v)
+{
+	struct obd_device *obd = seq->private;
+	struct client_obd *cli = &obd->u.cli;
+	struct timespec64 now;
+	unsigned long tot;
+	unsigned long cum;
+	int i;
+
+	ktime_get_real_ts64(&now);
+	seq_printf(seq, "snapshot_time:         %llu.%9lu (secs.nsecs)\n",
+		   (s64)now.tv_sec, now.tv_nsec);
+
+	seq_printf(seq, "subreqs per batch   batchs   %% cum %%\n");
+	tot = lprocfs_oh_sum(&cli->cl_batch_rpc_hist);
+	cum = 0;
+
+	for (i = 0; i < OBD_HIST_MAX; i++) {
+		unsigned long cnt = cli->cl_batch_rpc_hist.oh_buckets[i];
+
+		cum += cnt;
+		seq_printf(seq, "%d:\t\t%10lu %3u %3u\n",
+			   1 << i, cnt, pct(cnt, tot), pct(cum, tot));
+		if (cum == tot)
+			break;
+	}
+
+	return 0;
+}
+LPROC_SEQ_FOPS(mdc_batch_stats);
+
 static int mdc_stats_seq_show(struct seq_file *seq, void *v)
 {
 	struct obd_device *obd = seq->private;
@@ -630,6 +674,8 @@ struct lprocfs_vars lprocfs_mdc_obd_vars[] = {
 	  .fops	=	&mdc_pinger_recov_fops		},
 	{ .name	=	"rpc_stats",
 	  .fops	=	&mdc_rpc_stats_fops		},
+	{ .name	=	"batch_stats",
+	  .fops	=	&mdc_batch_stats_fops		},
 	{ .name	=	"unstable_stats",
 	  .fops	=	&mdc_unstable_stats_fops	},
 	{ .name	=	"mdc_stats",
