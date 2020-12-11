@@ -223,7 +223,6 @@ int mdt_batch(struct tgt_session_info *tsi)
 
 	reply->burp_magic = BUT_REPLY_MAGIC;
 	packed_replen = sizeof(*reply);
-	info->mti_max_repsize = buh->buh_reply_size;
 	info->mti_batch_env = 1;
 	info->mti_pill = pill;
 
@@ -278,22 +277,20 @@ int mdt_batch(struct tgt_session_info *tsi)
 			if (rc)
 				GOTO(out, rc);
 
+			/*
+			 * As @repmsg may be changed if the reply buffer is
+			 * too small to grew, thus it needs to reload it here.
+			 */
+			repmsg = pill->rc_repmsg;
 			repmsg->lm_result = rc;
 			mdt_thread_info_reset(info);
-			/*
-			 * TODO: Check whether overflow reply buffer.
-			 * Fix reply, shrink and/or grow reply buffers.
-			 */
+
 			replen = lustre_packed_msg_size(repmsg);
-			info->mti_max_repsize -= replen;
 			packed_replen += replen;
 			handled_update_count++;
 		}
 	}
 
-	/*
-	 * TODO: Grow/shrink the reply buffer.
-	 */
 	CDEBUG(D_INFO, "reply size %u packed replen %u\n",
 	       buh->buh_reply_size, packed_replen);
 	if (buh->buh_reply_size > packed_replen)
