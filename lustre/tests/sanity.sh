@@ -12839,8 +12839,6 @@ test_123a_base() { # was test 123, statahead(bug 11401)
 		SLOWOK=1
 	fi
 
-	$LCTL set_param mdc.*.batch_stats=0
-
 	rm -rf $DIR/$tdir
 	test_mkdir $DIR/$tdir
 	NUMFREE=$(df -i -P $DIR | tail -n 1 | awk '{ print $4 }')
@@ -12916,7 +12914,6 @@ test_123a_base() { # was test 123, statahead(bug 11401)
 	log "rm -r $DIR/$tdir/: $delta seconds"
 	log "rm done"
 	lctl get_param -n llite.*.statahead_stats
-	$LCTL get_param mdc.*.batch_stats
 }
 
 test_123aa() {
@@ -12960,6 +12957,35 @@ test_123ac() {
 		error "$STATX should not send glimpse RPCs to $OSC"
 }
 run_test 123ac "verify statahead work by using statx without glimpse RPCs"
+
+test_batch_statahead() {
+	local max=$1
+	local batch_max=$2
+
+	each -e "\nbatching: statahead_max=$max statahead_batch_max=$batch_max"
+	$LCTL set_param mdc.*.batch_stats=0
+	$LCTL set_param llite.*.statahead_max=$max
+	$LCTL set_param llite.*.statahead_batch_max=$batch_max
+	test_123a_base "ls -l"
+	$LCTL get_param mdc.*.batch_stats
+}
+
+test_123ad() {
+	[ $PARALLEL == "yes" ] && skip "skip parallel run"
+
+	local max
+	local batch_max
+
+	max=$($LCTL get_param -n llite.*.statahead_max | head -n 1)
+	batch_max=$($LCTL get_param -n llite.*.statahead_batch_max | head -n 1)
+
+	test_batch_statahead 32 32
+	test_batch_statahead 2048 256
+
+	$LCTL set_param llite.*.statahead_max=$max
+	$LCTL set_param llite.*.statahead_batch_max=$batch_max
+}
+run_test 123ad "Verify batching statahead works correctly"
 
 test_123b () { # statahead(bug 15027)
 	[ $PARALLEL == "yes" ] && skip "skip parallel run"
