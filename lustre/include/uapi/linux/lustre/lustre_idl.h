@@ -609,7 +609,7 @@ struct lustre_msg_v2 {
 	__u32 lm_repsize;	/* size of preallocated reply buffer */
 	__u32 lm_cksum;		/* CRC32 of ptlrpc_body early reply messages */
 	__u32 lm_flags;		/* enum lustre_msghdr MSGHDR_* flags */
-	__u32 lm_padding_2;	/* unused */
+	__u32 lm_opc;		/* SUB request opcode in a batch request */
 	__u32 lm_padding_3;	/* unused */
 	__u32 lm_buflens[0];	/* length of additional buffers in bytes,
 				 * padded to a multiple of 8 bytes. */
@@ -618,6 +618,9 @@ struct lustre_msg_v2 {
 	 * padded to a multiple of 8 bytes each to align contents.
 	 */
 };
+
+/* The returned result of the SUB request in a batch request */
+#define lm_result	lm_opc
 
 /* ptlrpc_body packet pb_types */
 #define PTL_RPC_MSG_REQUEST	4711	/* normal RPC request message */
@@ -912,7 +915,8 @@ struct ptlrpc_body_v2 {
 				OBD_CONNECT2_GETATTR_PFID |\
 				OBD_CONNECT2_LSEEK | OBD_CONNECT2_DOM_LVB |\
 				OBD_CONNECT2_REP_MBITS | \
-				OBD_CONNECT2_ATOMIC_OPEN_LOCK)
+				OBD_CONNECT2_ATOMIC_OPEN_LOCK | \
+				OBD_CONNECT2_BATCH_RPC)
 
 #define OST_CONNECT_SUPPORTED  (OBD_CONNECT_SRVLOCK | OBD_CONNECT_GRANT | \
 				OBD_CONNECT_REQPORTAL | OBD_CONNECT_VERSION | \
@@ -1674,6 +1678,7 @@ enum mds_cmd {
 	MDS_HSM_CT_UNREGISTER	= 60,
 	MDS_SWAP_LAYOUTS	= 61,
 	MDS_RMFID		= 62,
+	MDS_BATCH		= 63,
 	MDS_LAST_OPC
 };
 
@@ -3487,6 +3492,49 @@ struct out_read_reply {
 	__u32	orr_padding;
 	__u64	orr_offset;
 	char	orr_data[0];
+};
+
+#define BUT_REQUEST_MAGIC	0xBADE0001
+/* Hold batched updates sending to the remote target in a single RPC */
+struct batch_update_request {
+	__u32			burq_magic;
+	__u16			burq_count;	/* number of burq_reqmsg[] */
+	__u16			burq_padding;
+	struct lustre_msg	burq_reqmsg[0];
+};
+
+#define BUT_HEADER_MAGIC	0xBADF0001
+/* Header for Batched UpdaTes request */
+struct but_update_header {
+	__u32	buh_magic;
+	__u32	buh_count;
+	__u32	buh_inline_length;
+	__u32	buh_reply_size;
+	__u32	buh_update_count;
+	__u32	buh_padding;
+	__u32	buh_inline_data[0];
+};
+
+struct but_update_buffer {
+	__u32	bub_size;
+	__u32	bub_padding;
+};
+
+#define BUT_REPLY_MAGIC	0x00AD0001
+struct batch_update_reply {
+	__u32			burp_magic;
+	__u16			burp_count;
+	__u16			burp_padding;
+	struct lustre_msg	burp_repmsg[0];
+};
+
+/**
+ * Batch update opcode.
+ */
+enum batch_update_cmd {
+	BUT_GETATTR	= 1,
+	BUT_LAST_OPC,
+	BUT_FIRST_OPC	= BUT_GETATTR,
 };
 
 /** layout swap request structure
