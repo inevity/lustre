@@ -131,6 +131,7 @@ int mdt_batch(struct tgt_session_info *tsi)
 	__u32 update_buf_count;
 	__u32 packed_replen;
 	void **update_bufs;
+	bool grown = false;
 	int buh_size;
 	int rc;
 	int i;
@@ -281,7 +282,11 @@ int mdt_batch(struct tgt_session_info *tsi)
 			 * As @repmsg may be changed if the reply buffer is
 			 * too small to grew, thus it needs to reload it here.
 			 */
-			repmsg = pill->rc_repmsg;
+			if (repmsg != pill->rc_repmsg) {
+				repmsg = pill->rc_repmsg;
+				grown = true;
+			}
+
 			repmsg->lm_result = rc;
 			mdt_thread_info_reset(info);
 
@@ -297,9 +302,17 @@ int mdt_batch(struct tgt_session_info *tsi)
 		req_capsule_shrink(&req->rq_pill, &RMF_BUT_REPLY,
 				   packed_replen, RCL_SERVER);
 out:
-	if (reply != NULL)
+	if (reply != NULL) {
+		if (grown) {
+			reply = req_capsule_server_get(&req->rq_pill,
+						       &RMF_BUT_REPLY);
+			if (reply == NULL)
+				GOTO(out_free, rc = -EPROTO);
+		}
 		reply->burp_count = handled_update_count;
+	}
 
+out_free:
 	if (update_bufs != NULL) {
 		if (bub != NULL) {
 			for (i = 0; i < update_buf_count; i++, bub++) {
