@@ -1777,6 +1777,47 @@ test_100() {
 }
 run_test 100 "MemFS lookup without atomic_open()"
 
+test_28_base() {
+	local flush_mode=$1
+	local parent=$tdir
+	local nr_level=$2
+	local level=$3
+
+	echo "== flush_mode=$flush_mode nr_level=$nr_level level=$level  =="
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch"
+	$LCTL wbc conf $MOUNT
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+
+	local fileset
+	local child
+	local dir2
+
+	for l in $(seq 1 $level); do
+		for i in $(seq 1 $nr_level); do
+			child=$parent/dir_l$l.i$i
+			fileset+="$child "
+			mkdir $DIR/$child || error "mkdir $DIR/$child failed"
+		done
+		parent+="/dir_l$l.i1"
+	done
+
+	stat $DIR2/$parent || error "stat $DIR2/$parent failed"
+	check_mdt_fileset_exist "$fileset" 0 ||
+		error "'$fileset' should exist under ROOT on MDT"
+
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_28() {
+	test_28_base "lazy_drop" 128 3
+	test_28_base "lazy_keep" 128 3
+	test_28_base "aging_drop" 128 3
+	test_28_base "aging_keep" 128 3
+}
+run_test 28 "batch flush when root WBC EX lock is revoking"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

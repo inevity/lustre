@@ -3535,7 +3535,12 @@ struct batch_update_reply {
  * Batch update opcode.
  */
 enum batch_update_cmd {
-	BUT_GETATTR	= 1,
+	BUT_GETATTR		= 1,
+	BUT_CREATE_EXLOCK	= 2,
+	BUT_CREATE_LOCKLESS	= 3,
+	BUT_SETATTR_EXLOCK	= 4,
+	BUT_SETATTR_LOCKLESS	= 5,
+	BUT_EXLOCK_ONLY		= 6,
 	BUT_LAST_OPC,
 	BUT_FIRST_OPC	= BUT_GETATTR,
 };

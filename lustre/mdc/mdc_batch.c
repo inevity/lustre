@@ -172,10 +172,6 @@ static int mdc_batch_getattr_pack(struct batch_update_head *head,
 	RETURN(rc);
 }
 
-static md_update_pack_t mdc_update_packers[MD_OP_MAX] = {
-	[MD_OP_GETATTR]	= mdc_batch_getattr_pack,
-};
-
 static int mdc_batch_getattr_interpret(struct ptlrpc_request *req,
 				       struct lustre_msg *repmsg,
 				       struct object_update_callback *ouc,
@@ -201,8 +197,313 @@ out:
 	return item->mop_cb(&pill, item, rc);
 }
 
+static void mdc_create_capsule_pack(struct req_capsule *pill,
+				    struct md_op_data *op_data)
+{
+	req_capsule_set_size(pill, &RMF_NAME, RCL_CLIENT,
+			     op_data->op_namelen + 1);
+	req_capsule_set_size(pill, &RMF_FILE_SECCTX_NAME,
+			     RCL_CLIENT, op_data->op_file_secctx_name != NULL ?
+			     strlen(op_data->op_file_secctx_name) + 1 : 0);
+	req_capsule_set_size(pill, &RMF_FILE_SECCTX, RCL_CLIENT,
+			     op_data->op_file_secctx_size);
+	req_capsule_set_size(pill, &RMF_FILE_ENCCTX, RCL_CLIENT,
+			     op_data->op_file_encctx_size);
+	req_capsule_set_size(pill, &RMF_EADATA, RCL_CLIENT, 0);
+}
+
+static int mdc_create_exlock_pack(struct batch_update_head *head,
+				  struct lustre_msg *reqmsg,
+				  size_t *max_pack_size,
+				  struct md_op_item *item)
+{
+	static union ldlm_policy_data exlock_policy = {
+				.l_inodebits = { MDS_INODELOCK_UPDATE } };
+	struct md_op_data *op_data = &item->mop_data;
+	struct lookup_intent *it = &item->mop_it;
+	struct req_capsule pill;
+	size_t size;
+	int rc;
+
+	ENTRY;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_CREATE_EXLOCK, NULL,
+				reqmsg, NULL, RCL_CLIENT);
+	mdc_create_capsule_pack(&pill, op_data);
+
+	size = req_capsule_msg_size(&pill, RCL_CLIENT);
+	if (unlikely(size >= *max_pack_size)) {
+		*max_pack_size = size;
+		return -E2BIG;
+	}
+
+	req_capsule_client_pack(&pill);
+	mdc_create_pack(&pill, op_data, op_data->op_data,
+			op_data->op_data_size, it->it_create_mode,
+			op_data->op_fsuid, op_data->op_fsgid, op_data->op_cap,
+			op_data->op_rdev, it->it_flags);
+
+	rc = mdc_ldlm_lock_pack(head->buh_exp, &pill, &exlock_policy,
+				&op_data->op_fid2, item);
+	if (rc)
+		RETURN(rc);
+
+	/* FIXME: Set buffer size for LMV/LOV EA properly.*/
+	if (S_ISREG(item->mop_it.it_create_mode))
+		req_capsule_set_size(&pill, &RMF_MDT_MD, RCL_SERVER,
+				     MAX_MD_SIZE);
+	else
+		req_capsule_set_size(&pill, &RMF_MDT_MD, RCL_SERVER, 0);
+
+	req_capsule_set_replen(&pill);
+	reqmsg->lm_opc = BUT_CREATE_EXLOCK;
+	*max_pack_size = size;
+	RETURN(rc);
+}
+
+static int mdc_create_exlock_interpret(struct ptlrpc_request *req,
+				       struct lustre_msg *repmsg,
+				       struct object_update_callback *ouc,
+				       int rc)
+{
+	struct md_op_item *item = (struct md_op_item *)ouc->ouc_data;
+	struct ldlm_enqueue_info *einfo = &item->mop_einfo;
+	struct batch_update_head *head = ouc->ouc_head;
+	struct obd_export *exp = head->buh_exp;
+	struct req_capsule pill;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_CREATE_EXLOCK, req,
+				NULL, repmsg, RCL_CLIENT);
+
+	rc = ldlm_cli_enqueue_fini(exp, &pill, einfo, 1, &item->mop_lock_flags,
+				   NULL, 0, &item->mop_lockh, rc, false);
+	rc = mdc_finish_enqueue(exp, &pill, einfo, &item->mop_it,
+				&item->mop_lockh, rc);
+
+	return item->mop_cb(&pill, item, rc);
+}
+
+static int mdc_create_lockless_pack(struct batch_update_head *head,
+				    struct lustre_msg *reqmsg,
+				    size_t *max_pack_size,
+				    struct md_op_item *item)
+{
+	struct md_op_data *op_data = &item->mop_data;
+	struct lookup_intent *it = &item->mop_it;
+	struct req_capsule pill;
+	size_t size;
+
+	ENTRY;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_CREATE_LOCKLESS, NULL,
+				reqmsg, NULL, RCL_CLIENT);
+	mdc_create_capsule_pack(&pill, op_data);
+	size = req_capsule_msg_size(&pill, RCL_CLIENT);
+	if (unlikely(size >= *max_pack_size)) {
+		*max_pack_size = size;
+		return -E2BIG;
+	}
+
+	req_capsule_client_pack(&pill);
+	mdc_create_pack(&pill, op_data, op_data->op_data,
+			op_data->op_data_size, it->it_create_mode,
+			op_data->op_fsuid, op_data->op_fsgid, op_data->op_cap,
+			op_data->op_rdev, it->it_flags);
+
+	/* FIXME: Set buffer size for LMV/LOV EA properly.*/
+	if (S_ISREG(item->mop_it.it_create_mode))
+		req_capsule_set_size(&pill, &RMF_MDT_MD, RCL_SERVER,
+				     MAX_MD_SIZE);
+	else
+		req_capsule_set_size(&pill, &RMF_MDT_MD, RCL_SERVER, 0);
+
+	req_capsule_set_replen(&pill);
+	reqmsg->lm_opc = BUT_CREATE_LOCKLESS;
+	*max_pack_size = size;
+	RETURN(0);
+}
+
+static int mdc_create_lockless_interpret(struct ptlrpc_request *req,
+					 struct lustre_msg *repmsg,
+					 struct object_update_callback *ouc,
+					 int rc)
+{
+	struct md_op_item *item = (struct md_op_item *)ouc->ouc_data;
+	struct req_capsule pill;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_CREATE_LOCKLESS, req,
+				NULL, repmsg, RCL_CLIENT);
+
+	return item->mop_cb(&pill, item, rc);
+}
+
+static int mdc_setattr_exlock_pack(struct batch_update_head *head,
+				   struct lustre_msg *reqmsg,
+				   size_t *max_pack_size,
+				   struct md_op_item *item)
+{
+	static union ldlm_policy_data exlock_policy = {
+				.l_inodebits = { MDS_INODELOCK_UPDATE } };
+	struct req_capsule pill;
+	__u32 size;
+	int rc;
+
+	ENTRY;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_SETATTR_EXLOCK, NULL,
+				reqmsg, NULL, RCL_CLIENT);
+	size = req_capsule_msg_size(&pill, RCL_CLIENT);
+	if (unlikely(size >= *max_pack_size)) {
+		*max_pack_size = size;
+		return -E2BIG;
+	}
+
+	req_capsule_client_pack(&pill);
+	mdc_setattr_pack(&pill, &item->mop_data, NULL, 0);
+	rc = mdc_ldlm_lock_pack(head->buh_exp, &pill, &exlock_policy,
+				&item->mop_data.op_fid1, item);
+	if (rc)
+		RETURN(rc);
+
+	req_capsule_set_replen(&pill);
+	reqmsg->lm_opc = BUT_SETATTR_EXLOCK;
+	*max_pack_size = size;
+	RETURN(rc);
+}
+
+static int mdc_setattr_exlock_interpret(struct ptlrpc_request *req,
+					struct lustre_msg *repmsg,
+					struct object_update_callback *ouc,
+					int rc)
+{
+	struct md_op_item *item = (struct md_op_item *)ouc->ouc_data;
+	struct ldlm_enqueue_info *einfo = &item->mop_einfo;
+	struct batch_update_head *head = ouc->ouc_head;
+	struct obd_export *exp = head->buh_exp;
+	struct req_capsule pill;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_SETATTR_EXLOCK, req,
+				NULL, repmsg, RCL_CLIENT);
+
+	rc = ldlm_cli_enqueue_fini(exp, &pill, einfo, 1, &item->mop_lock_flags,
+				   NULL, 0, &item->mop_lockh, rc, false);
+	rc = mdc_finish_enqueue(exp, &pill, einfo, &item->mop_it,
+				&item->mop_lockh, rc);
+
+	return item->mop_cb(&pill, item, rc);
+}
+
+static int mdc_setattr_lockless_pack(struct batch_update_head *head,
+				     struct lustre_msg *reqmsg,
+				     size_t *max_pack_size,
+				     struct md_op_item *item)
+{
+	struct req_capsule pill;
+	__u32 size;
+
+	ENTRY;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_SETATTR_LOCKLESS, NULL,
+				reqmsg, NULL, RCL_CLIENT);
+	size = req_capsule_msg_size(&pill, RCL_CLIENT);
+	if (unlikely(size >= *max_pack_size)) {
+		*max_pack_size = size;
+		return -E2BIG;
+	}
+
+	req_capsule_client_pack(&pill);
+	mdc_setattr_pack(&pill, &item->mop_data, NULL, 0);
+	req_capsule_set_replen(&pill);
+	reqmsg->lm_opc = BUT_SETATTR_LOCKLESS;
+	*max_pack_size = size;
+	RETURN(0);
+}
+
+static int mdc_setattr_lockless_interpret(struct ptlrpc_request *req,
+					  struct lustre_msg *repmsg,
+					  struct object_update_callback *ouc,
+					  int rc)
+{
+	struct md_op_item *item = (struct md_op_item *)ouc->ouc_data;
+	struct req_capsule pill;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_SETATTR_LOCKLESS, req,
+				NULL, repmsg, RCL_CLIENT);
+
+	return item->mop_cb(&pill, item, rc);
+}
+
+static int mdc_exlock_only_pack(struct batch_update_head *head,
+				struct lustre_msg *reqmsg,
+			    size_t *max_pack_size,
+			    struct md_op_item *item)
+{
+	static union ldlm_policy_data exlock_policy = {
+				.l_inodebits = { MDS_INODELOCK_UPDATE } };
+	struct req_capsule pill;
+	__u32 size;
+	int rc;
+
+	ENTRY;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_EXLOCK_ONLY, NULL,
+				reqmsg, NULL, RCL_CLIENT);
+	size = req_capsule_msg_size(&pill, RCL_CLIENT);
+	if (unlikely(size >= *max_pack_size)) {
+		*max_pack_size = size;
+		RETURN(-E2BIG);
+	}
+
+	req_capsule_client_pack(&pill);
+	rc = mdc_ldlm_lock_pack(head->buh_exp, &pill, &exlock_policy,
+				&item->mop_data.op_fid1, item);
+	if (rc)
+		RETURN(rc);
+
+	req_capsule_set_replen(&pill);
+	reqmsg->lm_opc = BUT_EXLOCK_ONLY;
+	*max_pack_size = size;
+	RETURN(rc);
+}
+
+static int mdc_exlock_only_interpret(struct ptlrpc_request *req,
+				     struct lustre_msg *repmsg,
+				     struct object_update_callback *ouc,
+				     int rc)
+{
+	struct md_op_item *item = (struct md_op_item *)ouc->ouc_data;
+	struct ldlm_enqueue_info *einfo = &item->mop_einfo;
+	struct batch_update_head *head = ouc->ouc_head;
+	struct obd_export *exp = head->buh_exp;
+	struct req_capsule pill;
+
+	req_capsule_subreq_init(&pill, &RQF_BUT_EXLOCK_ONLY, req,
+				NULL, repmsg, RCL_CLIENT);
+
+	rc = ldlm_cli_enqueue_fini(exp, &pill, einfo, 1, &item->mop_lock_flags,
+				   NULL, 0, &item->mop_lockh, rc, false);
+	rc = mdc_finish_enqueue(exp, &pill, einfo, &item->mop_it,
+				&item->mop_lockh, rc);
+
+	return item->mop_cb(&pill, item, rc);
+}
+
+static md_update_pack_t mdc_update_packers[MD_OP_MAX] = {
+	[MD_OP_GETATTR]			= mdc_batch_getattr_pack,
+	[MD_OP_CREATE_LOCKLESS]		= mdc_create_lockless_pack,
+	[MD_OP_CREATE_EXLOCK]		= mdc_create_exlock_pack,
+	[MD_OP_SETATTR_LOCKLESS]	= mdc_setattr_lockless_pack,
+	[MD_OP_SETATTR_EXLOCK]		= mdc_setattr_exlock_pack,
+	[MD_OP_EXLOCK_ONLY]		= mdc_exlock_only_pack,
+};
+
 object_update_interpret_t mdc_update_interpreters[MD_OP_MAX] = {
-	[MD_OP_GETATTR]	= mdc_batch_getattr_interpret,
+	[MD_OP_GETATTR]			= mdc_batch_getattr_interpret,
+	[MD_OP_CREATE_LOCKLESS]		= mdc_create_lockless_interpret,
+	[MD_OP_CREATE_EXLOCK]		= mdc_create_exlock_interpret,
+	[MD_OP_SETATTR_LOCKLESS]	= mdc_setattr_lockless_interpret,
+	[MD_OP_SETATTR_EXLOCK]		= mdc_setattr_exlock_interpret,
+	[MD_OP_EXLOCK_ONLY]		= mdc_exlock_only_interpret,
 };
 
 int mdc_batch_add(struct obd_export *exp, struct lu_batch *bh,

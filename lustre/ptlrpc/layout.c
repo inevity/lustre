@@ -813,6 +813,57 @@ static const struct req_msg_field *mds_batch_getattr_server[] = {
 	&RMF_FILE_ENCCTX,
 };
 
+static const struct req_msg_field *create_exlock_client[] = {
+	&RMF_DLM_REQ,
+	&RMF_REC_REINT,
+	&RMF_NAME,
+	&RMF_EADATA,
+	&RMF_FILE_SECCTX_NAME,
+	&RMF_FILE_SECCTX,
+	&RMF_FILE_ENCCTX,
+};
+
+static const struct req_msg_field *create_exlock_server[] = {
+	&RMF_DLM_REP,
+	&RMF_MDT_BODY,
+	&RMF_MDT_MD,
+};
+
+static const struct req_msg_field *create_lockless_client[] = {
+	&RMF_REC_REINT,
+	&RMF_NAME,
+	&RMF_EADATA,
+	&RMF_FILE_SECCTX_NAME,
+	&RMF_FILE_SECCTX,
+	&RMF_FILE_ENCCTX,
+};
+
+static const struct req_msg_field *create_lockless_server[] = {
+	&RMF_MDT_BODY,
+	&RMF_MDT_MD,
+};
+
+static const struct req_msg_field *setattr_exlock_client[] = {
+	&RMF_DLM_REQ,
+	&RMF_REC_REINT,
+};
+
+static const struct req_msg_field *setattr_exlock_server[] = {
+	&RMF_DLM_REP,
+};
+
+static const struct req_msg_field *setattr_lockless_client[] = {
+	&RMF_REC_REINT,
+};
+
+static const struct req_msg_field *exlock_only_client[] = {
+	&RMF_DLM_REQ,
+};
+
+static const struct req_msg_field *exlock_only_server[] = {
+	&RMF_DLM_REP,
+};
+
 static struct req_format *req_formats[] = {
 	&RQF_OBD_PING,
 	&RQF_OBD_SET_INFO,
@@ -915,6 +966,11 @@ static struct req_format *req_formats[] = {
 	&RQF_LFSCK_NOTIFY,
 	&RQF_LFSCK_QUERY,
 	&RQF_BUT_GETATTR,
+	&RQF_BUT_CREATE_EXLOCK,
+	&RQF_BUT_CREATE_LOCKLESS,
+	&RQF_BUT_SETATTR_EXLOCK,
+	&RQF_BUT_SETATTR_LOCKLESS,
+	&RQF_BUT_EXLOCK_ONLY,
 	&RQF_MDS_BATCH,
 };
 
@@ -1870,6 +1926,29 @@ struct req_format RQF_BUT_GETATTR =
 	DEFINE_REQ_FMT0("MDS_BATCH_GETATTR", mds_batch_getattr_client,
 			mds_batch_getattr_server);
 EXPORT_SYMBOL(RQF_BUT_GETATTR);
+
+struct req_format RQF_BUT_CREATE_EXLOCK =
+	DEFINE_REQ_FMT0("CREATE_EXLOCK", create_exlock_client,
+					 create_exlock_server);
+EXPORT_SYMBOL(RQF_BUT_CREATE_EXLOCK);
+
+struct req_format RQF_BUT_CREATE_LOCKLESS =
+	DEFINE_REQ_FMT0("CREATE_LOCKLESS", create_lockless_client,
+					   create_lockless_server);
+EXPORT_SYMBOL(RQF_BUT_CREATE_LOCKLESS);
+
+struct req_format RQF_BUT_SETATTR_EXLOCK =
+	DEFINE_REQ_FMT0("SETATTR_EXLOCK", setattr_exlock_client,
+					  setattr_exlock_server);
+EXPORT_SYMBOL(RQF_BUT_SETATTR_EXLOCK);
+
+struct req_format RQF_BUT_SETATTR_LOCKLESS =
+	DEFINE_REQ_FMT0("SETATTR_LOCKLESS", setattr_lockless_client, empty);
+EXPORT_SYMBOL(RQF_BUT_SETATTR_LOCKLESS);
+
+struct req_format RQF_BUT_EXLOCK_ONLY =
+	DEFINE_REQ_FMT0("EXLOCK_ONLY", exlock_only_client, exlock_only_server);
+EXPORT_SYMBOL(RQF_BUT_EXLOCK_ONLY);
 
 /* Convenience macro */
 #define FMT_FIELD(fmt, i, j) (fmt)->rf_fields[(i)].d[(j)]

@@ -1855,6 +1855,37 @@ int mdt_reint_unpack(struct mdt_thread_info *info, __u32 op)
         RETURN(rc);
 }
 
+int mdt_batch_unpack(struct mdt_thread_info *info, __u32 op)
+{
+	int rc = 0;
+
+	memset(&info->mti_rr, 0, sizeof(info->mti_rr));
+	switch (op) {
+	case BUT_GETATTR:
+		info->mti_dlm_req = req_capsule_client_get(info->mti_pill,
+							   &RMF_DLM_REQ);
+		if (info->mti_dlm_req == NULL)
+			RETURN(-EFAULT);
+		break;
+	case BUT_CREATE_EXLOCK:
+	case BUT_CREATE_LOCKLESS:
+		info->mti_rr.rr_opcode = REINT_CREATE;
+		rc = mdt_reint_unpackers[REINT_CREATE](info);
+		break;
+	case BUT_SETATTR_EXLOCK:
+	case BUT_SETATTR_LOCKLESS:
+		info->mti_rr.rr_opcode = REINT_SETATTR;
+		rc = mdt_reint_unpackers[REINT_SETATTR](info);
+		break;
+	default:
+		CERROR("Unexpected opcode %d\n", op);
+		rc = -EOPNOTSUPP;
+		break;
+	}
+
+	RETURN(rc);
+}
+
 int mdt_pack_secctx_in_reply(struct mdt_thread_info *info,
 			     struct mdt_object *child)
 {

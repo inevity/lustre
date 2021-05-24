@@ -1004,9 +1004,10 @@ static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 {
 	conf->wbcc_rmpol = WBC_RMPOL_DEFAULT;
 	conf->wbcc_readdir_pol = WBC_READDIR_POL_DEFAULT;
+	conf->wbcc_flush_pol = WBC_FLUSH_POL_DEFAULT;
+	conf->wbcc_max_batch_count = 0;
 	conf->wbcc_max_rpcs = WBC_DEFAULT_MAX_RPCS;
 	conf->wbcc_background_async_rpc = 0;
-	conf->wbcc_batch_update = 0;
 	conf->wbcc_max_inodes = 0;
 	conf->wbcc_free_inodes = 0;
 	conf->wbcc_max_pages = 0;
@@ -1091,6 +1092,11 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_rmpol = cmd->wbcc_conf.wbcc_rmpol;
 	if (cmd->wbcc_flags & WBC_CMD_OP_READDIR_POL)
 		conf->wbcc_readdir_pol = cmd->wbcc_conf.wbcc_readdir_pol;
+	if (cmd->wbcc_flags & WBC_CMD_OP_FLUSH_POL)
+		conf->wbcc_flush_pol = cmd->wbcc_conf.wbcc_flush_pol;
+	if (cmd->wbcc_flags & WBC_CMD_OP_MAX_BATCH_COUNT)
+		conf->wbcc_max_batch_count =
+				cmd->wbcc_conf.wbcc_max_batch_count;
 
 	return 0;
 }
@@ -1243,6 +1249,22 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 
 		conf->wbcc_max_pages = DIV_ROUND_UP(size, PAGE_SIZE);
 		cmd->wbcc_flags |= WBC_CMD_OP_PAGES_LIMIT;
+	} else if (strcmp(key, "flush_pol") == 0) {
+		if (strcmp(val, "batch") == 0)
+			conf->wbcc_flush_pol = WBC_FLUSH_POL_BATCH;
+		else if (strcmp(val, "rqset") == 0)
+			conf->wbcc_flush_pol = WBC_FLUSH_POL_RQSET;
+		else
+			return -EINVAL;
+
+		cmd->wbcc_flags |= WBC_CMD_OP_FLUSH_POL;
+	} else if (strcmp(key, "max_batch_count") == 0) {
+		rc = kstrtoul(val, 10, &num);
+		if (rc)
+			return rc;
+
+		conf->wbcc_max_batch_count = num;
+		cmd->wbcc_flags |= WBC_CMD_OP_MAX_BATCH_COUNT;
 	} else {
 		return -EINVAL;
 	}

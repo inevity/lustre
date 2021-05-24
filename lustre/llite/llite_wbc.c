@@ -1215,15 +1215,15 @@ static int wbc_flush_child_decomplete(struct inode *dir,
 /*
  * TODO: Flush batchly for metadata updates.
  */
-int wbcfs_flush_dir_children(struct inode *dir,
-			     struct list_head *childlist,
-			     struct ldlm_lock *lock,
-			     struct writeback_control_ext *wbcx)
+static int wbc_flush_children_rqset(struct inode *dir,
+				    struct list_head *childlist,
+				    struct ldlm_lock *lock,
+				    struct writeback_control_ext *wbcx)
 {
 	struct wbc_dentry *wbcd, *tmp;
 	struct ptlrpc_request_set *rqset;
 	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
-	int rc = 0;
+	int rc;
 
 	ENTRY;
 
@@ -1265,6 +1265,85 @@ out_rqset:
 	ptlrpc_set_destroy(rqset);
 
 	RETURN(rc);
+}
+
+static int wbc_flush_child_batch(struct lu_batch *bh,
+				 struct inode *dir,
+				 struct dentry *dchild,
+				 struct ldlm_lock *lock,
+				 struct writeback_control_ext *wbcx)
+{
+	struct ll_sb_info *sbi = ll_i2sbi(dir);
+	struct md_op_item *item;
+	unsigned int valid = 0;
+	long opc;
+	int rc;
+
+	ENTRY;
+
+	opc = wbc_flush_opcode_get(dchild->d_inode, dchild, wbcx, &valid);
+	if (opc == MD_OP_NONE)
+		RETURN(0);
+
+	item = wbc_prep_op_item(opc, dir, dchild, lock, wbcx, valid);
+	if (IS_ERR(item))
+		RETURN(PTR_ERR(item));
+
+	if (md_opcode_need_exlock(opc))
+		item->mop_einfo.ei_mode = LCK_EX;
+
+	rc = md_batch_add(sbi->ll_md_exp, bh, item);
+	RETURN(rc);
+}
+
+static int wbc_flush_children_batch(struct inode *dir,
+				    struct list_head *childlist,
+				    struct ldlm_lock *lock,
+				    struct writeback_control_ext *wbcx)
+{
+	struct ll_sb_info *sbi = ll_i2sbi(dir);
+	struct wbc_dentry *wbcd, *tmp;
+	struct lu_batch *bh;
+	int rc;
+
+	ENTRY;
+
+	bh = md_batch_create(sbi->ll_md_exp, BATCH_FL_RQSET,
+			     ll_i2wbcc(dir)->wbcc_max_batch_count);
+	if (IS_ERR(bh))
+		RETURN(PTR_ERR(bh));
+
+	list_for_each_entry_safe(wbcd, tmp, childlist, wbcd_flush_item) {
+		struct ll_dentry_data *lld;
+		struct dentry *dchild;
+
+		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
+		dchild = lld->lld_dentry;
+		list_del_init(&wbcd->wbcd_flush_item);
+
+		rc = wbc_flush_child_batch(bh, dir, dchild, lock, wbcx);
+		if (rc)
+			GOTO(out, rc);
+	}
+out:
+	rc = md_batch_stop(sbi->ll_md_exp, bh);
+	RETURN(rc);
+}
+
+int wbcfs_flush_dir_children(struct inode *dir,
+			     struct list_head *childlist,
+			     struct ldlm_lock *lock,
+			     struct writeback_control_ext *wbcx)
+{
+	int rc;
+
+	if (ll_i2wbcc(dir)->wbcc_flush_pol == WBC_FLUSH_POL_BATCH &&
+	    ll_i2wbcc(dir)->wbcc_max_batch_count > 0)
+		rc = wbc_flush_children_batch(dir, childlist, lock, wbcx);
+	else
+		rc = wbc_flush_children_rqset(dir, childlist, lock, wbcx);
+
+	return rc;
 }
 
 int wbcfs_file_private_set(struct inode *inode, struct file *file)
@@ -1490,6 +1569,8 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 	seq_printf(m, "flush_mode: %s\n",
 		   wbc_flushmode2string(conf->wbcc_flush_mode));
 	seq_printf(m, "max_rpcs: %u\n", conf->wbcc_max_rpcs);
+	seq_printf(m, "flush_pol: %s\n",
+		   wbc_flushpol2string(conf->wbcc_flush_pol));
 	seq_printf(m, "readdir_pol: %s\n",
 		   wbc_readdir_pol2string(conf->wbcc_readdir_pol));
 	seq_printf(m, "remove_pol: %s\n", wbc_rmpol2string(conf->wbcc_rmpol));

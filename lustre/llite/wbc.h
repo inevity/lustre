@@ -113,6 +113,12 @@ enum wbc_readdir_policy {
 	WBC_READDIR_POL_DEFAULT		= WBC_READDIR_DCACHE_COMPAT,
 };
 
+enum wbc_flush_policy {
+	WBC_FLUSH_POL_RQSET	= 0,
+	WBC_FLUSH_POL_BATCH	= 1,
+	WBC_FLUSH_POL_DEFAULT	= WBC_FLUSH_POL_RQSET,
+};
+
 #define WBC_DEFAULT_HIWM_RATIO	0	/* Disable reclaimation. */
 
 struct wbc_conf {
@@ -120,9 +126,10 @@ struct wbc_conf {
 	enum lu_wbc_flush_mode	wbcc_flush_mode;
 	enum wbc_remove_policy	wbcc_rmpol;
 	enum wbc_readdir_policy	wbcc_readdir_pol;
+	enum wbc_flush_policy	wbcc_flush_pol;
+	__u32			wbcc_max_batch_count;
 	__u32			wbcc_max_rpcs;
-	__u32			wbcc_background_async_rpc:1,
-				wbcc_batch_update;
+	__u32			wbcc_background_async_rpc:1;
 	/* How many inodes are allowed. */
 	unsigned long		wbcc_max_inodes;
 	/* How many inodes are left for allocation. */
@@ -250,6 +257,8 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_PAGES_LIMIT		= 0x0020,
 	WBC_CMD_OP_READDIR_POL		= 0x0040,
 	WBC_CMD_OP_RECLAIM_RATIO	= 0x0080,
+	WBC_CMD_OP_FLUSH_POL		= 0x0100,
+	WBC_CMD_OP_MAX_BATCH_COUNT	= 0x0200,
 };
 
 struct wbc_cmd {
@@ -404,6 +413,18 @@ static inline const char *wbc_readdir_pol2string(enum wbc_readdir_policy pol)
 		return "dcache_compat";
 	case WBC_READDIR_DCACHE_DECOMPLETE:
 		return "dcache_decomp";
+	default:
+		return "unknow";
+	}
+}
+
+static inline const char *wbc_flushpol2string(enum wbc_flush_policy pol)
+{
+	switch (pol) {
+	case WBC_FLUSH_POL_RQSET:
+		return "rqset";
+	case WBC_FLUSH_POL_BATCH:
+		return "batch";
 	default:
 		return "unknow";
 	}
