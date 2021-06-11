@@ -286,6 +286,7 @@ static struct dentry *memfs_lookup_nd(struct inode *parent,
 
 	ENTRY;
 
+	OBD_FAIL_TIMEOUT(OBD_FAIL_LLITE_MEMFS_LOOKUP_PAUSE, cfs_fail_val);
 	down_read(&wbci->wbci_rw_sem);
 	if (wbc_inode_complete(wbci)) {
 		/*
@@ -437,7 +438,6 @@ static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 		if (wbc_inode_reserved(ll_i2wbci(dchild->d_inode)))
 			rc = simple_unlink(dir, dchild);
 	}
-
 up_rwsem:
 	up_read(&wbci->wbci_rw_sem);
 	RETURN(rc);

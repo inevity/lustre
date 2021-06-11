@@ -1179,6 +1179,9 @@ static struct dentry *ll_lookup_nd(struct inode *parent, struct dentry *dentry,
 	if (itp != NULL)
 		ll_intent_release(itp);
 
+	if (IS_ERR(de) && PTR_ERR(de) == -ENOENT && (flags & LOOKUP_CREATE))
+		de = NULL;
+
 	return de;
 }
 

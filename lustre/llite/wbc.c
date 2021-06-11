@@ -730,7 +730,7 @@ static int wbc_inode_flush_lockdrop(struct inode *inode,
 	lock = ldlm_handle2lock(&wbci->wbci_lock_handle);
 	if (lock == NULL) {
 		LASSERTF(!wbc_inode_has_protected(wbci),
-			 "WBC flags: %d\n", wbci->wbci_flags);
+			 "WBC flags: %d inode %p\n", wbci->wbci_flags, inode);
 		RETURN(0);
 	}
 
