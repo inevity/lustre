@@ -168,6 +168,9 @@ void mdc_file_sepol_pack(struct req_capsule *pill)
 	size_t buf_size;
 	struct ptlrpc_request *req = pill->rc_req;
 
+	if (req == NULL)
+		return;
+
 	if (strlen(req->rq_sepol) == 0)
 		return;
 

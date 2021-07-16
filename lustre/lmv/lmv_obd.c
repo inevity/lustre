@@ -4018,6 +4018,19 @@ lmv_batch_locate_tgt(struct lmv_obd *lmv, struct md_op_item *item)
 
 		break;
 	}
+	case MD_OP_CREATE_LOCKLESS:
+	case MD_OP_CREATE_EXLOCK:
+		tgt = lmv_locate_tgt(lmv, op_data);
+		if (IS_ERR(tgt))
+			break;
+
+		tgt = lmv_fid2tgt(lmv, &op_data->op_fid2);
+		break;
+	case MD_OP_SETATTR_LOCKLESS:
+	case MD_OP_SETATTR_EXLOCK:
+	case MD_OP_EXLOCK_ONLY:
+		tgt = lmv_fid2tgt(lmv, &op_data->op_fid1);
+		break;
 	default:
 		tgt = ERR_PTR(-ENOTSUPP);
 	}

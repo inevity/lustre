@@ -1251,7 +1251,8 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 	flags = ldlm_flags_from_wire(dlm_req->lock_flags);
 
 	/* The root WBC EX lock is revoking. */
-	if (flags & LDLM_FL_INTENT_PARENT_LOCKED &&
+	if (req_capsule_ptlreq(pill) &&
+	    flags & LDLM_FL_INTENT_PARENT_LOCKED &&
 	    flags & LDLM_FL_INTENT_EXLOCK_UPDATE) {
 		struct ldlm_lock *lock;
 
@@ -1414,7 +1415,7 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 
 existing_lock:
 	cookie = req;
-	if (!(flags & LDLM_FL_HAS_INTENT)) {
+	if (!(flags & LDLM_FL_HAS_INTENT) && req_capsule_ptlreq(pill)) {
 		/* based on the assumption that lvb size never changes during
 		 * resource life time otherwise it need resource->lr_lock's
 		 * protection */

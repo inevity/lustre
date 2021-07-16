@@ -704,8 +704,13 @@ int mdc_reint_async(struct obd_export *exp, struct md_op_item *item,
 	aa = ptlrpc_req_async_args(aa, req);
 	aa->ra_item = item;
 
-	ptlrpc_set_add_req(rqset, req);
-	ptlrpc_check_set(NULL, rqset);
+	if (rqset) {
+		ptlrpc_set_add_req(rqset, req);
+		ptlrpc_check_set(NULL, rqset);
+	} else {
+		ptlrpcd_add_req(req);
+	}
+
 	RETURN(0);
 }
 

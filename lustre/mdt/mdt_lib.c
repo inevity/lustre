@@ -1314,8 +1314,8 @@ static int mdt_create_unpack(struct mdt_thread_info *info)
 		const char *tgt = NULL;
 		int sz;
 
-		if (info->mti_intent_lock) {
-			/* intent create */
+		if (info->mti_intent_lock || req_capsule_subreq(pill)) {
+			/* Intent create or sub update request in a batch */
 			sz = req_capsule_get_size(pill, &RMF_EADATA,
 						  RCL_CLIENT);
 			if (sz)
@@ -1335,7 +1335,7 @@ static int mdt_create_unpack(struct mdt_thread_info *info)
 		sp->u.sp_symname.ln_name = tgt;
 		sp->u.sp_symname.ln_namelen = sz - 1; /* skep NUL */
 	} else {
-		if (!info->mti_intent_lock) {
+		if (!(info->mti_intent_lock || req_capsule_subreq(pill))) {
 			if (sp->sp_cr_flags & MDS_FMODE_WRITE &&
 			    S_ISREG(attr->la_mode))
 				req_capsule_extend(pill,

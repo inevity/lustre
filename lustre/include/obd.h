@@ -999,6 +999,7 @@ struct md_op_item {
 	struct ldlm_enqueue_info	 mop_einfo;
 	md_op_item_cb_t			 mop_cb;
 	void				*mop_cbdata;
+	void				*mop_owner;
 	__u64				 mop_lock_flags;
 	union {
 		struct inode		*mop_dir;

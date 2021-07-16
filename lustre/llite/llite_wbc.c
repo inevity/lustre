@@ -166,13 +166,21 @@ int wbcfs_d_init(struct dentry *de)
 	RETURN(0);
 }
 
-static void wbc_fini_op_item(struct md_op_item *item)
+static inline void wbc_context_note(struct wbc_context *ctx, int ioret)
+{
+	if (ctx && ctx->ioc_anchor_used)
+		wbc_sync_io_note(&ctx->ioc_anchor, ioret);
+}
+
+static void wbc_fini_op_item(struct md_op_item *item, int ioret)
 {
 	struct md_op_data *op_data = &item->mop_data;
 
 	ll_unlock_md_op_lsm(op_data);
 	security_release_secctx(op_data->op_file_secctx,
 				op_data->op_file_secctx_size);
+
+	wbc_context_note(item->mop_owner, ioret);
 	OBD_FREE_PTR(item);
 }
 
@@ -245,7 +253,7 @@ out_it:
 out_dput:
 	wbc_inode_unreserve_dput(inode, dentry);
 	wbc_inode_writeback_complete(inode);
-	wbc_fini_op_item(item);
+	wbc_fini_op_item(item, rc);
 
 	RETURN(rc);
 }
@@ -397,7 +405,7 @@ static int wbc_setattr_exlock_cb(struct req_capsule *pill,
 out_dput:
 	wbc_inode_unreserve_dput(inode, dentry);
 	wbc_inode_writeback_complete(inode);
-	wbc_fini_op_item(item);
+	wbc_fini_op_item(item, rc);
 
 	RETURN(rc);
 }
@@ -510,7 +518,7 @@ static int wbc_exlock_only_cb(struct req_capsule *pill,
 out_dput:
 	wbc_inode_unreserve_dput(inode, dentry);
 	wbc_inode_writeback_complete(inode);
-	wbc_fini_op_item(item);
+	wbc_fini_op_item(item, rc);
 
 	RETURN(rc);
 }
@@ -577,7 +585,7 @@ out_fini:
 		wbc_inode_unreserve_dput(inode, dchild);
 
 	wbc_inode_writeback_complete(inode);
-	wbc_fini_op_item(item);
+	wbc_fini_op_item(item, rc);
 	RETURN(rc);
 }
 
@@ -628,7 +636,7 @@ static int wbc_setattr_lockless_cb(struct req_capsule *pill,
 
 out_dput:
 	wbc_inode_writeback_complete(inode);
-	wbc_fini_op_item(item);
+	wbc_fini_op_item(item, rc);
 
 	RETURN(rc);
 }
@@ -1140,140 +1148,172 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 	RETURN(rc);
 }
 
-static inline bool wbc_need_rqset_wait(struct inode *dir,
-				       struct dentry *dentry,
-				       struct wbc_conf *conf,
-				       struct ptlrpc_request_set *rqset)
+int wbcfs_context_init(struct super_block *sb, struct wbc_context *ctx,
+		       bool lazy_init)
 {
-	if (conf->wbcc_max_rpcs > 0 &&
-	    atomic_read(&rqset->set_remaining) > conf->wbcc_max_rpcs)
-		return true;
-
-	return false;
-}
-
-static int wbc_flush_child_exlock(struct inode *dir, struct dentry *dchild,
-				  struct ldlm_lock *lock,
-				  struct writeback_control_ext *wbcx,
-				  struct ptlrpc_request_set *rqset)
-{
-	struct ll_sb_info *sbi = ll_i2sbi(dir);
-	struct md_op_item *item;
-	unsigned int valid = 0;
-	long opc;
-	int rc;
+	struct wbc_super *super = ll_s2wbcs(sb);
+	struct wbc_conf *conf = &super->wbcs_conf;
 
 	ENTRY;
 
-	opc = wbc_flush_opcode_get(dchild->d_inode, dchild, wbcx, &valid);
-	if (opc == MD_OP_NONE)
+	if (lazy_init) {
+		memset(ctx, 0, sizeof(*ctx));
+		RETURN(0);
+	}
+
+	ctx->ioc_pol = conf->wbcc_flush_pol;
+	switch (ctx->ioc_pol) {
+	case WBC_FLUSH_POL_RQSET:
+		ctx->ioc_rqset = ptlrpc_prep_set();
+		if (ctx->ioc_rqset == NULL)
+			RETURN(-ENOMEM);
+		break;
+	case WBC_FLUSH_POL_BATCH:
+		ctx->ioc_batch = md_batch_create(ll_s2sbi(sb)->ll_md_exp, 0,
+						 conf->wbcc_max_batch_count);
+		if (IS_ERR(ctx->ioc_batch))
+			RETURN(PTR_ERR(ctx->ioc_batch));
+		/* fall through */
+	case WBC_FLUSH_POL_PTLRPCD:
+		/*
+		 * Hold one ref so that it won't be released until every sub
+		 * update request is added.
+		 */
+		wbc_sync_io_init(&ctx->ioc_anchor, 1);
+		ctx->ioc_anchor_used = 1;
+		break;
+	default:
+		RETURN(-ENOTSUPP);
+	}
+
+	ctx->ioc_inited = 1;
+	RETURN(0);
+}
+
+int wbcfs_context_fini(struct super_block *sb, struct wbc_context *ctx)
+{
+	int rc = 0, rc2;
+
+	ENTRY;
+
+	if (!ctx->ioc_inited)
 		RETURN(0);
 
-	item = wbc_prep_op_item(opc, dir, dchild, lock, wbcx, valid);
-	if (IS_ERR(item))
-		RETURN(PTR_ERR(item));
-
-	rc = md_intent_lock_async(sbi->ll_md_exp, item, rqset);
-	if (rc) {
-		CERROR("md_intent_lock_async error: %d\n", rc);
-		wbc_fini_op_item(item);
+	switch (ctx->ioc_pol) {
+	case WBC_FLUSH_POL_RQSET:
+		rc = ptlrpc_set_wait(NULL, ctx->ioc_rqset);
+		ptlrpc_set_destroy(ctx->ioc_rqset);
+		RETURN(rc);
+	case WBC_FLUSH_POL_BATCH:
+		rc = md_batch_stop(ll_s2sbi(sb)->ll_md_exp, ctx->ioc_batch);
+		/* fall through */
+	case WBC_FLUSH_POL_PTLRPCD:
+		/*
+		 * @anchor was inited as 1 to prevent it to be released before
+		 * we add all sub requests for IO, so drop one extra reference
+		 * to make sure we could wait count to be zero.
+		 */
+		wbc_sync_io_note(&ctx->ioc_anchor, rc);
+		rc2 = wbc_sync_io_wait(&ctx->ioc_anchor, 0);
+		if (rc2 < 0 && rc == 0)
+			rc = rc2;
+		break;
+	default:
+		RETURN(-EOPNOTSUPP);
 	}
 
 	RETURN(rc);
 }
 
-static int wbc_flush_child_decomplete(struct inode *dir,
-				      struct dentry *dchild,
-				      struct writeback_control_ext *wbcx,
-				      struct ptlrpc_request_set *rqset)
+int wbcfs_context_prepare(struct super_block *sb, struct wbc_context *ctx)
 {
-	struct ll_sb_info *sbi = ll_i2sbi(dir);
-	struct md_op_item *item;
-	unsigned int valid = 0;
-	long opc;
-	int rc;
+	if (ctx->ioc_inited)
+		return 0;
 
-	ENTRY;
-
-	opc = wbc_flush_opcode_get(dchild->d_inode, dchild, wbcx, &valid);
-	if (opc == MD_OP_NONE)
-		RETURN(0);
-
-	item = wbc_prep_op_item(opc, dir, dchild, NULL, wbcx, valid);
-	if (IS_ERR(item))
-		RETURN(PTR_ERR(item));
-
-	rc = md_reint_async(sbi->ll_md_exp, item, rqset);
-	if (rc) {
-		CERROR("md_reint_async error: %d\n", rc);
-		wbc_fini_op_item(item);
-	}
-
-	RETURN(rc);
+	return wbcfs_context_init(sb, ctx, false);
 }
 
-/*
- * TODO: Flush batchly for metadata updates.
- */
-static int wbc_flush_children_rqset(struct inode *dir,
-				    struct list_head *childlist,
-				    struct ldlm_lock *lock,
-				    struct writeback_control_ext *wbcx)
+int wbcfs_context_commit(struct super_block *sb, struct wbc_context *ctx)
 {
-	struct wbc_dentry *wbcd, *tmp;
-	struct ptlrpc_request_set *rqset;
-	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
-	int rc;
+	struct ll_sb_info *sbi = ll_s2sbi(sb);
+	int rc = 0, rc2;
 
-	ENTRY;
+	if (!ctx->ioc_sync)
+		return 0;
 
-	rqset = ptlrpc_prep_set();
-	if (rqset == NULL)
-		RETURN(-ENOMEM);
-
-	list_for_each_entry_safe(wbcd, tmp, childlist, wbcd_flush_item) {
-		struct ll_dentry_data *lld;
-		struct dentry *dchild;
-
-		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
-		dchild = lld->lld_dentry;
-		list_del_init(&wbcd->wbcd_flush_item);
-		if (wbc_need_rqset_wait(dir, dchild, conf, rqset)) {
-			rc = ptlrpc_set_wait(NULL, rqset);
-			ptlrpc_set_destroy(rqset);
-			if (rc)
-				RETURN(rc);
-
-			rqset = ptlrpc_prep_set();
-			if (rqset == NULL)
-				RETURN(-ENOMEM);
-		}
-
-		if (wbc_decomplete_lock_keep(ll_i2wbci(dir), wbcx))
-			rc = wbc_flush_child_decomplete(dir, dchild,
-							wbcx, rqset);
-		else
-			rc = wbc_flush_child_exlock(dir, dchild, lock,
-						    wbcx, rqset);
-
+	switch (ctx->ioc_pol) {
+	case WBC_FLUSH_POL_RQSET:
+		rc = ptlrpc_set_wait(NULL, ctx->ioc_rqset);
+		ptlrpc_set_destroy(ctx->ioc_rqset);
 		if (rc)
-			GOTO(out_rqset, rc);
-	}
+			RETURN(rc);
 
-	rc = ptlrpc_set_wait(NULL, rqset);
-out_rqset:
-	ptlrpc_set_destroy(rqset);
+		ctx->ioc_rqset = ptlrpc_prep_set();
+		if (ctx->ioc_rqset == NULL)
+			RETURN(-ENOMEM);
+		break;
+	case WBC_FLUSH_POL_BATCH:
+		rc = md_batch_flush(sbi->ll_md_exp, ctx->ioc_batch, false);
+		if (rc)
+			RETURN(rc);
+		/* fall through */
+	case WBC_FLUSH_POL_PTLRPCD:
+		wbc_sync_io_note(&ctx->ioc_anchor, 0);
+		rc2 = wbc_sync_io_wait(&ctx->ioc_anchor, 0);
+		if (rc == 0 && rc2)
+			rc = rc2;
+		/*
+		 * One extra reference again, as if @anchor is
+		 * reused we assume it as 1 before using.
+		 */
+		atomic_add(1, &ctx->ioc_anchor.wsi_sync_nr);
+		break;
+	default:
+		RETURN(-EOPNOTSUPP);
+	}
 
 	RETURN(rc);
 }
 
-static int wbc_flush_child_batch(struct lu_batch *bh,
-				 struct inode *dir,
-				 struct dentry *dchild,
-				 struct ldlm_lock *lock,
-				 struct writeback_control_ext *wbcx)
+static int wbc_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
+			       struct writeback_control_ext *wbcx,
+			       struct md_op_item *item)
 {
 	struct ll_sb_info *sbi = ll_i2sbi(dir);
+	int rc;
+
+	switch (ctx->ioc_pol) {
+	case WBC_FLUSH_POL_PTLRPCD:
+		LASSERT(ctx->ioc_rqset == NULL);
+		/* fall through */
+	case WBC_FLUSH_POL_RQSET:
+		if (wbc_decomplete_lock_keep(ll_i2wbci(dir), wbcx)) {
+			LASSERT(item->mop_opc == MD_OP_CREATE_LOCKLESS);
+			rc = md_reint_async(sbi->ll_md_exp, item,
+					    ctx->ioc_rqset);
+		} else {
+			LASSERT(item->mop_opc == MD_OP_CREATE_EXLOCK ||
+				item->mop_opc == MD_OP_SETATTR_EXLOCK ||
+				item->mop_opc == MD_OP_EXLOCK_ONLY);
+			rc = md_intent_lock_async(sbi->ll_md_exp, item,
+						  ctx->ioc_rqset);
+		}
+		break;
+	case WBC_FLUSH_POL_BATCH:
+		rc = md_batch_add(sbi->ll_md_exp, ctx->ioc_batch, item);
+		break;
+	default:
+		rc = -ENOTSUPP;
+		break;
+	}
+
+	RETURN(rc);
+}
+
+int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
+			  struct dentry *dchild, struct ldlm_lock *lock,
+			  struct writeback_control_ext *wbcx)
+{
 	struct md_op_item *item;
 	unsigned int valid = 0;
 	long opc;
@@ -1292,58 +1332,19 @@ static int wbc_flush_child_batch(struct lu_batch *bh,
 	if (md_opcode_need_exlock(opc))
 		item->mop_einfo.ei_mode = LCK_EX;
 
-	rc = md_batch_add(sbi->ll_md_exp, bh, item);
-	RETURN(rc);
-}
+	if (ctx->ioc_anchor_used) {
+		atomic_inc(&ctx->ioc_anchor.wsi_sync_nr);
+		item->mop_owner = ctx;
 
-static int wbc_flush_children_batch(struct inode *dir,
-				    struct list_head *childlist,
-				    struct ldlm_lock *lock,
-				    struct writeback_control_ext *wbcx)
-{
-	struct ll_sb_info *sbi = ll_i2sbi(dir);
-	struct wbc_dentry *wbcd, *tmp;
-	struct lu_batch *bh;
-	int rc;
-
-	ENTRY;
-
-	bh = md_batch_create(sbi->ll_md_exp, BATCH_FL_RQSET,
-			     ll_i2wbcc(dir)->wbcc_max_batch_count);
-	if (IS_ERR(bh))
-		RETURN(PTR_ERR(bh));
-
-	list_for_each_entry_safe(wbcd, tmp, childlist, wbcd_flush_item) {
-		struct ll_dentry_data *lld;
-		struct dentry *dchild;
-
-		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
-		dchild = lld->lld_dentry;
-		list_del_init(&wbcd->wbcd_flush_item);
-
-		rc = wbc_flush_child_batch(bh, dir, dchild, lock, wbcx);
-		if (rc)
-			GOTO(out, rc);
 	}
-out:
-	rc = md_batch_stop(sbi->ll_md_exp, bh);
+	rc = wbc_flush_dir_child(ctx, dir, wbcx, item);
+	if (rc) {
+		CERROR("failed to flush dchild(%pd:%p): opc = %X, rc = %d\n",
+		       item->mop_dentry, item->mop_dentry, item->mop_opc, rc);
+		wbc_fini_op_item(item, rc);
+	}
+
 	RETURN(rc);
-}
-
-int wbcfs_flush_dir_children(struct inode *dir,
-			     struct list_head *childlist,
-			     struct ldlm_lock *lock,
-			     struct writeback_control_ext *wbcx)
-{
-	int rc;
-
-	if (ll_i2wbcc(dir)->wbcc_flush_pol == WBC_FLUSH_POL_BATCH &&
-	    ll_i2wbcc(dir)->wbcc_max_batch_count > 0)
-		rc = wbc_flush_children_batch(dir, childlist, lock, wbcx);
-	else
-		rc = wbc_flush_children_rqset(dir, childlist, lock, wbcx);
-
-	return rc;
 }
 
 int wbcfs_file_private_set(struct inode *inode, struct file *file)

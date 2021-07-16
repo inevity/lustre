@@ -252,6 +252,71 @@ static inline bool wbc_flush_need_exlock(struct wbc_inode *wbci,
 	return wbc_mode_lock_drop(wbci) || wbcx->for_callback;
 }
 
+/**
+ * Initialize synchronous io wait \a anchor for \a nr updates.
+ * \param anchor owned by caller, initialized here.
+ * \param nr number of updates initially pending in sync.
+ */
+void wbc_sync_io_init(struct wbc_sync_io *anchor, int nr)
+{
+	ENTRY;
+	memset(anchor, 0, sizeof(*anchor));
+	init_waitqueue_head(&anchor->wsi_waitq);
+	atomic_set(&anchor->wsi_sync_nr, nr);
+}
+
+/**
+ * Wait until all IO completes. Transfer completion routine has to call
+ * wbc_sync_io_note() for every entity.
+ */
+int wbc_sync_io_wait(struct wbc_sync_io *anchor, long timeout)
+{
+	int rc = 0;
+
+	ENTRY;
+
+	LASSERT(timeout >= 0);
+	if (timeout > 0 &&
+	    wait_event_idle_timeout(anchor->wsi_waitq,
+				    atomic_read(&anchor->wsi_sync_nr) == 0,
+				    cfs_time_seconds(timeout)) == 0) {
+		rc = -ETIMEDOUT;
+		CERROR("IO failed: %d, still wait for %d remaining entries\n",
+		       rc, atomic_read(&anchor->wsi_sync_nr));
+	}
+
+	wait_event_idle(anchor->wsi_waitq,
+			atomic_read(&anchor->wsi_sync_nr) == 0);
+	if (!rc)
+		rc = anchor->wsi_sync_rc;
+
+	/* We take the lock to ensure that cl_sync_io_note() has finished */
+	spin_lock(&anchor->wsi_waitq.lock);
+	LASSERT(atomic_read(&anchor->wsi_sync_nr) == 0);
+	spin_unlock(&anchor->wsi_waitq.lock);
+
+	RETURN(rc);
+}
+
+/**
+ * Indicate that transfer of a single update completed.
+ */
+void wbc_sync_io_note(struct wbc_sync_io *anchor, int ioret)
+{
+	ENTRY;
+	if (anchor->wsi_sync_rc == 0 && ioret < 0)
+		anchor->wsi_sync_rc = ioret;
+
+	/* Completion is used to signal the end of IO. */
+	LASSERT(atomic_read(&anchor->wsi_sync_nr) > 0);
+	if (atomic_dec_and_lock(&anchor->wsi_sync_nr,
+				&anchor->wsi_waitq.lock)) {
+		wake_up_locked(&anchor->wsi_waitq);
+		spin_unlock(&anchor->wsi_waitq.lock);
+	}
+	EXIT;
+}
+
 long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 			  struct writeback_control_ext *wbcx,
 			  unsigned int *valid)
@@ -517,12 +582,57 @@ static int wbc_flush_regular_file(struct inode *inode, struct ldlm_lock *lock,
 	RETURN(rc);
 }
 
+static int wbc_flush_dir_children(struct wbc_context *ctx,
+				  struct inode *dir,
+				  struct list_head *childlist,
+				  struct ldlm_lock *lock,
+				  struct writeback_control_ext *wbcx)
+{
+	struct wbc_dentry *wbcd, *tmp;
+	int rc = 0;
+
+	ENTRY;
+
+	rc = wbcfs_context_prepare(dir->i_sb, ctx);
+	if (rc)
+		RETURN(rc);
+
+	list_for_each_entry_safe(wbcd, tmp, childlist, wbcd_flush_item) {
+		struct ll_dentry_data *lld;
+		struct dentry *dchild;
+
+		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
+		dchild = lld->lld_dentry;
+		list_del_init(&wbcd->wbcd_flush_item);
+
+		rc = wbcfs_flush_dir_child(ctx, dir, dchild, lock, wbcx);
+		/*
+		 * Unpin the dentry.
+		 * FIXME: race between dirty inode flush and unlink/rmdir().
+		 */
+		dput(dchild);
+		if (rc)
+			RETURN(rc);
+	}
+
+	rc = wbcfs_context_commit(dir->i_sb, ctx);
+	RETURN(rc);
+}
+
+static inline bool wbc_dirty_queue_need_unplug(struct wbc_conf *conf,
+					       __u32 count)
+{
+	return conf->wbcc_max_qlen > 0 && count > conf->wbcc_max_qlen;
+}
+
 static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 			 struct writeback_control_ext *wbcx)
 {
-	struct dentry *dentry, *tmp_subdir;
+	struct dentry *dentry, *child, *tmp_subdir;
 	LIST_HEAD(dirty_children_list);
-	int rc;
+	struct wbc_context ctx;
+	__u32 count = 0;
+	int rc, rc2;
 
 	ENTRY;
 
@@ -530,54 +640,77 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 	if (rc)
 		RETURN(rc);
 
-	spin_lock(&dir->i_lock);
+	LASSERT(S_ISDIR(dir->i_mode));
+
 	/*
 	 * Usually there is only one dentry in this alias dentry list.
 	 * Even if not, It cannot have hardlinks for directories,
 	 * so only one will actually have any children entries anyway.
 	 */
-	hlist_for_each_entry(dentry, &dir->i_dentry, d_alias) {
-		struct dentry *child;
+	dentry = d_find_any_alias(dir);
+	if (!dentry)
+		RETURN(0);
 
-		spin_lock(&dentry->d_lock);
-		if (list_empty(&dentry->d_subdirs)) {
-			spin_unlock(&dentry->d_lock);
+	rc = wbcfs_context_init(dir->i_sb, &ctx, true);
+	if (rc)
+		RETURN(rc);
+
+	spin_lock(&dentry->d_lock);
+	list_for_each_entry_safe(child, tmp_subdir,
+				 &dentry->d_subdirs, d_child) {
+		struct wbc_inode *wbci;
+
+		/* Negative entry? or being unlinked? Drop it right away */
+		if (child->d_inode == NULL || d_unhashed(child))
+			continue;
+
+		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
+		if (child->d_inode == NULL || d_unhashed(child)) {
+			spin_unlock(&child->d_lock);
 			continue;
 		}
 
-		list_for_each_entry_safe(child, tmp_subdir, &dentry->d_subdirs,
-					 d_child) {
-			struct wbc_inode *wbci;
+		/*
+		 * The inode will be flushed. Pin it first to avoid be deleted.
+		 */
+		dget_dlock(child);
+		spin_unlock(&child->d_lock);
+		count++;
 
-			/* Negative entry? Drop it right away */
-			if (child->d_inode == NULL) {
-				d_lustre_invalidate(child);
-				continue;
-			}
+		wbci = ll_i2wbci(child->d_inode);
+		LASSERT(wbc_inode_has_protected(ll_i2wbci(child->d_inode)) &&
+			ll_d2d(child));
+		list_add_tail(&ll_d2wbcd(child)->wbcd_flush_item,
+			      &dirty_children_list);
 
-			wbci = ll_i2wbci(child->d_inode);
-			LASSERT(wbc_inode_has_protected(
-				ll_i2wbci(child->d_inode)) && ll_d2d(child));
-			/*
-			 * The inode will be flushed. Pin it first to avoid
-			 * be deleted? dget(child)
-			 */
-			list_add_tail(&ll_d2wbcd(child)->wbcd_flush_item,
-				      &dirty_children_list);
+		if (wbc_dirty_queue_need_unplug(ll_i2wbcc(dir), count)) {
+			spin_unlock(&dentry->d_lock);
+			rc = wbc_flush_dir_children(&ctx, dir,
+						    &dirty_children_list,
+						    lock, wbcx);
+			/* FIXME: error handling... */
+			LASSERT(list_empty(&dirty_children_list));
+			count = 0;
+			cond_resched();
+			spin_lock(&dentry->d_lock);
 		}
-		spin_unlock(&dentry->d_lock);
 	}
-	spin_unlock(&dir->i_lock);
+	spin_unlock(&dentry->d_lock);
 
-	rc = wbcfs_flush_dir_children(dir, &dirty_children_list, lock, wbcx);
+	rc = wbc_flush_dir_children(&ctx, dir, &dirty_children_list,
+				    lock, wbcx);
 	mapping_clear_unevictable(dir->i_mapping);
-	/* TODO: error handling when @dirty_children_list is not empty. */
+	/* FIXME: error handling when @dirty_children_list is not empty. */
 	LASSERT(list_empty(&dirty_children_list));
 
 	if (rc == 0 && !(wbcx->for_decomplete &&
 			 wbc_mode_lock_keep(ll_i2wbci(dir))))
 		rc = wbc_reopen_file_handler(dir, lock, wbcx);
 
+	rc2 = wbcfs_context_fini(dir->i_sb, &ctx);
+	if (rc2 && rc == 0)
+		rc = rc2;
+	dput(dentry);
 	RETURN(rc);
 }
 
@@ -1007,6 +1140,7 @@ static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 	conf->wbcc_flush_pol = WBC_FLUSH_POL_DEFAULT;
 	conf->wbcc_max_batch_count = 0;
 	conf->wbcc_max_rpcs = WBC_DEFAULT_MAX_RPCS;
+	conf->wbcc_max_qlen = WBC_DEFAULT_MAX_QLEN;
 	conf->wbcc_background_async_rpc = 0;
 	conf->wbcc_max_inodes = 0;
 	conf->wbcc_free_inodes = 0;
@@ -1044,7 +1178,8 @@ static void wbc_super_conf_default(struct wbc_conf *conf)
 	conf->wbcc_cache_mode = WBC_MODE_MEMFS;
 	conf->wbcc_flush_mode = WBC_FLUSH_DEFAULT_MODE;
 	conf->wbcc_rmpol = WBC_RMPOL_DEFAULT;
-	conf->wbcc_max_rpcs = 0;
+	conf->wbcc_max_rpcs = WBC_DEFAULT_MAX_RPCS;
+	conf->wbcc_max_qlen = WBC_DEFAULT_MAX_QLEN;
 }
 
 static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
@@ -1088,6 +1223,8 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_flush_mode = cmd->wbcc_conf.wbcc_flush_mode;
 	if (cmd->wbcc_flags & WBC_CMD_OP_MAX_RPCS)
 		conf->wbcc_max_rpcs = cmd->wbcc_conf.wbcc_max_rpcs;
+	if (cmd->wbcc_flags & WBC_CMD_OP_MAX_QLEN)
+		conf->wbcc_max_qlen = cmd->wbcc_conf.wbcc_max_qlen;
 	if (cmd->wbcc_flags & WBC_CMD_OP_RMPOL)
 		conf->wbcc_rmpol = cmd->wbcc_conf.wbcc_rmpol;
 	if (cmd->wbcc_flags & WBC_CMD_OP_READDIR_POL)
@@ -1196,6 +1333,13 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 
 		conf->wbcc_max_rpcs = num;
 		cmd->wbcc_flags |= WBC_CMD_OP_MAX_RPCS;
+	} else if (strcmp(key, "max_qlen") == 0) {
+		rc = kstrtoul(val, 10, &num);
+		if (rc)
+			return rc;
+
+		conf->wbcc_max_qlen = num;
+		cmd->wbcc_flags |= WBC_CMD_OP_MAX_QLEN;
 	} else if (strcmp(key, "rmpol") == 0) {
 		if (strcmp(val, "sync") == 0)
 			conf->wbcc_rmpol = WBC_RMPOL_SYNC;

@@ -889,7 +889,7 @@ int mdc_finish_enqueue(struct obd_export *exp,
 		       struct lookup_intent *it,
 		       struct lustre_handle *lockh, int rc)
 {
-	struct ptlrpc_request *req = pill->rc_req;
+	struct ptlrpc_request *req = NULL;
 	struct ldlm_request *lockreq;
 	struct ldlm_reply *lockrep;
 	struct ldlm_lock *lock;
@@ -900,10 +900,13 @@ int mdc_finish_enqueue(struct obd_export *exp,
 	ENTRY;
 
 	LASSERT(rc >= 0);
+
+	if (req_capsule_ptlreq(pill))
+		req = pill->rc_req;
 	/* Similarly, if we're going to replay this request, we don't want to
 	 * actually get a lock, just perform the intent.
 	 */
-	if (req->rq_transno || req->rq_replay) {
+	if (req && (req->rq_transno || req->rq_replay)) {
 		lockreq = req_capsule_client_get(pill, &RMF_DLM_REQ);
 		lockreq->lock_flags |= ldlm_flags_to_wire(LDLM_FL_INTENT_ONLY);
 	}
@@ -937,7 +940,7 @@ int mdc_finish_enqueue(struct obd_export *exp,
 	/* Technically speaking rq_transno must already be zero if
 	 * it_status is in error, so the check is a bit redundant.
 	 */
-	if ((!req->rq_transno || it->it_status < 0) && req->rq_replay)
+	if (req && (!req->rq_transno || it->it_status < 0) && req->rq_replay)
 		mdc_clear_replay_flag(req, it->it_status);
 
 	/* If we're doing an IT_OPEN which did not result in an actual
@@ -948,11 +951,11 @@ int mdc_finish_enqueue(struct obd_export *exp,
 	 * function without doing so, and try to replay a failed create.
 	 * (b=3440)
 	 */
-	if (it->it_op & IT_OPEN && req->rq_replay &&
+	if (it->it_op & IT_OPEN && req && req->rq_replay &&
 	    (!it_disposition(it, DISP_OPEN_OPEN) || it->it_status != 0))
 		mdc_clear_replay_flag(req, it->it_status);
 
-	DEBUG_REQ(D_RPCTRACE, req, "op=%x disposition=%x, status=%d",
+	DEBUG_REQ(D_RPCTRACE, pill->rc_req, "op=%x disposition=%x, status=%d",
 		  it->it_op, it->it_disposition, it->it_status);
 
 	/* We know what to expect, so we do any byte flipping required here */
@@ -1009,7 +1012,7 @@ int mdc_finish_enqueue(struct obd_export *exp,
 			 * To not save LOV EA if request is not going to replay
 			 * (for example error one).
 			 */
-			if ((it->it_op & IT_OPEN) && req->rq_replay) {
+			if ((it->it_op & IT_OPEN) && req && req->rq_replay) {
 				rc = mdc_save_lovea(req, eadata,
 						    body->mbo_eadatasize);
 				if (rc) {
@@ -1023,6 +1026,7 @@ int mdc_finish_enqueue(struct obd_export *exp,
 		/* maybe the lock was granted right away and layout
 		 * is packed into RMF_DLM_LVB of req
 		 */
+		LASSERT(req != NULL);
 		lvb_len = req_capsule_get_size(pill, &RMF_DLM_LVB, RCL_SERVER);
 		CDEBUG(D_INFO, "%s: layout return lvb %d transno %lld\n",
 		       class_exp2obd(exp)->obd_name, lvb_len, req->rq_transno);
@@ -1795,7 +1799,12 @@ int mdc_intent_lock_async(struct obd_export *exp,
 	aa->ita_exp = exp;
 	aa->ita_item = item;
 
-	ptlrpc_set_add_req(rqset, it->it_request);
-	ptlrpc_check_set(NULL, rqset);
+	if (rqset) {
+		ptlrpc_set_add_req(rqset, it->it_request);
+		ptlrpc_check_set(NULL, rqset);
+	} else {
+		ptlrpcd_add_req(it->it_request);
+	}
+
 	RETURN(0);
 }

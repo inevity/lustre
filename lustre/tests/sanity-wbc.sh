@@ -1759,24 +1759,6 @@ test_27() {
 }
 run_test 27 "Write a larger file into WBC shoud not trap into an endless loop"
 
-test_100() {
-	local dir=$DIR/$tdir
-	local file1="$dir/$tfile.1"
-	local file2="$dir/$tfile.2"
-
-	sysctl -w vm.dirty_expire_centisecs=500
-	setup_wbc "flush_mode=aging_drop"
-	mkdir $dir || error "mkdir $dir failed"
-	touch $file1 || error "touch $file1 failed"
-
-	#define OBD_FAIL_LLITE_MEMFS_LOOKUP_PAUSE	0x1418
-	$LCTL set_param fail_loc=0x80001418 fail_val=10
-	touch $file2 || error "touch $file2 failed"
-
-	$LFS wbc state $file1 $file2
-}
-run_test 100 "MemFS lookup without atomic_open()"
-
 test_28_base() {
 	local flush_mode=$1
 	local parent=$tdir
@@ -1785,7 +1767,6 @@ test_28_base() {
 
 	echo "== flush_mode=$flush_mode nr_level=$nr_level level=$level  =="
 	setup_wbc "flush_mode=$flush_mode flush_pol=batch"
-	$LCTL wbc conf $MOUNT
 
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	check_wbc_flags $DIR/$tdir "0x0000000f"
@@ -1817,6 +1798,35 @@ test_28() {
 	test_28_base "aging_keep" 128 3
 }
 run_test 28 "batch flush when root WBC EX lock is revoking"
+
+test_29() {
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile.1
+	local file2=$dir/$tfile.2
+
+	mkdir $dir || error "mkdir $dir failed"
+	echo "QQQQQ" > $file || error "echo $file failed"
+	mv $file $file2 || error "rename $file $file2 failed"
+}
+run_test 29 "Verify normal rename() work correctly"
+
+test_100() {
+	local dir=$DIR/$tdir
+	local file1="$dir/$tfile.1"
+	local file2="$dir/$tfile.2"
+
+	sysctl -w vm.dirty_expire_centisecs=500
+	setup_wbc "flush_mode=aging_drop"
+	mkdir $dir || error "mkdir $dir failed"
+	touch $file1 || error "touch $file1 failed"
+
+	#define OBD_FAIL_LLITE_MEMFS_LOOKUP_PAUSE	0x1418
+	$LCTL set_param fail_loc=0x80001418 fail_val=10
+	touch $file2 || error "touch $file2 failed"
+
+	$LFS wbc state $file1 $file2
+}
+run_test 100 "MemFS lookup without atomic_open()"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
