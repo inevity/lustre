@@ -522,7 +522,8 @@ static int mdt_intent_lock_grant(struct mdt_thread_info *info,
 		 * It still needs to return LAYOUT bits lock to the client to
 		 * protect the data content for a regular file.
 		 */
-		child_bits = MDS_INODELOCK_UPDATE;
+		child_bits = /* MDS_INODELOCK_LOOKUP |*/ MDS_INODELOCK_UPDATE |
+			     MDS_INODELOCK_PERM;
 		if (S_ISREG(ma->ma_attr.la_mode))
 			child_bits |= MDS_INODELOCK_LAYOUT;
 		mdt_lock_reg_init(lhc, LCK_EX);

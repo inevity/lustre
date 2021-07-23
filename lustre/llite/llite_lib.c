@@ -2694,10 +2694,17 @@ int ll_update_inode(struct inode *inode, struct lustre_md *md)
 		lli->lli_attr_valid = body->mbo_valid | OBD_MD_FLLAZYSIZE;
 	else
 		lli->lli_attr_valid = body->mbo_valid;
-	/* Dont update size for a WBC cached directory. */
+
+	/*
+	 * Don't update size for a WBC cached directory and regular file as
+	 * the size management is charged by the client.
+	 * i.e. for Data On PCC (DOP), the metadata object is in HSM released
+	 * state, the size returned from MDT is strict correct with 0. However,
+	 * we can not update the file size here if the data is not committed
+	 * into PCC backend yet.
+	 */
 	if (body->mbo_valid & OBD_MD_FLSIZE &&
-	    !(S_ISDIR(inode->i_mode) &&
-	      wbc_inode_has_protected(ll_i2wbci(inode)))) {
+	    !wbc_inode_has_protected(ll_i2wbci(inode))) {
 		i_size_write(inode, body->mbo_size);
 
 		CDEBUG(D_VFSTRACE, "inode="DFID", updating i_size %llu\n",

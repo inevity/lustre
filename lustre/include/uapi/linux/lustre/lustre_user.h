@@ -2812,8 +2812,28 @@ enum lu_wbc_cache_mode {
 	WBC_MODE_NONE,
 	/* Metadata and data are all in MemFS just similar to Linux/tmpfs. */
 	WBC_MODE_MEMFS,
-	/* Metadta in MemFS, data in PCC. */
-	WBC_MODE_PCC_DATA,
+	/*
+	 * Data on PCC (DOP):
+	 * Integrate Persistent Client Cache (PCC) with WBC.
+	 * Metadta in MemFS, data on PCC.
+	 * The memory size on a client is limit compared with the local
+	 * persistent storage. For a WBC subtree, its metadata can be
+	 * reasonably whole cached in MemFS. But data for regular files maybe
+	 * grows up too large to cache on client-side MemFS.
+	 * PCC can be used as the client-side persistent caching for the data
+	 * of regular files under the protection of EX WBC lock.
+	 *
+	 * The PCC copy stub can be created according to FID when create the
+	 * regular file on MemFS and then all data I/O are directed into PCC.
+	 * It can delay to instantiate the PCC copy until flush the metadata
+	 * or the regular file is growing too large. All these operations do
+	 * not require interaction with the server until flush is needed.
+	 * During flushing for a regular file, it just needs to set the file
+	 * with HSM exists, archived and released on MDT. The file data cached
+	 * on PCC can defer resync to Lustre OSTs or evict from PCC when it is
+	 * nearly full.
+	 */
+	WBC_MODE_DATA_PCC,
 	/* Both metadata and data are all in PCC. */
 	WBC_MODE_PCC_ALL,
 	/* Default WBC cache mode. */
@@ -2923,6 +2943,8 @@ static inline const char *wbc_cachemode2string(enum lu_wbc_cache_mode mode)
 		return "none";
 	case WBC_MODE_MEMFS:
 		return "memfs";
+	case WBC_MODE_DATA_PCC:
+		return "dop"; /* Data on PCC */
 	default:
 		return "fault";
 	}

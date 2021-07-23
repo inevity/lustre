@@ -10792,3 +10792,53 @@ exhaust_all_precreations() {
 	done
 	sleep_maxage
 }
+
+cleanup_pcc_mapping() {
+	local facet=${1:-$SINGLEAGT}
+
+	echo "Cleanup PCC backend on $MOUNT"
+	do_facet $facet $LCTL pcc clear $MOUNT
+}
+
+setup_pcc_mapping() {
+	local facet=${1:-$SINGLEAGT}
+	local hsm_root=${hsm_root:-$(hsm_root "$facet")}
+	local param="$2"
+
+	[ -z "$param" ] && param="projid={100}\ rwid=$HSM_ARCHIVE_NUMBER"
+	stack_trap "cleanup_pcc_mapping $facet" EXIT
+	do_facet $facet $LCTL pcc add $MOUNT $hsm_root -p "$param" ||
+		error "Setup PCC backend $hsm_root on $MOUNT failed"
+}
+
+umount_loopdev() {
+	local facet=$1
+	local mntpt=$2
+	local rc
+
+	do_facet $facet lsof $mntpt || true
+	do_facet $facet $UMOUNT $mntpt
+	rc=$?
+	return $rc
+}
+
+setup_loopdev() {
+	local facet=$1
+	local file=$2
+	local mntpt=$3
+	local size=${4:-50}
+
+	do_facet $facet mkdir -p $mntpt || error "mkdir -p $mntpt failed"
+	stack_trap "do_facet $facet rmdir $mntpt" EXIT
+	do_facet $facet dd if=/dev/zero of=$file bs=1M count=$size
+	stack_trap "do_facet $facet rm -f $file" EXIT
+	do_facet $facet mount
+	do_facet $facet $UMOUNT $mntpt
+	do_facet $facet mount
+	do_facet $facet mkfs.ext4 $file ||
+		error "mkfs.ext4 $file failed"
+	do_facet $facet file $file
+	do_facet $facet mount -t ext4 -o loop,usrquota,grpquota $file $mntpt ||
+		error "mount -o loop,usrquota,grpquota $file $mntpt failed"
+	stack_trap "umount_loopdev $facet $mntpt" EXIT
+}

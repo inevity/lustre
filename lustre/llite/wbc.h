@@ -122,6 +122,24 @@ enum wbc_flush_policy {
 	WBC_FLUSH_POL_DEFAULT	= WBC_FLUSH_POL_PTLRPCD,
 };
 
+enum wbc_dop_policy {
+	/*
+	 * Instantiate the file with HSM released state and create the
+	 * corresponding PCC copy at the time of flushing the file.
+	 */
+	WBC_DOP_AT_FLUSH	= 0,
+	/*
+	 * When the number of cache pages in MemFS for the file is increasing
+	 * exceed a certain threshold (i.e. 1GiB), instantiate the PCC copy.
+	 */
+	WBC_DOP_AT_WRITE	= 1,
+	/*
+	 * Delay to instantiate the PCC copy until commit the cache pages.
+	 */
+	WBC_DOP_AT_COMMIT	= 2,
+	WBC_DOP_DEFAULT		= WBC_DOP_AT_FLUSH,
+};
+
 #define WBC_DEFAULT_HIWM_RATIO	0	/* Disable reclaimation. */
 
 struct wbc_conf {
@@ -130,6 +148,7 @@ struct wbc_conf {
 	enum wbc_remove_policy	wbcc_rmpol;
 	enum wbc_readdir_policy	wbcc_readdir_pol;
 	enum wbc_flush_policy	wbcc_flush_pol;
+
 	__u32			wbcc_max_batch_count;
 	__u32			wbcc_max_rpcs;
 	__u32			wbcc_max_qlen;
@@ -258,6 +277,8 @@ struct writeback_control_ext {
 
 struct wbc_inode {
 	__u32			wbci_flags;
+	/* Archive ID of PCC backend to store Data on PCC (DOP) */
+	__u32			wbci_archive_id;
 	/*
 	 * Cache mode and flush mode should be a command information shared
 	 * by the whole subtree under the root WBC directory.

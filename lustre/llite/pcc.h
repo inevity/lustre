@@ -265,4 +265,7 @@ struct pcc_dataset *pcc_dataset_match_get(struct pcc_super *super,
 void pcc_dataset_put(struct pcc_dataset *dataset);
 void pcc_inode_free(struct inode *inode);
 void pcc_layout_invalidate(struct inode *inode);
+struct pcc_dataset *pcc_dataset_get(struct pcc_super *super,
+				    enum lu_pcc_type type, __u32 id);
+int pcc_wbc_commit_data(struct inode *inode, __u32 rwid);
 #endif /* LLITE_PCC_H */

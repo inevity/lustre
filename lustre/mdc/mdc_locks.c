@@ -473,8 +473,8 @@ mdc_intent_create_pack(struct obd_export *exp, struct lookup_intent *it,
 	req_capsule_set_size(&req->rq_pill, &RMF_FILE_SECCTX, RCL_CLIENT,
 			     op_data->op_file_secctx_size);
 
-	if (S_ISLNK(it->it_create_mode) && op_data->op_data &&
-	    op_data->op_data_size)
+	if ((it->it_flags & MDS_OPEN_PCC || S_ISLNK(it->it_create_mode)) &&
+	    op_data->op_data && op_data->op_data_size)
 		lmm_size = op_data->op_data_size;
 
 	req_capsule_set_size(&req->rq_pill, &RMF_EADATA, RCL_CLIENT, lmm_size);
@@ -1502,8 +1502,8 @@ int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
 
 		mode = mdc_lock_match(exp, LDLM_FL_BLOCK_GRANTED, fid,
 				      LDLM_IBITS, &policy,
-				      LCK_CR | LCK_CW | LCK_PR | LCK_PW,
-				      &lockh);
+				      LCK_CR | LCK_CW | LCK_PR |
+				      LCK_PW | LCK_EX, &lockh);
 	}
 
 	if (mode) {

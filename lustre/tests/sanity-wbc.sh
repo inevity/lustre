@@ -19,6 +19,9 @@ ENABLE_PROJECT_QUOTAS=${ENABLE_PROJECT_QUOTAS:-true}
 
 LUSTRE=${LUSTRE:-$(cd $(dirname $0)/..; echo $PWD)}
 
+ENABLE_PROJECT_QUOTAS=${ENABLE_PROJECT_QUOTAS:-true}
+HSMTOOL_ARCHIVE_FORMAT=v1
+
 . $LUSTRE/tests/test-framework.sh
 init_test_env $@
 . ${CONFIG:=$LUSTRE/tests/cfg/$NAME.sh}
@@ -281,6 +284,28 @@ get_free_inodes() {
 get_free_pages() {
 	wbc_conf_show | grep "pages_free:" | awk '{print $2}'
 }
+
+# initiate variables
+init_agt_vars
+
+# populate MDT device array
+get_mdt_devices
+
+# cleanup from previous bad setup
+kill_copytools
+
+# for recovery tests, coordinator needs to be started at mount
+# so force it
+# the lustre conf must be without hsm on (like for sanity.sh)
+echo "Set HSM on and start"
+cdt_set_mount_state enabled
+cdt_check_state enabled
+
+echo "Set sanity-hsm HSM policy"
+cdt_set_sanity_policy
+
+# finished requests are quickly removed from list
+set_hsm_param grace_delay 10
 
 test_1_base() {
 	local flush_mode=$1
@@ -1829,6 +1854,54 @@ test_29() {
 	mv $file $file2 || error "rename $file $file2 failed"
 }
 run_test 29 "Verify normal rename() work correctly"
+
+test_30() {
+	local loopfile="$TMP/$tfile"
+	local mntpt="/mnt/pcc.$tdir"
+	local hsm_root="$mntpt/$tdir"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+
+	setup_loopdev client $loopfile $mntpt 60
+	mkdir $hsm_root || error "mkdir $hsm_root failed"
+	copytool setup -m "$MOUNT" -a "$HSM_ARCHIVE_NUMBER" --facet client
+
+	setup_pcc_mapping client \
+		"projid={100}\ rwid=$HSM_ARCHIVE_NUMBER"
+	$LCTL pcc list $MOUNT
+
+	setup_wbc "cache_mode=dop flush_mode=aging_drop"
+	mkdir $dir || error "mkdir $dir failed"
+	echo "Data_on_PCC" > $file || error "write $file failed"
+	$LFS wbc state $file
+	sync
+
+	$LFS wbc state $file
+	$LFS pcc state $file
+	$LFS getstripe $file
+	$LFS hsm_state $file
+	cat $file
+	$LFS pcc detach $file
+
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	local oldmd5
+	local newmd5
+
+	mkdir $dir || error "mkdir $dir failed"
+	dd if=/dev/zero of=$file seek=1k bs=1k count=1 ||
+		error "failed to write $file"
+	oldmd5=$(md5sum $file | awk '{print $1}')
+	$LFS wbc state $file
+	sync
+	$LFS wbc state $file
+	$LFS pcc state $file
+	$LFS hsm_state $file
+	newmd5=$(md5sum $file | awk '{print $1}')
+	[ "$oldmd5" == "$newmd5" ] || error "md5sum diff: $oldmd5 != $newmd5"
+	$LFS pcc detach $file || error "failed to detach $file"
+}
+run_test 30 "Data on PCC (dop) for lock drop flush mode"
 
 test_100() {
 	local dir=$DIR/$tdir
