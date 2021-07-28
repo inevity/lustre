@@ -853,6 +853,51 @@ int wbc_make_data_commit(struct dentry *dentry)
 	RETURN(rc);
 }
 
+/*
+ * Check and eliminate the flush dependency.
+ * i.e. When flush a file, it must ensure that its parent has been flushed.
+ * This dependency happends when the parent inode is locked for writeback
+ * (Marked with I_SYNC), the kernel writeback function @writeback_sb_inodes()
+ * will skip and move it to @b_more_io so that writeback can proceed with the
+ * other inodes on @s_io.
+ * ->writeback_sb_inodes()
+ *	...
+ *	if ((inode->i_state & I_SYNC) && wbc.sync_mode != WB_SYNC_ALL) {
+ *		spin_unlock(&inode->i_lock);
+ *		reqeueu_io(inode, wb);
+ *		trace_writeback_sb_inodes_requeue(inode);
+ *		continue;
+ *	}
+ *	...
+ * However, other inodes in writeback list may have dependency on this inode
+ * which is being written back. When writeback other inodes concurrently, it
+ * will happend this dependency problem.
+ */
+static void wbc_flush_dependency_check(struct inode *inode,
+				       struct writeback_control_ext *wbcx)
+{
+	struct dentry *dentry;
+	struct dentry *parent;
+
+	ENTRY;
+
+	/* For WB_SYNC_ALL mode, it wont happen the dependency issues. */
+	if (wbcx->sync_mode == WB_SYNC_ALL)
+		RETURN_EXIT;
+
+	/* FIXME: hardlinks. */
+	dentry = d_find_any_alias(inode);
+	if (dentry == NULL)
+		RETURN_EXIT;
+
+	parent = dget_parent(dentry);
+	inode_wait_for_writeback(parent->d_inode);
+	dput(parent);
+	dput(dentry);
+
+	RETURN_EXIT;
+}
+
 static int wbc_inode_flush_lockdrop(struct inode *inode,
 				    struct writeback_control_ext *wbcx)
 {
@@ -971,10 +1016,11 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 
 	ENTRY;
 
-	/* The inode was flush to MDT due to LRU lock shrinking. */
+	/* The inode was flush to MDT due to LRU lock shrinking? */
 	if (!wbc_inode_has_protected(wbci))
 		RETURN(0);
 
+	wbc_flush_dependency_check(inode, wbcx);
 	/* TODO: Handle WB_SYNC_ALL WB_SYNC_NONE properly. */
 	switch (wbci->wbci_flush_mode) {
 	case WBC_FLUSH_AGING_DROP:

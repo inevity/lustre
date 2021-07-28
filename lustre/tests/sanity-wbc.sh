@@ -1820,13 +1820,30 @@ test_100() {
 	mkdir $dir || error "mkdir $dir failed"
 	touch $file1 || error "touch $file1 failed"
 
-	#define OBD_FAIL_LLITE_MEMFS_LOOKUP_PAUSE	0x1418
-	$LCTL set_param fail_loc=0x80001418 fail_val=10
+	#define OBD_FAIL_LLITE_MEMFS_LOOKUP_PAUSE	0x141a
+	$LCTL set_param fail_loc=0x8000141a fail_val=10
 	touch $file2 || error "touch $file2 failed"
 
 	$LFS wbc state $file1 $file2
 }
 run_test 100 "MemFS lookup without atomic_open()"
+
+test_101() {
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+
+	sysctl -w vm.dirty_expire_centisecs=500
+	sysctl -w vm.dirty_writeback_centisecs=400
+	setup_wbc "flush_mode=aging_drop"
+
+	#define OBD_FAIL_LLITE_WBC_FLUSH_PAUSE	0x141b
+	$LCTL set_param fail_loc=0x8000141b fail_val=20
+	mkdir $dir || error "mkdir $dir failed"
+	echo "SYNC_NONE" > $file || error "write $file failed"
+	$LFS wbc state $dir $file
+	$MULTIOP $file oyc
+}
+run_test 101 "Racer between two flusher thread with WB_SYNC_NONE mode"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"

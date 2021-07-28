@@ -1337,6 +1337,8 @@ int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 		item->mop_owner = ctx;
 
 	}
+
+	OBD_FAIL_TIMEOUT(OBD_FAIL_LLITE_WBC_FLUSH_PAUSE, cfs_fail_val);
 	rc = wbc_flush_dir_child(ctx, dir, wbcx, item);
 	if (rc) {
 		CERROR("failed to flush dchild(%pd:%p): opc = %X, rc = %d\n",
