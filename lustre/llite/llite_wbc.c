@@ -106,6 +106,8 @@ out_unrsv_free:
 		rc = wbc_make_subtree_deroot(file_dentry(file));
 		RETURN(rc);
 	}
+	case LL_IOC_PCC_STATE:
+		RETURN(ll_i2sbi(inode)->ll_fop->unlocked_ioctl(file, cmd, arg));
 	case LL_IOC_GET_MDTIDX:
 		RETURN(ll_dir_operations.unlocked_ioctl(file, cmd, arg));
 	case LL_IOC_LMV_GETSTRIPE:
@@ -1166,6 +1168,66 @@ out:
 	RETURN(rc);
 }
 
+int wbcfs_setattr_data_object(struct inode *inode, struct iattr *attr)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	bool cached;
+	int rc;
+
+	ENTRY;
+
+	inode_unlock(inode);
+	if (wbc_cache_mode_dop(wbci)) {
+		rc = pcc_inode_setattr(inode, attr, &cached);
+		if (cached) {
+			if (rc)
+				CERROR("%s: PCC inode "DFID" setattr failed: "
+				       "rc = %d\n", ll_i2sbi(inode)->ll_fsname,
+				       PFID(ll_inode2fid(inode)), rc);
+			GOTO(out, rc);
+		}
+	}
+
+	rc = cl_setattr_ost(ll_i2info(inode)->lli_clob, attr,
+			    OP_XVALID_OWNEROVERRIDE, 0);
+out:
+	inode_lock(inode);
+	inode_dio_wait(inode);
+	inode_has_no_xattr(inode);
+
+	RETURN(rc);
+}
+
+static int wbc_reopen_pcc_file(struct inode *inode)
+{
+	struct dentry *dentry;
+	struct ll_file_data *fd;
+	struct wbc_dentry *wbcd;
+	int rc = 0;
+
+	ENTRY;
+
+	/* FIXME: hardlink. */
+	dentry = d_find_any_alias(inode);
+	if (!dentry)
+		RETURN(0);
+
+	wbcd = ll_d2wbcd(dentry);
+	/*
+	 * It does not need to take @wbcd_open_lock as it is under the
+	 * protection of the lock @wbci_rw_sem.
+	 */
+	list_for_each_entry(fd, &wbcd->wbcd_open_files,
+			    fd_wbc_file.wbcf_open_item) {
+		rc = pcc_file_open(inode, fd->fd_file);
+		if (rc)
+			break;
+	}
+
+	dput(dentry);
+	RETURN(rc);
+}
+
 static int wbc_commit_data_pcc(struct inode *inode)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
@@ -1180,6 +1242,10 @@ static int wbc_commit_data_pcc(struct inode *inode)
 		RETURN(0);
 
 	rc = pcc_wbc_commit_data(inode, wbci->wbci_archive_id);
+	if (rc < 0)
+		RETURN(rc);
+
+	rc = wbc_reopen_pcc_file(inode);
 	/* XXX failure handling. */
 	wbc_inode_data_lru_del(inode);
 	spin_lock(&inode->i_lock);
@@ -1498,12 +1564,13 @@ int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 	RETURN(rc);
 }
 
-int wbcfs_file_private_set(struct inode *inode, struct file *file)
+int wbcfs_file_open_local(struct inode *inode, struct file *file)
 {
 	struct ll_file_data *fd;
 	struct dentry *dentry = file_dentry(file);
 	struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
 	__u64 flags = file->f_flags;
+	int rc = 0;
 
 	ENTRY;
 
@@ -1532,14 +1599,25 @@ int wbcfs_file_private_set(struct inode *inode, struct file *file)
 
 	fd->fd_wbc_file.wbcf_readdir_pol = ll_i2wbcc(inode)->wbcc_readdir_pol;
 
-	RETURN(0);
+	if (wbc_cache_mode_dop(ll_i2wbci(inode))) {
+		rc = pcc_file_open(inode, file);
+		if (rc) {
+			ll_file_data_put(fd);
+			file->private_data = NULL;
+		}
+	}
+
+	RETURN(rc);
 }
 
-void wbcfs_file_private_put(struct inode *inode, struct file *file)
+void wbcfs_file_release_local(struct inode *inode, struct file *file)
 {
 	struct ll_file_data *fd;
 	struct dentry *dentry = file_dentry(file);
 	struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
+
+	if (wbc_cache_mode_dop(ll_i2wbci(inode)))
+		pcc_file_release(inode, file);
 
 	fd = file->private_data;
 	spin_lock(&wbcd->wbcd_open_lock);

@@ -49,6 +49,8 @@ enum lu_mkdir_policy {
 
 #define WBC_DEFAULT_MAX_QLEN	8192
 
+#define WBC_DEFAULT_MAX_NRPAGES_PER_FILE	ULONG_MAX
+
 enum wbc_remove_policy {
 	WBC_RMPOL_NONE,
 	WBC_RMPOL_SYNC,
@@ -152,6 +154,11 @@ struct wbc_conf {
 	__u32			wbcc_max_batch_count;
 	__u32			wbcc_max_rpcs;
 	__u32			wbcc_max_qlen;
+	/*
+	 * Threshold to control when to commit cache pages into persistent
+	 * storage (Lustre OSTs or PCC).
+	 */
+	unsigned long		wbcc_max_nrpages_per_file;
 	__u32			wbcc_background_async_rpc:1;
 	/* Not instantiate layout during creation in batched RPCs. */
 	bool			wbcc_batch_no_layout;
@@ -329,6 +336,7 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_MAX_BATCH_COUNT	= 0x0200,
 	WBC_CMD_OP_MAX_QLEN		= 0x0400,
 	WBC_CMD_OP_BATCH_NO_LAYOUT	= 0x0800,
+	WBC_CMD_OP_MAX_NRPAGES_PER_FILE	= 0x0800,
 };
 
 struct wbc_cmd {
@@ -361,6 +369,16 @@ static inline bool md_opcode_need_exlock(enum md_item_opcode opc)
 {
 	return opc == MD_OP_CREATE_EXLOCK || opc == MD_OP_SETATTR_EXLOCK ||
 	       opc == MD_OP_EXLOCK_ONLY;
+}
+
+static inline bool wbc_cache_mode_mem(struct wbc_inode *wbci)
+{
+	return wbci->wbci_cache_mode == WBC_MODE_MEMFS;
+}
+
+static inline bool wbc_cache_mode_dop(struct wbc_inode *wbci)
+{
+	return wbci->wbci_cache_mode == WBC_MODE_DATA_PCC;
 }
 
 static inline bool wbc_mode_lock_drop(struct wbc_inode *wbci)
@@ -574,10 +592,11 @@ int wbcfs_context_commit(struct super_block *sb, struct wbc_context *ctx);
 int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 			  struct dentry *dchild, struct ldlm_lock *lock,
 			  struct writeback_control_ext *wbcx, bool no_layout);
-int wbcfs_file_private_set(struct inode *inode, struct file *file);
-void wbcfs_file_private_put(struct inode *inode, struct file *file);
+int wbcfs_file_open_local(struct inode *inode, struct file *file);
+void wbcfs_file_release_local(struct inode *inode, struct file *file);
 int wbcfs_dcache_dir_open(struct inode *inode, struct file *file);
 int wbcfs_dcache_dir_close(struct inode *inode, struct file *file);
+int wbcfs_setattr_data_object(struct inode *inode, struct iattr *attr);
 void wbc_free_inode_pages_final(struct inode *inode,
 				struct address_space *mapping);
 

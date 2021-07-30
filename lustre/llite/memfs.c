@@ -255,6 +255,10 @@ out_exit:
 bool wbc_inode_acct_page(struct inode *inode, long nr_pages)
 {
 	struct wbc_conf *conf = &ll_i2wbcs(inode)->wbcs_conf;
+	struct address_space *mapping = inode->i_mapping;
+
+	if (mapping->nrpages + nr_pages > conf->wbcc_max_nrpages_per_file)
+		return false;
 
 	if (conf->wbcc_max_pages) {
 		if (percpu_counter_compare(&conf->wbcc_used_pages,
@@ -714,7 +718,7 @@ static int memfs_file_open(struct inode *inode, struct file *file)
 
 	down_read(&wbci->wbci_rw_sem);
 	if (wbc_inode_has_protected(wbci)) {
-		rc = wbcfs_file_private_set(inode, file);
+		rc = wbcfs_file_open_local(inode, file);
 		if (rc == 0)
 			wbc_inode_data_lru_add(inode, file);
 	} else {
@@ -729,7 +733,7 @@ static inline int memfs_local_release_common(struct inode *inode,
 {
 	ENTRY;
 
-	wbcfs_file_private_put(inode, file);
+	wbcfs_file_release_local(inode, file);
 	dput(file_dentry(file)); /* Unpin from open(). */
 
 	RETURN(0);
@@ -1250,13 +1254,7 @@ static int memfs_setattr(struct dentry *dentry, struct iattr *attr)
 			loff_t oldsize = inode->i_size;
 
 			if (wbc_inode_data_committed(wbci)) {
-				inode_unlock(inode);
-				rc = cl_setattr_ost(ll_i2info(inode)->lli_clob,
-						    attr,
-						    OP_XVALID_OWNEROVERRIDE, 0);
-				inode_lock(inode);
-				inode_dio_wait(inode);
-				inode_has_no_xattr(inode);
+				rc = wbcfs_setattr_data_object(inode, attr);
 			} else {
 				truncate_setsize(inode, attr->ia_size);
 				if (attr->ia_size < oldsize)
@@ -1356,14 +1354,14 @@ static int memfs_dir_open(struct inode *inode, struct file *file)
 
 	down_read(&wbci->wbci_rw_sem);
 	if (wbc_inode_has_protected(wbci)) {
-		rc = wbcfs_file_private_set(inode, file);
+		rc = wbcfs_file_open_local(inode, file);
 		if (rc)
 			GOTO(up_rwsem, rc);
 
 		if (wbc_inode_complete(wbci)) {
 			rc = wbcfs_dcache_dir_open(inode, file);
 			if (rc)
-				wbcfs_file_private_put(inode, file);
+				wbcfs_file_release_local(inode, file);
 		}
 	} else {
 		rc = ll_dir_operations.open(inode, file);

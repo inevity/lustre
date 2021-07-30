@@ -2765,6 +2765,10 @@ int pcc_wbc_commit_data(struct inode *inode, __u32 rwid)
 
 	ENTRY;
 
+	/* Already instantiate the PCC copy? */
+	pcci = ll_i2pcci(inode);
+	if (pcci && pcc_inode_has_layout(pcci))
+		RETURN(0);
 	/*
 	 * Should this dataset be pinnned on the client to avoid it
 	 * being deleted?

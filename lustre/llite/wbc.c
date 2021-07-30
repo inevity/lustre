@@ -844,8 +844,13 @@ int wbc_make_data_commit(struct dentry *dentry)
 
 	/*
 	 * TODO: Reopen the file to support lock drop flush mode.
+	 * For Data on PCC (DOP) cache mode , it does not need to flush the
+	 * parent to MDT.
+	 * The client can create PCC copy stub locally without any interaction
+	 * with MDT. After that, I/O can also direct into the local PCC copy.
 	 */
-	if (!d_mountpoint(dentry->d_parent)) {
+	if (!d_mountpoint(dentry->d_parent) &&
+	    wbci->wbci_cache_mode == WBC_MODE_MEMFS) {
 		if (wbc_mode_lock_drop(ll_i2wbci(inode)))
 			rc = wbc_make_inode_sync(dentry->d_parent);
 		else /* lock keep flush mode */
@@ -1275,6 +1280,7 @@ static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 	conf->wbcc_max_batch_count = 0;
 	conf->wbcc_max_rpcs = WBC_DEFAULT_MAX_RPCS;
 	conf->wbcc_max_qlen = WBC_DEFAULT_MAX_QLEN;
+	conf->wbcc_max_nrpages_per_file = WBC_DEFAULT_MAX_NRPAGES_PER_FILE;
 	conf->wbcc_background_async_rpc = 0;
 	conf->wbcc_max_inodes = 0;
 	conf->wbcc_free_inodes = 0;
@@ -1314,6 +1320,7 @@ static void wbc_super_conf_default(struct wbc_conf *conf)
 	conf->wbcc_rmpol = WBC_RMPOL_DEFAULT;
 	conf->wbcc_max_rpcs = WBC_DEFAULT_MAX_RPCS;
 	conf->wbcc_max_qlen = WBC_DEFAULT_MAX_QLEN;
+	conf->wbcc_max_nrpages_per_file = WBC_DEFAULT_MAX_NRPAGES_PER_FILE;
 }
 
 static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
@@ -1359,6 +1366,9 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_max_rpcs = cmd->wbcc_conf.wbcc_max_rpcs;
 	if (cmd->wbcc_flags & WBC_CMD_OP_MAX_QLEN)
 		conf->wbcc_max_qlen = cmd->wbcc_conf.wbcc_max_qlen;
+	if (cmd->wbcc_flags & WBC_CMD_OP_MAX_NRPAGES_PER_FILE)
+		conf->wbcc_max_nrpages_per_file =
+			cmd->wbcc_conf.wbcc_max_nrpages_per_file;
 	if (cmd->wbcc_flags & WBC_CMD_OP_RMPOL)
 		conf->wbcc_rmpol = cmd->wbcc_conf.wbcc_rmpol;
 	if (cmd->wbcc_flags & WBC_CMD_OP_READDIR_POL)
@@ -1480,6 +1490,13 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 
 		conf->wbcc_max_qlen = num;
 		cmd->wbcc_flags |= WBC_CMD_OP_MAX_QLEN;
+	} else if (strcmp(key, "max_nrpages_per_file") == 0) {
+		rc = kstrtoul(val, 10, &num);
+		if (rc)
+			return rc;
+
+		conf->wbcc_max_nrpages_per_file = num;
+		cmd->wbcc_flags |= WBC_CMD_OP_MAX_NRPAGES_PER_FILE;
 	} else if (strcmp(key, "rmpol") == 0) {
 		if (strcmp(val, "sync") == 0)
 			conf->wbcc_rmpol = WBC_RMPOL_SYNC;
