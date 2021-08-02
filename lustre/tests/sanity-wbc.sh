@@ -1947,6 +1947,46 @@ test_31b() {
 }
 run_test 31b "Data on PCC with nrpages threshold limited for lazy drop mode"
 
+test_32() {
+	local loopfile="$TMP/$tfile"
+	local mntpt="/mnt/pcc.$tdir"
+	local hsm_root="$mntpt/$tdir"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+
+	setup_loopdev client $loopfile $mntpt 60
+	mkdir $hsm_root || error "mkdir $hsm_root failed"
+	copytool setup -m "$MOUNT" -a "$HSM_ARCHIVE_NUMBER" --facet client
+
+	setup_pcc_mapping client \
+		"projid={100}\ rwid=$HSM_ARCHIVE_NUMBER"
+	$LCTL pcc list $MOUNT
+
+	sysctl -w vm.dirty_expire_centisecs=500
+	sysctl -w vm.dirty_writeback_centisecs=400
+	setup_wbc "cache_mode=dop flush_mode=aging_keep"
+	mkdir $dir || error "mkdir $dir failed"
+	echo "Data_on_PCC" > $file || error "write $file failed"
+	$LFS wbc state $file
+	wait_wbc_sync_state $file
+	$LFS wbc state $file
+
+	#sleep 10
+	$LFS wbc state $file
+	$LFS pcc state $file
+	cat $file
+	$LFS pcc state $file
+	stat $DIR2/$tdir/$tfile
+	$LFS hsm_state $file
+	$LFS getstripe $file
+	$LFS pcc state $file
+	$LFS pcc detach $file
+	cat $file
+	$LFS hsm_state $file
+
+}
+run_test 32 "DOP for aging_keep flush mode"
+
 test_100() {
 	local dir=$DIR/$tdir
 	local file1="$dir/$tfile.1"

@@ -189,6 +189,44 @@ static inline void wbc_context_note(struct wbc_context *ctx, int ioret)
 		wbc_sync_io_note(&ctx->ioc_anchor, ioret);
 }
 
+static inline bool wbc_inode_should_pccrw(struct inode *inode)
+{
+	return S_ISREG(inode->i_mode) && wbc_cache_mode_dop(ll_i2wbci(inode));
+}
+
+static int wbc_pccrw_md_set(struct inode *inode, struct md_op_data *op_data,
+			    __u64 *cr_flags, struct lov_user_md **md)
+{
+	struct pcc_dataset *dataset;
+	struct lov_user_md *lum;
+	int rc = 0;
+
+	ENTRY;
+
+	/* @rwid = 0 means that select the first available PCC dataset. */
+	dataset = pcc_dataset_get(ll_i2pccs(inode), LU_PCC_READWRITE, 0);
+	if (dataset == NULL)
+		/* TODO: fallback WBC_MODE_MEMFS cache mode. */
+		RETURN(-ENOENT);
+
+	OBD_ALLOC_PTR(lum);
+	if (lum == NULL)
+		GOTO(out, rc = -ENOMEM);
+
+	lum->lmm_magic = LOV_USER_MAGIC_V1;
+	lum->lmm_pattern = LOV_PATTERN_F_RELEASED | LOV_PATTERN_RAID0;
+	op_data->op_data = lum;
+	op_data->op_data_size = sizeof(*lum);
+	op_data->op_archive_id = dataset->pccd_rwid;
+	ll_i2wbci(inode)->wbci_archive_id = dataset->pccd_rwid;
+	*cr_flags |= MDS_OPEN_PCC;
+	if (md)
+		*md = lum;
+out:
+	pcc_dataset_put(dataset);
+	RETURN(rc);
+}
+
 static void wbc_fini_op_item(struct md_op_item *item, int ioret)
 {
 	struct md_op_data *op_data = &item->mop_data;
@@ -289,7 +327,6 @@ static int wbc_fill_create_common(struct inode *dir,
 	struct md_op_data *op_data = &item->mop_data;
 	struct lookup_intent *it = &item->mop_it;
 	struct inode *inode = dchild->d_inode;
-	struct wbc_inode *wbci = ll_i2wbci(inode);
 	int opc;
 
 	ENTRY;
@@ -331,29 +368,12 @@ static int wbc_fill_create_common(struct inode *dir,
 
 		op_data->op_data = lli->lli_symlink_name;
 		op_data->op_data_size = strlen(lli->lli_symlink_name) + 1;
-	} else if (opc == LUSTRE_OPC_CREATE &&
-		   wbci->wbci_cache_mode == WBC_MODE_DATA_PCC) {
-		struct pcc_dataset *dataset;
-		struct lov_user_md *lum;
+	} else if (wbc_inode_should_pccrw(inode)) {
+		int rc;
 
-		/* Set @rwid == 0, try to get the first available dataset. */
-		dataset = pcc_dataset_get(ll_i2pccs(inode),
-					  LU_PCC_READWRITE, 0);
-		if (dataset == NULL) /* TODO: fallback WBC_MODE_MEMFS. */
-			RETURN(-ENOENT);
-
-		OBD_ALLOC_PTR(lum);
-		if (lum == NULL)
-			RETURN(-ENOMEM);
-
-		lum->lmm_magic = LOV_USER_MAGIC_V1;
-		lum->lmm_pattern = LOV_PATTERN_F_RELEASED | LOV_PATTERN_RAID0;
-		op_data->op_data = lum;
-		op_data->op_data_size = sizeof(*lum);
-		op_data->op_archive_id = dataset->pccd_rwid;
-		wbci->wbci_archive_id = dataset->pccd_rwid;
-		it->it_flags |= MDS_OPEN_PCC;
-		pcc_dataset_put(dataset);
+		rc = wbc_pccrw_md_set(inode, op_data, &it->it_flags, NULL);
+		if (rc)
+			RETURN(rc);
 	}
 
 	/* Tell lmv we got the child fid under control */
@@ -846,9 +866,10 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 	struct inode *dir = dchild->d_parent->d_inode;
 	struct ptlrpc_request *request = NULL;
 	struct ll_sb_info *sbi = ll_i2sbi(dir);
+	struct lov_user_md *lum = NULL;
 	struct md_op_data *op_data;
-	const char *tgt = NULL;
-	int tgt_len = 0;
+	const void *data = NULL;
+	size_t datalen = 0;
 	umode_t mode = 0;
 	__u64 cr_flags = 0;
 	int rdev = 0;
@@ -865,8 +886,8 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 	case S_IFLNK:
 		opc = LUSTRE_OPC_SYMLINK;
 		mode = S_IFLNK | S_IRWXUGO;
-		tgt = ll_i2info(inode)->lli_symlink_name;
-		tgt_len = strlen(tgt) + 1;
+		data = ll_i2info(inode)->lli_symlink_name;
+		datalen = strlen(ll_i2info(inode)->lli_symlink_name) + 1;
 		break;
 	case S_IFREG:
 		mode = (inode->i_mode & S_IALLUGO) | S_IFREG;
@@ -884,9 +905,18 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 	if (IS_ERR(op_data))
 		RETURN(PTR_ERR(op_data));
 
+	if (wbc_inode_should_pccrw(inode)) {
+		rc = wbc_pccrw_md_set(inode, op_data, &cr_flags, &lum);
+		if (rc)
+			GOTO(out, rc);
+
+		data = op_data->op_data;
+		datalen = op_data->op_data_size;
+	}
+
 	/* TODO: Set the timstamps for the inode correctly. */
 	op_data->op_bias |= MDS_WBC_LOCKLESS;
-	rc = md_create(sbi->ll_md_exp, op_data, tgt, tgt_len, mode,
+	rc = md_create(sbi->ll_md_exp, op_data, data, datalen, mode,
 			from_kuid(&init_user_ns, inode->i_uid),
 			from_kgid(&init_user_ns, inode->i_gid),
 			current_cap(), rdev, cr_flags, &request);
@@ -898,6 +928,8 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 	rc = ll_prep_inode(&inode, &request->rq_pill, dchild->d_sb, NULL);
 	ptlrpc_req_finished(request);
 out:
+	if (lum != NULL)
+		OBD_FREE_PTR(lum);
 	ll_finish_md_op_data(op_data);
 	RETURN(rc);
 }
@@ -915,6 +947,13 @@ static int wbc_do_create(struct inode *inode)
 		RETURN(0);
 
 	rc = wbc_sync_create(inode, dentry);
+	/*
+	 * TODO: for WB_SYNC_NONE mode, do async create and data flush on
+	 * background.
+	 */
+	if (rc == 0 && S_ISREG(inode->i_mode))
+		wbcfs_commit_cache_pages(inode);
+
 	dput(dentry);
 	RETURN(rc);
 }
