@@ -382,8 +382,8 @@ int osc_io_commit_async(const struct lu_env *env,
 	/* XXX CIT_MISC here means we are asimilating WBC pages in, since
 	 * we currently do it in one go, we know no more pages are coming
 	 */
-	if ((cl_io_is_sync_write(io) && oio->oi_active != NULL) ||
-	    io->ci_type == CIT_MISC) {
+	if ((cl_io_is_sync_write(io) || io->ci_type == CIT_MISC) &&
+	    oio->oi_active != NULL) {
 		osc_extent_release(env, oio->oi_active);
 		oio->oi_active = NULL;
 	}

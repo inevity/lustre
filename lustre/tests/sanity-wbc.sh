@@ -1736,6 +1736,29 @@ test_26() {
 }
 run_test 26 "WBC pages reclaim mechanism with 1 level direcotry"
 
+test_27() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+
+	setup_wbc "flush_mode=$flush_mode"
+	mkdir $dir || error "mkdir $dir failed"
+
+	local min_size_ost=$(($($LFS df | awk "/$FSNAME-OST/ { print \$4 }" |
+		sort -un | head -1) / 1024))
+	local size=$(($(awk '/MemFree:/ { print $2 }' /proc/meminfo) / 1024))
+
+	[[ $size -gt $min_size_ost ]] && size=$min_size_ost
+	size=$(((size * 80) / 100))
+	echo "I/O size to use for I/O: $size"
+	stack_trap "rm -f $file; wait_delete_completed"
+	dd if=/dev/zero of=$file bs=1M count=$size ||
+		error "write $file with $size MiB failed"
+	$LFS wbc state $dir
+	$LFS wbc state $file
+}
+run_test 27 "Write a larger file into WBC shoud not trap into an endless loop"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

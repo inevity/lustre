@@ -753,13 +753,7 @@ int wbc_do_setattr(struct inode *inode, unsigned int valid)
 		       (s64)attr->ia_mtime.tv_sec, (s64)attr->ia_ctime.tv_sec,
 		       ktime_get_real_seconds());
 
-	if (attr->ia_valid & ATTR_FILE) {
-		struct ll_file_data *fd = attr->ia_file->private_data;
-
-		if (fd->fd_lease_och)
-			op_data->op_bias |= MDS_TRUNC_KEEP_LEASE;
-	}
-
+	attr->ia_valid &= ~ATTR_FILE;
 	ll_prep_md_op_data(op_data, inode, NULL, NULL, 0, 0,
 			   LUSTRE_OPC_ANY, NULL);
 	op_data->op_bias |= MDS_WBC_LOCKLESS;
@@ -1058,6 +1052,24 @@ out:
 	RETURN(rc);
 }
 
+static int wbc_make_inode_assimilated(struct inode *inode)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
+
+	if (!S_ISREG(inode->i_mode))
+		return 0;
+
+	if (wbc_inode_assimilated(wbci) || wbc_inode_none(wbci))
+		return 0;
+
+	down_write(&wbci->wbci_rw_sem);
+	rc = wbcfs_commit_cache_pages(inode);
+	up_write(&wbci->wbci_rw_sem);
+
+	return rc > 0 ? 0 : rc;
+}
+
 void wbc_free_inode_pages_final(struct inode *inode,
 				struct address_space *mapping)
 {
@@ -1100,6 +1112,14 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 			wbci->wbci_flags |= WBC_STATE_FL_SYNC;
 		spin_unlock(&inode->i_lock);
 		wbc_inode_writeback_complete(inode);
+
+		/*
+		 * For background writeout, assimilate the cache page to free
+		 * up pinnned memory in MemFS and make them reclaimable
+		 * immediately.
+		 */
+		if (wbcx->for_background)
+			rc =  wbc_make_inode_assimilated(inode);
 		break;
 	case MD_OP_SETATTR_LOCKLESS: {
 		rc = wbc_do_setattr(inode, valid);

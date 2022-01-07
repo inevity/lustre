@@ -333,6 +333,11 @@ static inline bool wbc_inode_data_committed(struct wbc_inode *wbci)
 	return wbci->wbci_flags & WBC_STATE_FL_DATA_COMMITTED;
 }
 
+static inline bool wbc_inode_assimilated(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags & WBC_STATE_FL_DATA_COMMITTED;
+}
+
 static inline bool wbc_inode_data_caching(struct wbc_inode *wbci)
 {
 	return wbc_inode_has_protected(wbci) && !wbc_inode_data_committed(wbci);
