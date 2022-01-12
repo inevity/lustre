@@ -447,6 +447,7 @@ int wbc_make_inode_decomplete(struct inode *inode, unsigned int unrsv_children);
 int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent,
 			    unsigned int unrsv_children);
 int wbc_make_data_commit(struct dentry *dentry);
+int wbc_make_inode_assimilated(struct inode *inode);
 int wbc_super_init(struct wbc_super *super);
 void wbc_super_fini(struct wbc_super *super);
 void wbc_inode_init(struct wbc_inode *wbci);

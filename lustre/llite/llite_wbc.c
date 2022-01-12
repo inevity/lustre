@@ -1052,7 +1052,7 @@ out:
 	RETURN(rc);
 }
 
-static int wbc_make_inode_assimilated(struct inode *inode)
+int wbc_make_inode_assimilated(struct inode *inode)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 	int rc;

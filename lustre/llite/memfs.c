@@ -614,11 +614,8 @@ static int memfs_fsync(struct file *file, loff_t start,
 	if (!(wbc_inode_was_flushed(wbci)))
 		rc = wbc_make_inode_sync(dentry);
 
-	if (S_ISREG(inode->i_mode)) {
-		down_write(&wbci->wbci_rw_sem);
-		rc = wbcfs_commit_cache_pages(inode);
-		up_write(&wbci->wbci_rw_sem);
-	}
+	if (S_ISREG(inode->i_mode))
+		rc = wbc_make_inode_assimilated(inode);
 
 	if (rc < 0)
 		RETURN(rc);
@@ -880,16 +877,25 @@ static ssize_t memfs_file_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct wbc_inode *wbci = ll_i2wbci(inode);
-	int rc;
+	ssize_t rc;
 
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
 repeat:
 	if (wbc_inode_data_caching(wbci)) {
-		rc = generic_file_write_iter(iocb, iter);
+		inode_lock(inode);
+		rc = generic_write_checks(iocb, iter);
+		if (rc > 0)
+			rc = __generic_file_write_iter(iocb, iter);
+		inode_unlock(inode);
 		if (rc == -ENOSPC)
 			GOTO(repeat, rc);
+		if (rc > 0) {
+			up_read(&wbci->wbci_rw_sem);
+			rc = generic_write_sync(iocb, rc);
+			RETURN(rc);
+		}
 	} else {
 		rc = ll_i2sbi(inode)->ll_fop->write_iter(iocb, iter);
 	}
