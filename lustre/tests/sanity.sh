@@ -13011,9 +13011,13 @@ test_123d() {
 	createmany -d $DIR/$tdir/$tfile $num || error "createmany $num failed"
 	remount_client $MOUNT
 	$LCTL get_param llite.*.statahead_max
+	$LCTL set_param llite.*.statahead_stats=0 ||
+		error "clear statahead_stats failed"
 	swrong=$(lctl get_param -n llite.*.statahead_stats |
 		grep "statahead wrong:" | awk '{print $3}')
 	ls -l $DIR/$tdir || error "ls -l $DIR/$tdir failed"
+	# wait for statahead thread finished to update hit/miss stats.
+	sleep 1
 	$LCTL get_param -n llite.*.statahead_stats
 	ewrong=$(lctl get_param -n llite.*.statahead_stats |
 		grep "statahead wrong:" | awk '{print $3}')
