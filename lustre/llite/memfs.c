@@ -61,11 +61,12 @@ static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
 		RETURN(rc);
 
 	up_read(&wbci->wbci_rw_sem);
-	rc = wbc_make_dir_decomplete(dir, parent, 0);
+	rc = wbc_make_dir_decomplete(dir, parent, 1);
 	down_read(&wbci->wbci_rw_sem);
 	RETURN(rc);
 }
 
+/* TODO: unreserve the inode upon the failure. */
 static void wbc_cache_leave(struct inode *dir, enum md_op_code opc)
 {
 	up_read(&ll_i2wbci(dir)->wbci_rw_sem);
@@ -429,7 +430,6 @@ static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 
 		/* copy from simple_unlink() */
 		memfs_remove_from_dcache(dir, dchild);
-		wbc_inode_data_lru_del(dchild->d_inode);
 	} else {
 		rc = ll_dir_inode_operations.unlink(dir, dchild);
 		if (rc)
@@ -438,6 +438,7 @@ static int memfs_unlink(struct inode *dir, struct dentry *dchild)
 		if (wbc_inode_reserved(ll_i2wbci(dchild->d_inode)))
 			rc = simple_unlink(dir, dchild);
 	}
+	wbc_inode_data_lru_del(dchild->d_inode);
 up_rwsem:
 	up_read(&wbci->wbci_rw_sem);
 	RETURN(rc);

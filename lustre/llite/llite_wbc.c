@@ -380,7 +380,7 @@ static int wbc_setattr_exlock_cb(struct req_capsule *pill,
 	ENTRY;
 
 	if (rc) {
-		CERROR("Failed to do WBC setattr: rc = %d!\n", rc);
+		CERROR("Failed to setattr (%pd) async: rc = %d!\n", dentry, rc);
 		GOTO(out_dput, rc);
 	}
 
@@ -623,7 +623,7 @@ static int wbc_setattr_lockless_cb(struct req_capsule *pill,
 	ENTRY;
 
 	if (rc) {
-		CERROR("Failed to async setattr: rc = %d!\n", rc);
+		CERROR("Failed to async setattr (%pd): rc = %d!\n", dentry, rc);
 		GOTO(out_dput, rc);
 	}
 
@@ -730,9 +730,7 @@ int wbc_do_setattr(struct inode *inode, unsigned int valid)
 		RETURN(-ENOMEM);
 
 	attr = &op_data->op_attr;
-	attr->ia_valid = valid;
-	wbc_generic_fillattr(inode, attr);
-
+	wbc_iattr_from_inode(inode, valid, attr, &op_data->op_xvalid);
 	if ((valid & (ATTR_CTIME | ATTR_SIZE | ATTR_MODE)) ==
 	    (ATTR_CTIME | ATTR_SIZE | ATTR_MODE))
 		op_data->op_xvalid |= OP_XVALID_OWNEROVERRIDE;

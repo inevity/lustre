@@ -292,6 +292,13 @@ rebuild:
 						&cancels, LCK_EX,
 						MDS_INODELOCK_UPDATE);
 
+	/*
+	 * Return layout EA of a regular file for the REINT creation
+	 * under WBC.
+	 */
+	if (op_data->op_bias & MDS_WBC_LOCKLESS && S_ISREG(mode))
+		cr_flags |= MDS_FMODE_WRITE;
+
 	if (cr_flags & MDS_FMODE_WRITE) {
 		if (!S_ISREG(mode)) {
 			ldlm_lock_list_put(&cancels, l_bl_ast, count);

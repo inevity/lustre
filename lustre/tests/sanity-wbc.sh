@@ -1845,6 +1845,33 @@ test_101() {
 }
 run_test 101 "Racer between two flusher thread with WB_SYNC_NONE mode"
 
+test_102() {
+	local flush_mode="aging_keep"
+	local dir="$DIR/$tdir"
+	local dir_l1="$dir/${tdir}_l1"
+	local max_inodes=5
+	local fileset=""
+
+	setup_wbc "flush_mode=aging_keep max_inodes=$max_inodes"
+
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir_l1 || error "mkdir $dir_l1 failed"
+	for i in $(seq 1 $max_inodes); do
+		fileset+="$dir_l1/${tdir}_l2.i$i "
+	done
+
+	mkdir $fileset || error "mkdir $fileset failed"
+	$LFS wbc state $dir $dir_l1 $fileset
+	echo "QQQQQQ" > $dir_l1/${tfile}_l2.i1
+	touch $dir_l1/${tdir}_l2.i1/file1
+	echo "QQQQQ" > $dir_l1/${tdir}_l2.i1/file2
+
+	echo -e "\nFinish =============== "
+	$LFS wbc state $dir_l1/${tfile}_l2.i1 $dir_l1/${tdir}_l2.i1/file1 \
+		$dir_l1/${tdir}_l2.i1/file2
+}
+run_test 102 "create files under a decompleted directory"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

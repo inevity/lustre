@@ -196,7 +196,6 @@ void wbc_inode_unreserve_dput(struct inode *inode,
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 
 	if (wbc_inode_reserved(wbci)) {
-		wbci->wbci_flags &= ~WBC_STATE_FL_INODE_RESERVED;
 		wbc_unreserve_inode(inode);
 		/* Unpin the dentry now as it is stable. */
 		dput(dentry);
@@ -216,6 +215,9 @@ void wbc_inode_data_lru_add(struct inode *inode, struct file *file)
 	if (super->wbcs_conf.wbcc_max_pages && fd->fd_omode & FMODE_WRITE) {
 		struct wbc_inode *wbci = ll_i2wbci(inode);
 
+		if (wbc_inode_assimilated(wbci))
+			return;
+
 		spin_lock(&super->wbcs_data_lru_lock);
 		if (list_empty(&wbci->wbci_data_lru))
 			list_add_tail(&wbci->wbci_data_lru,
@@ -227,10 +229,10 @@ void wbc_inode_data_lru_add(struct inode *inode, struct file *file)
 void wbc_inode_data_lru_del(struct inode *inode)
 {
 	struct wbc_super *super = ll_i2wbcs(inode);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
 
-	if (super->wbcs_conf.wbcc_max_pages) {
-		struct wbc_inode *wbci = ll_i2wbci(inode);
-
+	if (super->wbcs_conf.wbcc_max_pages ||
+	    !list_empty(&wbci->wbci_data_lru)) {
 		spin_lock(&super->wbcs_data_lru_lock);
 		if (!list_empty(&wbci->wbci_data_lru))
 			list_del_init(&wbci->wbci_data_lru);
@@ -721,7 +723,8 @@ static int wbc_inode_flush(struct inode *inode, struct ldlm_lock *lock,
 		return wbc_flush_dir(inode, lock, wbcx);
 	if (S_ISREG(inode->i_mode))
 		return wbc_flush_regular_file(inode, lock, wbcx);
-
+	if (S_ISLNK(inode->i_mode))
+		return 0;
 	return -ENOTSUPP;
 }
 
@@ -845,6 +848,9 @@ int wbc_make_data_commit(struct dentry *dentry)
 		if (rc)
 			RETURN(rc);
 	}
+
+	if (wbc_inode_assimilated(wbci) || wbc_inode_none(wbci))
+		RETURN(0);
 
 	down_write(&wbci->wbci_rw_sem);
 	rc = wbcfs_commit_cache_pages(inode);
@@ -974,8 +980,9 @@ static int __wbc_super_shrink_roots(struct wbc_super *super,
 		spin_unlock(&super->wbcs_lock);
 		rc = wbc_inode_flush_lockdrop(inode, &wbcx);
 		if (rc) {
-			CERROR("Failed to flush file: "DFID"\n",
-			       PFID(&ll_i2info(inode)->lli_fid));
+			CERROR("Failed to flush file: "DFID":%p:%X rc = %d\n",
+			       PFID(&ll_i2info(inode)->lli_fid), inode,
+			       wbci->wbci_flags, rc);
 			return rc;
 		}
 		spin_lock(&super->wbcs_lock);
