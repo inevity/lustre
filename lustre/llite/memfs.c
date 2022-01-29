@@ -536,9 +536,11 @@ static int memfs_write_begin(struct file *file, struct address_space *mapping,
 	if (rc == -ENOSPC) {
 		int rc2;
 
+		inode_unlock(inode);
 		up_read(&wbci->wbci_rw_sem);
 		rc2 = wbc_make_data_commit(file->f_path.dentry);
 		down_read(&wbci->wbci_rw_sem);
+		inode_lock(inode);
 		if (rc2 < 0)
 			rc = rc2;
 	}
