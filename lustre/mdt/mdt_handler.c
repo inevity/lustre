@@ -2308,6 +2308,22 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 				try_bits |= MDS_INODELOCK_DOM;
 		}
 
+		/*
+		 * To avoid possible deadlock between batched statahead RPC
+		 * and rename()/migrate() operation, it should use trylock to
+		 * obtain the DLM PR ibits lock for file attributes in a
+		 * batched statahead RPC. A failed trylock means that other
+		 * users maybe modify the directory simultaneously as in current
+		 * Lustre design the server only grants read lock to a client.
+		 *
+		 * When a trylock failed, the MDT reports the conflict with
+		 * error code -EBUSY, and stops statahead immediately.
+		 */
+		if (info->mti_batch_env) {
+			try_bits |= child_bits;
+			child_bits = 0;
+		}
+
 		if (try_bits != 0) {
 			/* try layout lock, it may fail to be granted due to
 			 * contention at LOOKUP or UPDATE */
@@ -2324,6 +2340,8 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 		}
 		if (unlikely(rc != 0))
 			GOTO(out_child, rc);
+		if (info->mti_batch_env && child_bits == 0)
+			GOTO(out_child, rc = -EBUSY);
 	}
 
 	/* finally, we can get attr for child. */
