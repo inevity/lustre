@@ -6099,6 +6099,17 @@ drop_reint_reply() {
 	return $RC
 }
 
+drop_batch_reply() {
+# OBD_FAIL_BUT_UPDATE_NET_REP
+	local index=$1
+	shift 1
+	RC=0
+	do_facet mds${index} lctl set_param fail_loc=0x1709
+	do_facet client "$@" || RC=$?
+	do_facet mds${index} lctl set_param fail_loc=0
+	return $RC
+}
+
 drop_update_reply() {
 # OBD_FAIL_OUT_UPDATE_NET_REP
 	local index=$1

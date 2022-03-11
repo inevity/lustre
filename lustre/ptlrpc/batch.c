@@ -404,6 +404,7 @@ static int batch_update_interpret(const struct lu_env *env,
 	if (aa->ba_head == NULL)
 		RETURN(0);
 
+	ptlrpc_put_mod_rpc_slot(req);
 	/* Unpack the results from the reply message. */
 	if (req->rq_repmsg != NULL && req->rq_replied) {
 		reply = req_capsule_server_sized_get(&req->rq_pill,
@@ -447,6 +448,11 @@ static int batch_send_update_req(const struct lu_env *env,
 	aa = ptlrpc_req_async_args(aa, req);
 	aa->ba_head = head;
 	req->rq_interpret_reply = batch_update_interpret;
+
+	/* TODO: only acquire modification RPC slot for the batched RPC
+	 * which contains metadata updates.
+	 */
+	ptlrpc_get_mod_rpc_slot(req);
 
 	if (flags & BATCH_FL_SYNC) {
 		rc = ptlrpc_queue_wait(req);

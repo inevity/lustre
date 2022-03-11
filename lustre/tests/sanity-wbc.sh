@@ -1942,6 +1942,28 @@ test_103() {
 }
 run_test 103 "DNE: Fids allocated on the target same with root WBC directory"
 
+test_104() {
+	local flush_mode="aging_keep"
+	local max=32
+	local nr=64
+
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch max_batch_count=$max"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+
+	local fileset
+	local mds_index
+
+	mds_index=$(($($LFS getstripe -m $DIR/$tdir) + 1))
+	for i in $(seq 1 $nr); do
+		fileset+="$DIR/$tdir/$tfile.$i "
+	done
+
+	touch $fileset || error "touch $fileset failed"
+	ls $DIR/$tdir
+	drop_batch_reply $mds_index "stat $DIR2/$tdir" || error "stat failed"
+}
+run_test 104 "drop batch reply during flush caused by the lock revocation"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

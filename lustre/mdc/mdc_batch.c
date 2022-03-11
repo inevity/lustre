@@ -277,9 +277,15 @@ static int mdc_create_exlock_interpret(struct ptlrpc_request *req,
 
 	rc = ldlm_cli_enqueue_fini(exp, &pill, einfo, 1, &item->mop_lock_flags,
 				   NULL, 0, &item->mop_lockh, rc, false);
+	if (rc < 0) {
+		CERROR("%s: ldlm_cli_enqueue_fini() failed: rc = %d\n",
+		       exp->exp_obd->obd_name, rc);
+		GOTO(out, rc);
+	}
+
 	rc = mdc_finish_enqueue(exp, &pill, einfo, &item->mop_it,
 				&item->mop_lockh, rc);
-
+out:
 	return item->mop_cb(&pill, item, rc);
 }
 

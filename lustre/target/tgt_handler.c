@@ -520,6 +520,7 @@ static int tgt_filter_recovery_request(struct ptlrpc_request *req,
 	case MDS_SYNC: /* used in unmounting */
 	case OBD_PING:
 	case MDS_REINT:
+	case MDS_BATCH:
 	case OUT_UPDATE:
 	case SEQ_QUERY:
 	case FLD_QUERY:

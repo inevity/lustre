@@ -70,6 +70,39 @@ static int mdt_batch_pack_repmsg(struct mdt_thread_info *info, __u32 opc)
 	return rc;
 }
 
+static inline int mdt_batch_check_resent(struct ptlrpc_request *req,
+					 struct tg_reply_data *trd)
+{
+	struct lsd_reply_data *lrd;
+	bool need_reconstruct = false;
+
+	ENTRY;
+
+	if (likely(!(lustre_msg_get_flags(req->rq_reqmsg) & MSG_RESENT)))
+		return false;
+
+	if (req_can_reconstruct(req, trd)) {
+		/* FIXME: when partial metadata update sub reuqeusts had
+		 * executed and committed after the server reboot, it still
+		 * needs to update @transno for uncommitted sub requests.
+		 */
+		lrd = &trd->trd_reply;
+		req->rq_transno = lrd->lrd_transno;
+		req->rq_status = lrd->lrd_result;
+		if (req->rq_status != 0)
+			req->rq_transno = 0;
+		lustre_msg_set_transno(req->rq_repmsg, req->rq_transno);
+		lustre_msg_set_status(req->rq_repmsg, req->rq_status);
+
+		DEBUG_REQ(D_HA, req, "reconstruct resent RPC");
+		need_reconstruct = true;
+	} else {
+		DEBUG_REQ(D_HA, req, "no reply for RESENT req");
+	}
+
+	return need_reconstruct;
+}
+
 static int mdt_batch_getattr(struct tgt_session_info *tsi)
 {
 	struct mdt_thread_info *info = mdt_th_info(tsi->tsi_env);
@@ -149,7 +182,7 @@ static int mdt_create_lockless(struct tgt_session_info *tsi)
 		GOTO(put_child, rc);
 
 	if (ma->ma_valid & MA_LOV) {
-		LASSERT(info->mti_intent_lock && ma->ma_lmm_size != 0);
+		LASSERT(ma->ma_lmm_size != 0);
 		repbody->mbo_eadatasize = ma->ma_lmm_size;
 		if (S_ISREG(ma->ma_attr.la_mode))
 			repbody->mbo_valid |= OBD_MD_FLEASIZE;
@@ -329,6 +362,143 @@ static int mdt_exlock_only(struct tgt_session_info *tsi)
 	RETURN(rc);
 }
 
+static int mdt_reconstruct_create_lockless(struct tgt_session_info *tsi)
+{
+	struct mdt_thread_info *info = mdt_th_info(tsi->tsi_env);
+	struct obd_export *exp = info->mti_exp;
+	struct mdt_device *mdt = info->mti_mdt;
+	struct md_attr *ma = &info->mti_attr;
+	struct mdt_reint_record *rr = &info->mti_rr;
+	struct mdt_object *child;
+	struct mdt_body *repbody;
+	int rc, rc2;
+
+	ENTRY;
+
+	/* if no error, so child was created with requested fid */
+	child = mdt_object_find(info->mti_env, mdt, rr->rr_fid2);
+	if (IS_ERR(child)) {
+		rc = PTR_ERR(child);
+		LCONSOLE_WARN("cannot lookup child "DFID": rc = %d; "
+			      "evicting client %s with export %s\n",
+			      PFID(rr->rr_fid2), rc,
+			      obd_uuid2str(&exp->exp_client_uuid),
+			      obd_export_nid2str(exp));
+		mdt_export_evict(exp);
+		RETURN(rc);
+	}
+
+	repbody = req_capsule_server_get(info->mti_pill, &RMF_MDT_BODY);
+	LASSERT(repbody != NULL);
+
+	ma->ma_need = MA_INODE;
+	ma->ma_valid = 0;
+
+	if (md_should_create(info->mti_spec.sp_cr_flags))
+		mdt_prep_ma_buf_from_rep(info, child, ma);
+	rc = mdt_attr_get_complex(info, child, ma);
+	if (rc)
+		GOTO(put_child, rc);
+
+	if (ma->ma_valid & MA_LOV) {
+		LASSERT(ma->ma_lmm_size != 0);
+		repbody->mbo_eadatasize = ma->ma_lmm_size;
+		if (S_ISREG(ma->ma_attr.la_mode))
+			repbody->mbo_valid |= OBD_MD_FLEASIZE;
+		else if (S_ISDIR(ma->ma_attr.la_mode))
+			repbody->mbo_valid |= OBD_MD_FLDIREA;
+	}
+
+	if (ma->ma_valid & MA_LMV) {
+		LASSERT(ma->ma_lmv_size != 0);
+		repbody->mbo_eadatasize = ma->ma_lmv_size;
+		LASSERT(S_ISDIR(ma->ma_attr.la_mode));
+		repbody->mbo_valid |= OBD_MD_FLDIREA | OBD_MD_MEA;
+	}
+
+	if (ma->ma_valid & MA_LMV_DEF) {
+		LASSERT(S_ISDIR(ma->ma_attr.la_mode));
+		repbody->mbo_valid |= OBD_MD_FLDIREA | OBD_MD_DEFAULT_MEA;
+	}
+
+	/* Return fid & attr to client. */
+	if (ma->ma_valid & MA_INODE)
+		mdt_pack_attr2body(info, repbody, &ma->ma_attr,
+				   mdt_object_fid(child));
+
+put_child:
+	mdt_object_put(info->mti_env, child);
+	mdt_client_compatibility(info);
+
+	rc2 = mdt_fix_reply(info);
+	if (rc == 0)
+		rc = rc2;
+	RETURN(rc);
+}
+
+static int mdt_reconstruct_create_exlock(struct tgt_session_info *tsi)
+{
+	struct mdt_thread_info *info = mdt_th_info(tsi->tsi_env);
+	struct req_capsule *pill = &info->mti_sub_pill;
+	int rc;
+
+	ENTRY;
+
+	rc = ldlm_handle_enqueue(info->mti_exp->exp_obd->obd_namespace,
+				 pill, info->mti_dlm_req, &mdt_dlm_cbs);
+	if (rc)
+		RETURN(rc);
+
+	rc = mdt_reconstruct_create_lockless(tsi);
+	if (rc)
+		mdt_ldlm_lock_cancel(info);
+
+	RETURN(rc);
+}
+
+static int mdt_reconstruct_setattr_lockless(struct tgt_session_info *tsi)
+{
+	return 0;
+}
+
+static int mdt_reconstruct_exlock(struct tgt_session_info *tsi)
+{
+	struct mdt_thread_info *info = mdt_th_info(tsi->tsi_env);
+	struct req_capsule *pill = &info->mti_sub_pill;
+	int rc;
+
+	ENTRY;
+
+	rc = ldlm_handle_enqueue(info->mti_exp->exp_obd->obd_namespace,
+				 pill, info->mti_dlm_req, &mdt_dlm_cbs);
+
+	RETURN(rc);
+}
+
+typedef int (*mdt_batch_reconstructor)(struct tgt_session_info *tsi);
+
+static mdt_batch_reconstructor reconstructors[BUT_LAST_OPC] = {
+	[BUT_GETATTR]		= mdt_batch_getattr,
+	[BUT_CREATE_EXLOCK]	= mdt_reconstruct_create_exlock,
+	[BUT_CREATE_LOCKLESS]	= mdt_reconstruct_create_lockless,
+	[BUT_SETATTR_EXLOCK]	= mdt_reconstruct_exlock,
+	[BUT_SETATTR_LOCKLESS]	= mdt_reconstruct_setattr_lockless,
+	[BUT_EXLOCK_ONLY]	= mdt_reconstruct_exlock,
+};
+
+static int mdt_batch_reconstruct(struct tgt_session_info *tsi, long opc)
+{
+	mdt_batch_reconstructor reconst;
+	int rc;
+
+	ENTRY;
+
+	LASSERT(opc < BUT_LAST_OPC &&
+		(reconst = reconstructors[opc]) != NULL);
+	rc = reconst(tsi);
+	RETURN(rc);
+}
+
 /* Batch UpdaTe Request with a format known in advance */
 #define TGT_BUT_HDL(flags, opc, fn)			\
 [opc - BUT_FIRST_OPC] = {				\
@@ -380,7 +550,9 @@ int mdt_batch(struct tgt_session_info *tsi)
 	struct but_update_buffer *bub = NULL;
 	struct batch_update_reply *reply = NULL;
 	struct ptlrpc_bulk_desc *desc = NULL;
+	struct tg_reply_data *trd = NULL;
 	struct lustre_msg *repmsg = NULL;
+	bool need_reconstruct;
 	__u32 handled_update_count = 0;
 	__u32 update_buf_count;
 	__u32 packed_replen;
@@ -480,7 +652,13 @@ int mdt_batch(struct tgt_session_info *tsi)
 	packed_replen = sizeof(*reply);
 	info->mti_batch_env = 1;
 	info->mti_pill = pill;
+	tsi->tsi_batch_env = 1;
 
+	OBD_ALLOC_PTR(trd);
+	if (trd == NULL)
+		GOTO(out, rc = -ENOMEM);
+
+	need_reconstruct = mdt_batch_check_resent(req, trd);
 	/* Walk through sub requests in the batch request to execute them. */
 	for (i = 0; i < update_buf_count; i++) {
 		struct batch_update_request *bur;
@@ -528,10 +706,24 @@ int mdt_batch(struct tgt_session_info *tsi)
 			if (rc)
 				GOTO(out, rc);
 
+			/* Need to reconstruct the reply for committed sub
+			 * requests in a batched RPC.
+			 * For uncommitted sub request, the server should
+			 * re-execute it.
+			 */
+			if (need_reconstruct && handled_update_count <=
+						trd->trd_reply.lrd_batchid) {
+				rc = mdt_batch_reconstruct(tsi, reqmsg->lm_opc);
+				if (rc)
+					GOTO(out, rc);
+				GOTO(next, rc);
+			}
+
+			tsi->tsi_batchid = handled_update_count;
 			rc = h->th_act(tsi);
 			if (rc)
 				GOTO(out, rc);
-
+next:
 			/*
 			 * As @repmsg may be changed if the reply buffer is
 			 * too small to grew, thus it needs to reload it here.
@@ -579,10 +771,14 @@ out_free:
 		OBD_FREE_PTR_ARRAY(update_bufs, update_buf_count);
 	}
 
+	if (trd)
+		OBD_FREE_PTR(trd);
+
 	if (desc != NULL)
 		ptlrpc_free_bulk(desc);
 
 	mdt_thread_info_fini(info);
+	tsi->tsi_reply_fail_id = OBD_FAIL_BUT_UPDATE_NET_REP;
 	RETURN(rc);
 }
 
