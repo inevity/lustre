@@ -427,7 +427,6 @@ static int batch_send_update_req(const struct lu_env *env,
 	struct ptlrpc_request *req = NULL;
 	struct batch_update_args *aa;
 	struct lu_batch *bh;
-	__u32 flags = 0;
 	int rc;
 
 	ENTRY;
@@ -437,7 +436,11 @@ static int batch_send_update_req(const struct lu_env *env,
 
 	bh = head->buh_batch;
 	if (bh)
-		flags = bh->bh_flags;
+		head->buh_flags |= bh->bh_flags;
+
+	if ((head->buh_flags & (BATCH_FL_RDONLY | BATCH_FL_UPDATE)) ==
+	    (BATCH_FL_RDONLY | BATCH_FL_UPDATE))
+		RETURN(-EINVAL);
 
 	rc = batch_prep_update_req(head, &req);
 	if (rc) {
@@ -449,18 +452,19 @@ static int batch_send_update_req(const struct lu_env *env,
 	aa->ba_head = head;
 	req->rq_interpret_reply = batch_update_interpret;
 
-	/* TODO: only acquire modification RPC slot for the batched RPC
+	/* Only acquire modification RPC slot for the batched RPC
 	 * which contains metadata updates.
 	 */
-	ptlrpc_get_mod_rpc_slot(req);
+	if (head->buh_flags & BATCH_FL_UPDATE)
+		ptlrpc_get_mod_rpc_slot(req);
 
-	if (flags & BATCH_FL_SYNC) {
+	if (head->buh_flags & BATCH_FL_SYNC) {
 		rc = ptlrpc_queue_wait(req);
 	} else {
-		if ((flags & (BATCH_FL_RDONLY | BATCH_FL_RQSET)) ==
+		if ((head->buh_flags & (BATCH_FL_RDONLY | BATCH_FL_RQSET)) ==
 		    BATCH_FL_RDONLY) {
 			ptlrpcd_add_req(req);
-		} else if (flags & BATCH_FL_RQSET) {
+		} else if (head->buh_flags & BATCH_FL_RQSET) {
 			ptlrpc_set_add_req(bh->bh_rqset, req);
 			ptlrpc_check_set(env, bh->bh_rqset);
 		} else {

@@ -258,6 +258,7 @@ static int mdc_create_exlock_pack(struct batch_update_head *head,
 	req_capsule_set_replen(&pill);
 	reqmsg->lm_opc = BUT_CREATE_EXLOCK;
 	*max_pack_size = size;
+	head->buh_flags |= BATCH_FL_UPDATE;
 	RETURN(rc);
 }
 
@@ -326,6 +327,7 @@ static int mdc_create_lockless_pack(struct batch_update_head *head,
 	req_capsule_set_replen(&pill);
 	reqmsg->lm_opc = BUT_CREATE_LOCKLESS;
 	*max_pack_size = size;
+	head->buh_flags |= BATCH_FL_UPDATE;
 	RETURN(0);
 }
 
@@ -374,6 +376,7 @@ static int mdc_setattr_exlock_pack(struct batch_update_head *head,
 	req_capsule_set_replen(&pill);
 	reqmsg->lm_opc = BUT_SETATTR_EXLOCK;
 	*max_pack_size = size;
+	head->buh_flags |= BATCH_FL_UPDATE;
 	RETURN(rc);
 }
 
@@ -422,6 +425,7 @@ static int mdc_setattr_lockless_pack(struct batch_update_head *head,
 	req_capsule_set_replen(&pill);
 	reqmsg->lm_opc = BUT_SETATTR_LOCKLESS;
 	*max_pack_size = size;
+	head->buh_flags |= BATCH_FL_UPDATE;
 	RETURN(0);
 }
 

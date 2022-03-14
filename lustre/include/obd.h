@@ -1016,6 +1016,8 @@ enum lu_batch_flags {
 	BATCH_FL_RQSET	= 0x2,
 	/* Whether need sync commit. */
 	BATCH_FL_SYNC	= 0x4,
+	/* Some sub requests in a batch are updates. */
+	BATCH_FL_UPDATE	= 0x8,
 };
 
 struct lu_batch {
