@@ -1251,7 +1251,7 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 	flags = ldlm_flags_from_wire(dlm_req->lock_flags);
 
 	/* The root WBC EX lock is revoking. */
-	if (req_capsule_ptlreq(pill) &&
+	if (req_capsule_ptlreq(pill) && !req_is_replay(req) &&
 	    flags & LDLM_FL_INTENT_PARENT_LOCKED &&
 	    flags & LDLM_FL_INTENT_EXLOCK_UPDATE) {
 		struct ldlm_lock *lock;

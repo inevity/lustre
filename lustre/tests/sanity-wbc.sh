@@ -1964,6 +1964,62 @@ test_104() {
 }
 run_test 104 "drop batch reply during flush caused by the lock revocation"
 
+test_105a() {
+	local flush_mode="lazy_keep"
+
+	setup_wbc "flush_mode=$flush_mode"
+	replay_barrier $SINGLEMDS
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	fail $SINGLEMDS
+}
+run_test 105a "Replay recovery for root WBC dir"
+
+test_105b() {
+	local flush_mode="aging_keep"
+	local mds_index
+
+	setup_wbc "flush_mode=$flush_mode"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	touch $DIR/$tdir/$tfile || error "touch $DIR/$tdir/$tfile failed"
+	mds_index=$(($($LFS getstripe -m $DIR/$tdir) + 1))
+	replay_barrier_nosync mds$mds_index
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $DIR/$tdir/$tfile
+	check_wbc_flags $DIR/$tdir/$tfile "0x0000000f"
+	fail mds$mds_index
+	$LFS wbc state $DIR/$tdir/$tfile
+	check_wbc_flags $DIR/$tdir/$file "0x00000000"
+	check_mdt_fileset_exist "$tdir/$tfile" 0 ||
+		error "'$tdir/$tfile' should exist on MDT"
+}
+run_test 105b "Replay recovery for WBC"
+
+test_105c() {
+	local flush_mode="aging_keep"
+	local mds_index
+
+	lctl set_param -n ldlm.cancel_unused_locks_before_replay "0"
+	setup_wbc "flush_mode=$flush_mode"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	touch $DIR/$tdir/$tfile || error "touch $DIR/$tdir/$tfile failed"
+	mds_index=$(($($LFS getstripe -m $DIR/$tdir) + 1))
+	replay_barrier_nosync mds$mds_index
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $DIR/$tdir/$tfile
+	check_wbc_flags $DIR/$tdir/$tfile "0x0000000f"
+	fail mds$mds_index
+	$LFS wbc state $DIR/$tdir/$tfile
+	check_wbc_flags $DIR/$tdir/$tfile "0x0000000f"
+	check_mdt_fileset_exist "$tdir/$tfile" 0 ||
+		error "'$tdir/$tfile' should exist on MDT"
+
+	stat $DIR2/$tdir/$tfile || error "stat $DIR2/$tdir/$tfile failed"
+	$LFS wbc state $DIR/$tdir/$tfile
+	check_wbc_flags $DIR/$tdir/$tfile "0x00000000"
+	lctl set_param -n ldlm.cancel_unused_locks_before_replay "1"
+}
+run_test 105c "Replay recovery for WBC without canceling unused locks"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

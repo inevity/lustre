@@ -1012,7 +1012,9 @@ int mdc_finish_enqueue(struct obd_export *exp,
 			 * To not save LOV EA if request is not going to replay
 			 * (for example error one).
 			 */
-			if ((it->it_op & IT_OPEN) && req && req->rq_replay) {
+			if (((it->it_op & IT_OPEN) && req && req->rq_replay) ||
+			    (it->it_op == IT_CREAT &&
+			     it->it_flags & FMODE_WRITE)) {
 				rc = mdc_save_lovea(req, eadata,
 						    body->mbo_eadatasize);
 				if (rc) {

@@ -882,7 +882,7 @@ enum md_op_code {
  */
 static inline bool it_has_reply_body(const struct lookup_intent *it)
 {
-	return it->it_op & (IT_OPEN | IT_LOOKUP | IT_GETATTR);
+	return it->it_op & (IT_OPEN | IT_CREAT | IT_LOOKUP | IT_GETATTR);
 }
 
 struct md_op_data {
