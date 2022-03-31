@@ -250,6 +250,7 @@ extern struct req_format RQF_QUOTA_DQACQ;
 extern struct req_format RQF_MDS_SWAP_LAYOUTS;
 extern struct req_format RQF_MDS_REINT_MIGRATE;
 extern struct req_format RQF_MDS_REINT_RESYNC;
+extern struct req_format RQF_MDS_REINT_LAYOUT;
 extern struct req_format RQF_MDS_RMFID;
 /* MDS hsm formats */
 extern struct req_format RQF_MDS_HSM_STATE_GET;

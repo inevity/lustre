@@ -588,7 +588,8 @@ static int wbc_flush_dir_children(struct wbc_context *ctx,
 				  struct inode *dir,
 				  struct list_head *childlist,
 				  struct ldlm_lock *lock,
-				  struct writeback_control_ext *wbcx)
+				  struct writeback_control_ext *wbcx,
+				  bool no_layout)
 {
 	struct wbc_dentry *wbcd, *tmp;
 	int rc = 0;
@@ -607,7 +608,8 @@ static int wbc_flush_dir_children(struct wbc_context *ctx,
 		dchild = lld->lld_dentry;
 		list_del_init(&wbcd->wbcd_flush_item);
 
-		rc = wbcfs_flush_dir_child(ctx, dir, dchild, lock, wbcx);
+		rc = wbcfs_flush_dir_child(ctx, dir, dchild,
+					   lock, wbcx, no_layout);
 		/*
 		 * Unpin the dentry.
 		 * FIXME: race between dirty inode flush and unlink/rmdir().
@@ -634,6 +636,7 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 	LIST_HEAD(dirty_children_list);
 	struct wbc_context ctx;
 	__u32 count = 0;
+	bool no_layout;
 	int rc, rc2;
 
 	ENTRY;
@@ -657,6 +660,8 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 	if (rc)
 		RETURN(rc);
 
+	no_layout = ctx.ioc_pol == WBC_FLUSH_POL_BATCH &&
+		    ll_i2wbcc(dir)->wbcc_batch_no_layout;
 	spin_lock(&dentry->d_lock);
 	list_for_each_entry_safe(child, tmp_subdir,
 				 &dentry->d_subdirs, d_child) {
@@ -689,7 +694,7 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 			spin_unlock(&dentry->d_lock);
 			rc = wbc_flush_dir_children(&ctx, dir,
 						    &dirty_children_list,
-						    lock, wbcx);
+						    lock, wbcx, no_layout);
 			/* FIXME: error handling... */
 			LASSERT(list_empty(&dirty_children_list));
 			count = 0;
@@ -700,7 +705,7 @@ static int wbc_flush_dir(struct inode *dir, struct ldlm_lock *lock,
 	spin_unlock(&dentry->d_lock);
 
 	rc = wbc_flush_dir_children(&ctx, dir, &dirty_children_list,
-				    lock, wbcx);
+				    lock, wbcx, no_layout);
 	mapping_clear_unevictable(dir->i_mapping);
 	/* FIXME: error handling when @dirty_children_list is not empty. */
 	LASSERT(list_empty(&dirty_children_list));
@@ -1287,6 +1292,9 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 	if (cmd->wbcc_flags & WBC_CMD_OP_MAX_BATCH_COUNT)
 		conf->wbcc_max_batch_count =
 				cmd->wbcc_conf.wbcc_max_batch_count;
+	if (cmd->wbcc_flags & WBC_CMD_OP_BATCH_NO_LAYOUT)
+		conf->wbcc_batch_no_layout =
+				cmd->wbcc_conf.wbcc_batch_no_layout;
 
 	return 0;
 }
@@ -1349,6 +1357,7 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 	struct wbc_conf *conf = &cmd->wbcc_conf;
 	char *key, *val, *rest;
 	unsigned long num;
+	bool enable;
 	int rc;
 
 	val = buffer;
@@ -1462,6 +1471,13 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 
 		conf->wbcc_max_batch_count = num;
 		cmd->wbcc_flags |= WBC_CMD_OP_MAX_BATCH_COUNT;
+	} else if (strcmp(key, "batch_no_layout") == 0) {
+		rc = kstrtobool(val, &enable);
+		if (rc)
+			return rc;
+
+		conf->wbcc_batch_no_layout = enable;
+		cmd->wbcc_flags |= WBC_CMD_OP_BATCH_NO_LAYOUT;
 	} else {
 		return -EINVAL;
 	}

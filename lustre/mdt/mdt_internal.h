@@ -902,6 +902,8 @@ void mdt_mfd_set_mode(struct mdt_file_data *mfd, u64 open_flags);
 int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc);
 void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
 			      struct mdt_object *obj, struct md_attr *ma);
+int mdt_create_data(struct mdt_thread_info *info,
+		    struct mdt_object *p, struct mdt_object *o);
 struct mdt_file_data *mdt_open_handle2mfd(struct mdt_export_data *med,
 					const struct lustre_handle *open_handle,
 					bool is_replay);

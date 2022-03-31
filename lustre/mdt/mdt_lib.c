@@ -1829,6 +1829,46 @@ static int mdt_resync_unpack(struct mdt_thread_info *info)
 	RETURN(mdt_dlmreq_unpack(info));
 }
 
+static int mdt_layout_unpack(struct mdt_thread_info *info)
+{
+	struct req_capsule *pill = info->mti_pill;
+	struct mdt_reint_record *rr = &info->mti_rr;
+	struct ptlrpc_request *req = mdt_info_req(info);
+	struct md_op_spec *sp = &info->mti_spec;
+	struct lu_ucred *uc = mdt_ucred(info);
+	struct mdt_rec_reint *rec;
+
+	ENTRY;
+
+	rec = req_capsule_client_get(pill, &RMF_REC_REINT);
+	if (rec == NULL)
+		RETURN(-EFAULT);
+
+	/* This prior initialization is needed for old_init_ucred_reint() */
+	uc->uc_fsuid = rec->rr_fsuid;
+	uc->uc_fsgid = rec->rr_fsgid;
+	uc->uc_cap = CAP_EMPTY_SET;
+	uc->uc_cap.cap[0] = rec->rr_cap;
+
+	rr->rr_fid1 = &rec->rr_fid1;
+	sp->sp_cr_flags = MDS_FMODE_WRITE;
+
+	if (req_capsule_field_present(pill, &RMF_EADATA, RCL_CLIENT)) {
+		rr->rr_eadatalen = req_capsule_get_size(pill, &RMF_EADATA,
+							RCL_CLIENT);
+		if (rr->rr_eadatalen > 0) {
+			rr->rr_eadata = req_capsule_client_get(pill,
+							       &RMF_EADATA);
+			sp->u.sp_ea.eadatalen = rr->rr_eadatalen;
+			sp->u.sp_ea.eadata = rr->rr_eadata;
+			sp->no_create = !!req_is_replay(req);
+			mdt_fix_lov_magic(info, rr->rr_eadata);
+		}
+	}
+
+	RETURN(0);
+}
+
 typedef int (*reint_unpacker)(struct mdt_thread_info *info);
 
 static reint_unpacker mdt_reint_unpackers[REINT_MAX] = {
@@ -1842,6 +1882,7 @@ static reint_unpacker mdt_reint_unpackers[REINT_MAX] = {
 	[REINT_RMENTRY]  = mdt_rmentry_unpack,
 	[REINT_MIGRATE]  = mdt_migrate_unpack,
 	[REINT_RESYNC]   = mdt_resync_unpack,
+	[REINT_LAYOUT]   = mdt_layout_unpack,
 };
 
 int mdt_reint_unpack(struct mdt_thread_info *info, __u32 op)

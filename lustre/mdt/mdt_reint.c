@@ -3319,6 +3319,95 @@ out:
 	return rc;
 }
 
+/* Create layout in the lockless mode. */
+int mdt_reint_layout(struct mdt_thread_info *info,
+		     struct mdt_lock_handle *unused)
+{
+	struct mdt_reint_record *rr = &info->mti_rr;
+	struct md_layout_change layout = { .mlc_opc = MD_LAYOUT_NOP };
+	struct md_attr *ma = &info->mti_attr;
+	struct layout_intent *intent;
+	struct mdt_object *obj = NULL;
+	struct mdt_body *repbody;
+	int rc = 0;
+
+	ENTRY;
+
+	repbody = req_capsule_server_get(info->mti_pill, &RMF_MDT_BODY);
+	if (repbody == NULL)
+		RETURN(-EPROTO);
+
+	intent = req_capsule_client_get(info->mti_pill, &RMF_LAYOUT_INTENT);
+	if (intent == NULL)
+		RETURN(-EPROTO);
+
+	CDEBUG(D_INFO, DFID "got layout creation request from client: "
+	       "opc:%u flags:%#x extent "DEXT"\n",
+	       PFID(rr->rr_fid1), intent->li_opc, intent->li_flags,
+	       PEXT(&intent->li_extent));
+
+	switch (intent->li_opc) {
+	case LAYOUT_INTENT_TRUNC:
+	case LAYOUT_INTENT_WRITE:
+		layout.mlc_opc = MD_LAYOUT_WRITE;
+		layout.mlc_intent = intent;
+		break;
+	case LAYOUT_INTENT_ACCESS:
+		CERROR("%s: Only layout write supported\n",
+		       mdt_obd_name(info->mti_mdt));
+		RETURN(-EPROTO);
+	case LAYOUT_INTENT_READ:
+	case LAYOUT_INTENT_GLIMPSE:
+	case LAYOUT_INTENT_RELEASE:
+	case LAYOUT_INTENT_RESTORE:
+		CERROR("%s: Unsupported layout intent opc %d\n",
+		       mdt_obd_name(info->mti_mdt), intent->li_opc);
+		RETURN(-ENOTSUPP);
+	default:
+		CERROR("%s: Unknown layout intent opc %d\n",
+		       mdt_obd_name(info->mti_mdt), intent->li_opc);
+		RETURN(-EINVAL);
+	}
+
+	obj = mdt_object_find(info->mti_env, info->mti_mdt, rr->rr_fid1);
+	if (IS_ERR(obj))
+		RETURN(PTR_ERR(obj));
+
+	if (!mdt_object_exists(obj))
+		GOTO(out, rc = -ENOENT);
+
+	if (!S_ISREG(lu_object_attr(&obj->mot_obj)))
+		GOTO(out, rc = -EINVAL);
+
+	if (mdt_object_remote(obj))
+		GOTO(out, rc = -EREMOTE);
+
+	rc = mo_permission(info->mti_env, NULL, mdt_object_child(obj),
+			   NULL, MAY_WRITE);
+	if (rc)
+		GOTO(out, rc);
+
+
+	mdt_prep_ma_buf_from_rep(info, obj, ma);
+	rc = mdt_create_data(info, NULL, obj);
+	if (rc)
+		GOTO(out, rc);
+
+	if (ma->ma_valid & MA_LOV) {
+		LASSERT(ma->ma_lmm_size != 0);
+		repbody->mbo_eadatasize = ma->ma_lmm_size;
+		repbody->mbo_valid |= OBD_MD_FLEASIZE;
+	}
+
+	/* Return fid & attr to client. */
+	if (ma->ma_valid & MA_INODE)
+		mdt_pack_attr2body(info, repbody, &ma->ma_attr,
+				   mdt_object_fid(obj));
+out:
+	mdt_object_put(info->mti_env, obj);
+	RETURN(rc);
+}
+
 struct mdt_reinter {
 	int (*mr_handler)(struct mdt_thread_info *, struct mdt_lock_handle *);
 	enum lprocfs_extra_opc mr_extra_opc;
@@ -3364,6 +3453,10 @@ static const struct mdt_reinter mdt_reinters[] = {
 	[REINT_RESYNC] = {
 		.mr_handler = &mdt_reint_resync,
 		.mr_extra_opc = MDS_REINT_RESYNC,
+	},
+	[REINT_LAYOUT] = {
+		.mr_handler = &mdt_reint_layout,
+		.mr_extra_opc = MDS_REINT_LAYOUT,
 	},
 };
 

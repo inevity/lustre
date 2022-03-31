@@ -134,6 +134,8 @@ struct wbc_conf {
 	__u32			wbcc_max_rpcs;
 	__u32			wbcc_max_qlen;
 	__u32			wbcc_background_async_rpc:1;
+	/* Not instantiate layout during creation in batched RPCs. */
+	bool			wbcc_batch_no_layout;
 	/* How many inodes are allowed. */
 	unsigned long		wbcc_max_inodes;
 	/* How many inodes are left for allocation. */
@@ -305,6 +307,7 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_FLUSH_POL		= 0x0100,
 	WBC_CMD_OP_MAX_BATCH_COUNT	= 0x0200,
 	WBC_CMD_OP_MAX_QLEN		= 0x0400,
+	WBC_CMD_OP_BATCH_NO_LAYOUT	= 0x0800,
 };
 
 struct wbc_cmd {
@@ -548,7 +551,7 @@ int wbcfs_context_prepare(struct super_block *sb, struct wbc_context *ctx);
 int wbcfs_context_commit(struct super_block *sb, struct wbc_context *ctx);
 int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 			  struct dentry *dchild, struct ldlm_lock *lock,
-			  struct writeback_control_ext *wbcx);
+			  struct writeback_control_ext *wbcx, bool no_layout);
 int wbcfs_file_private_set(struct inode *inode, struct file *file);
 void wbcfs_file_private_put(struct inode *inode, struct file *file);
 int wbcfs_dcache_dir_open(struct inode *inode, struct file *file);

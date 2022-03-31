@@ -107,8 +107,8 @@ void mdt_mfd_free(struct mdt_file_data *mfd)
 	kfree_rcu(mfd, mfd_open_handle.h_rcu);
 }
 
-static int mdt_create_data(struct mdt_thread_info *info,
-			   struct mdt_object *p, struct mdt_object *o)
+int mdt_create_data(struct mdt_thread_info *info,
+		    struct mdt_object *p, struct mdt_object *o)
 {
 	struct md_op_spec     *spec = &info->mti_spec;
 	struct md_attr        *ma   = &info->mti_attr;

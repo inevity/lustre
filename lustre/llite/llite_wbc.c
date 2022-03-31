@@ -269,7 +269,7 @@ out_dput:
 static int wbc_fill_create_common(struct inode *dir,
 				  struct dentry *dchild,
 				  struct md_op_data *op_data,
-				  struct lookup_intent *it)
+				  struct lookup_intent *it, bool no_layout)
 {
 	struct inode *inode = dchild->d_inode;
 	int opc;
@@ -340,7 +340,8 @@ static int wbc_fill_create_common(struct inode *dir,
 		 *   for this regular file unless it is necessary if file size
 		 *   is zero.
 		 */
-		it->it_flags |= MDS_FMODE_WRITE;
+		if (!no_layout)
+			it->it_flags |= MDS_FMODE_WRITE;
 	} else if (S_ISLNK(inode->i_mode)) {
 		it->it_create_mode = S_IFLNK | S_IRWXUGO;
 	}
@@ -353,7 +354,7 @@ static int wbc_fill_create_common(struct inode *dir,
  */
 static struct md_op_item *
 wbc_prep_create_exlock(struct inode *dir, struct dentry *dchild,
-		       unsigned int valid)
+		       unsigned int valid, bool no_layout)
 {
 	struct md_op_item *item;
 	int rc;
@@ -362,8 +363,8 @@ wbc_prep_create_exlock(struct inode *dir, struct dentry *dchild,
 	if (item == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	rc = wbc_fill_create_common(dir, dchild,
-				    &item->mop_data, &item->mop_it);
+	rc = wbc_fill_create_common(dir, dchild, &item->mop_data,
+				    &item->mop_it, no_layout);
 	if (rc) {
 		OBD_FREE_PTR(item);
 		return ERR_PTR(rc);
@@ -460,7 +461,7 @@ static void wbc_iattr_from_inode(struct inode *inode, unsigned int valid,
  */
 static struct md_op_item *
 wbc_prep_setattr_exlock(struct inode *dir, struct dentry *dchild,
-			unsigned int valid)
+			unsigned int valid, bool no_layout)
 {
 	struct md_op_item *item;
 	struct inode *inode = dchild->d_inode;
@@ -539,7 +540,7 @@ out_dput:
  */
 static struct md_op_item *
 wbc_prep_exlock_only(struct inode *dir, struct dentry *dchild,
-		     unsigned int valid)
+		     unsigned int valid, bool no_layout)
 {
 	struct md_op_item *item;
 	struct inode *inode = dchild->d_inode;
@@ -599,7 +600,7 @@ out_fini:
 
 static struct md_op_item *
 wbc_prep_create_lockless(struct inode *dir, struct dentry *dchild,
-			 unsigned int valid)
+			 unsigned int valid, bool no_layout)
 {
 	struct md_op_item *item;
 	int rc;
@@ -609,7 +610,7 @@ wbc_prep_create_lockless(struct inode *dir, struct dentry *dchild,
 		return ERR_PTR(-ENOMEM);
 
 	rc = wbc_fill_create_common(dir, dchild, &item->mop_data,
-				    &item->mop_it);
+				    &item->mop_it, no_layout);
 	if (rc) {
 		OBD_FREE_PTR(item);
 		return ERR_PTR(rc);
@@ -651,7 +652,7 @@ out_dput:
 
 static struct md_op_item *
 wbc_prep_setattr_lockless(struct inode *dir, struct dentry *dchild,
-			  unsigned int valid)
+			  unsigned int valid, bool no_layout)
 {
 	struct md_op_item *item;
 	struct inode *inode = dchild->d_inode;
@@ -677,7 +678,8 @@ wbc_prep_setattr_lockless(struct inode *dir, struct dentry *dchild,
 
 typedef struct md_op_item *(*md_prep_op_item_t)(struct inode *dir,
 						struct dentry *dchild,
-						unsigned int valid);
+						unsigned int valid,
+						bool no_layout);
 
 md_prep_op_item_t wbc_op_item_preps[MD_OP_MAX] = {
 	[MD_OP_CREATE_LOCKLESS]		= wbc_prep_create_lockless,
@@ -699,7 +701,7 @@ static struct md_op_item *
 wbc_prep_op_item(enum md_item_opcode opc, struct inode *dir,
 		 struct dentry *dchild, struct ldlm_lock *lock,
 		 struct writeback_control_ext *wbcx,
-		 unsigned int valid)
+		 unsigned int valid, bool no_layout)
 {
 	struct md_op_item *item;
 
@@ -707,7 +709,7 @@ wbc_prep_op_item(enum md_item_opcode opc, struct inode *dir,
 	    wbc_op_item_cbs[opc] == NULL)
 		return ERR_PTR(-EINVAL);
 
-	item = wbc_op_item_preps[opc](dir, dchild, valid);
+	item = wbc_op_item_preps[opc](dir, dchild, valid, no_layout);
 	if (IS_ERR(item))
 		return item;
 
@@ -878,6 +880,57 @@ static int wbc_do_create(struct inode *inode)
 	RETURN(rc);
 }
 
+static int wbc_inode_layout_create(struct inode *inode)
+{
+	struct layout_intent intent = {
+		.li_opc = LAYOUT_INTENT_WRITE,
+		.li_extent.e_start = 0,
+		.li_extent.e_end = OBD_OBJECT_EOF,
+	};
+	struct ll_sb_info *sbi = ll_i2sbi(inode);
+	struct ptlrpc_request *req = NULL;
+	struct lustre_md md = { NULL };
+	struct md_op_data *op_data;
+	int rc;
+
+	ENTRY;
+
+	op_data = ll_prep_md_op_data(NULL, inode, inode, NULL,
+				     0, 0, LUSTRE_OPC_ANY, NULL);
+	if (IS_ERR(op_data))
+		RETURN(PTR_ERR(op_data));
+
+	op_data->op_data = &intent;
+	op_data->op_data_size = sizeof(intent);
+
+	CDEBUG(D_INODE, "%s: layout create for file "DFID"(%p)\n",
+	       sbi->ll_fsname, PFID(ll_inode2fid(inode)), inode);
+
+	rc = md_layout_create(sbi->ll_md_exp, op_data, &req);
+	if (rc < 0)
+		GOTO(out, rc);
+
+	rc = md_get_lustre_md(sbi->ll_md_exp, &req->rq_pill, sbi->ll_dt_exp,
+			      sbi->ll_md_exp, &md);
+	if (rc != 0)
+		GOTO(out, rc);
+
+	if (!(md.body->mbo_valid & OBD_MD_FLEASIZE))
+		GOTO(out, rc = -EPROTO);
+
+	LASSERT(md.body->mbo_valid & OBD_MD_FLEASIZE);
+	rc = cl_file_inode_init(inode, &md);
+	md_free_lustre_md(sbi->ll_md_exp, &md);
+out:
+	if (req != NULL)
+		ptlrpc_req_finished(req);
+
+	if (!IS_ERR_OR_NULL(op_data))
+		ll_finish_md_op_data(op_data);
+
+	RETURN(rc);
+}
+
 /*
  * Write the cached data in MemFS into Lustre clio for an inode.
  * TODO: It need to ensure that generic IO must be blocked in this phase until
@@ -906,6 +959,16 @@ int wbcfs_commit_cache_pages(struct inode *inode)
 	/* The file data has already assimilated from MemFS into Lustre. */
 	if (wbc_inode_data_committed(wbci) || wbc_inode_none(wbci))
 		RETURN(0);
+
+	if (ll_i2info(inode)->lli_clob == NULL) {
+		rc = wbc_inode_layout_create(inode);
+		if (rc) {
+			CERROR("%s: failed to create layout for "DFID"\n",
+			       ll_i2sbi(inode)->ll_fsname,
+			       PFID(ll_inode2fid(inode)));
+			RETURN(rc);
+		}
+	}
 
 	isize = i_size_read(inode);
 	LASSERT(ll_i2info(inode)->lli_clob);
@@ -1164,10 +1227,12 @@ int wbcfs_context_init(struct super_block *sb, struct wbc_context *ctx,
 
 	if (lazy_init) {
 		memset(ctx, 0, sizeof(*ctx));
+		ctx->ioc_pol = conf->wbcc_flush_pol;
 		RETURN(0);
+	} else {
+		ctx->ioc_pol = conf->wbcc_flush_pol;
 	}
 
-	ctx->ioc_pol = conf->wbcc_flush_pol;
 	switch (ctx->ioc_pol) {
 	case WBC_FLUSH_POL_RQSET:
 		ctx->ioc_rqset = ptlrpc_prep_set();
@@ -1318,7 +1383,7 @@ static int wbc_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 
 int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 			  struct dentry *dchild, struct ldlm_lock *lock,
-			  struct writeback_control_ext *wbcx)
+			  struct writeback_control_ext *wbcx, bool no_layout)
 {
 	struct md_op_item *item;
 	unsigned int valid = 0;
@@ -1331,7 +1396,7 @@ int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 	if (opc == MD_OP_NONE)
 		RETURN(0);
 
-	item = wbc_prep_op_item(opc, dir, dchild, lock, wbcx, valid);
+	item = wbc_prep_op_item(opc, dir, dchild, lock, wbcx, valid, no_layout);
 	if (IS_ERR(item))
 		RETURN(PTR_ERR(item));
 
@@ -1592,6 +1657,7 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 		   (unsigned long)(conf->wbcc_max_pages -
 		   percpu_counter_sum(&conf->wbcc_used_pages)));
 	seq_printf(m, "pages_hiwm: %u\n", conf->wbcc_hiwm_pages_count);
+	seq_printf(m, "batch_no_layout: %d\n", conf->wbcc_batch_no_layout);
 
 	return 0;
 }

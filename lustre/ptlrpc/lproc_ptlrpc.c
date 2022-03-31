@@ -157,6 +157,7 @@ static struct ll_eopcode {
 	{ MDS_REINT_OPEN,       "mds_reint_open" },
 	{ MDS_REINT_SETXATTR,   "mds_reint_setxattr" },
 	{ MDS_REINT_RESYNC,	"mds_reint_resync" },
+	{ MDS_REINT_LAYOUT,	"mds_reint_layout" },
 	{ BRW_READ_BYTES,       "read_bytes" },
 	{ BRW_WRITE_BYTES,      "write_bytes" },
 };

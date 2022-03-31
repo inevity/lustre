@@ -1708,6 +1708,7 @@ enum mds_reint_op {
 	REINT_RMENTRY  = 8,
 	REINT_MIGRATE  = 9,
 	REINT_RESYNC   = 10,
+	REINT_LAYOUT   = 11,
 	REINT_MAX
 };
 

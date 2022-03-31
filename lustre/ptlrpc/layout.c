@@ -459,6 +459,19 @@ static const struct req_msg_field *ldlm_intent_layout_client[] = {
 	&RMF_EADATA /* for new layout to be set up */
 };
 
+static const struct req_msg_field *intent_layout_lockless_client[] = {
+	&RMF_PTLRPC_BODY,
+	&RMF_REC_REINT,
+	&RMF_LAYOUT_INTENT,
+	&RMF_EADATA,
+};
+
+static const struct req_msg_field *intent_layout_lockless_server[] = {
+	&RMF_PTLRPC_BODY,
+	&RMF_MDT_BODY,
+	&RMF_MDT_MD,
+};
+
 static const struct req_msg_field *ldlm_intent_open_server[] = {
 	&RMF_PTLRPC_BODY,
 	&RMF_DLM_REP,
@@ -905,6 +918,7 @@ static struct req_format *req_formats[] = {
 	&RQF_MDS_REINT_SETATTR,
 	&RQF_MDS_REINT_SETXATTR,
 	&RQF_MDS_REINT_RESYNC,
+	&RQF_MDS_REINT_LAYOUT,
 	&RQF_MDS_QUOTACTL,
 	&RQF_MDS_HSM_PROGRESS,
 	&RQF_MDS_HSM_CT_REGISTER,
@@ -1647,6 +1661,12 @@ EXPORT_SYMBOL(RQF_MDS_REINT_SETXATTR);
 struct req_format RQF_MDS_REINT_RESYNC =
 	DEFINE_REQ_FMT0("MDS_REINT_RESYNC", mds_reint_resync, mdt_body_only);
 EXPORT_SYMBOL(RQF_MDS_REINT_RESYNC);
+
+struct req_format RQF_MDS_REINT_LAYOUT =
+	DEFINE_REQ_FMT0("MDS_REINT_LAYOUT",
+			intent_layout_lockless_client,
+			intent_layout_lockless_server);
+EXPORT_SYMBOL(RQF_MDS_REINT_LAYOUT);
 
 struct req_format RQF_MDS_CONNECT =
         DEFINE_REQ_FMT0("MDS_CONNECT",

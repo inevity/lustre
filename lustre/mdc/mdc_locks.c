@@ -216,7 +216,7 @@ static inline void mdc_clear_replay_flag(struct ptlrpc_request *req, int rc)
  * but this is incredibly unlikely, and questionable whether the client
  * could do MDS recovery under OOM anyways...
  */
-static int mdc_save_lovea(struct ptlrpc_request *req, void *data, u32 size)
+int mdc_save_lovea(struct ptlrpc_request *req, void *data, u32 size)
 {
 	struct req_capsule *pill = &req->rq_pill;
 	void *lovea;
@@ -1014,7 +1014,8 @@ int mdc_finish_enqueue(struct obd_export *exp,
 			 */
 			if (((it->it_op & IT_OPEN) && req && req->rq_replay) ||
 			    (it->it_op == IT_CREAT &&
-			     it->it_flags & FMODE_WRITE)) {
+			     it->it_flags & FMODE_WRITE &&
+			     req_capsule_ptlreq(pill))) {
 				rc = mdc_save_lovea(req, eadata,
 						    body->mbo_eadatasize);
 				if (rc) {

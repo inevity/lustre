@@ -2992,6 +2992,7 @@ static const struct md_ops mdc_md_ops = {
 	.m_intent_getattr_async = mdc_intent_getattr_async,
 	.m_revalidate_lock      = mdc_revalidate_lock,
 	.m_rmfid		= mdc_rmfid,
+	.m_layout_create	= mdc_layout_create,
 	.m_batch_create		= cli_batch_create,
 	.m_batch_stop		= cli_batch_stop,
 	.m_batch_flush		= cli_batch_flush,

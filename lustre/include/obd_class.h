@@ -1841,6 +1841,19 @@ static inline int md_rmfid(struct obd_export *exp, struct fid_array *fa,
 	return MDP(exp->exp_obd, rmfid)(exp, fa, rcs, set);
 }
 
+static inline int md_layout_create(struct obd_export *exp,
+				   struct md_op_data *op_data,
+				   struct ptlrpc_request **request)
+{
+	int rc;
+
+	rc = exp_check_ops(exp);
+	if (rc)
+		return rc;
+
+	return MDP(exp->exp_obd, layout_create)(exp, op_data, request);
+}
+
 static inline struct lu_batch *
 md_batch_create(struct obd_export *exp, enum lu_batch_flags flags,
 		__u32 max_count)

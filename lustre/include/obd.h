@@ -1327,6 +1327,9 @@ struct md_ops {
 			  const union lmv_mds_md *lmv, size_t lmv_size);
 	int (*m_rmfid)(struct obd_export *exp, struct fid_array *fa, int *rcs,
 		       struct ptlrpc_request_set *set);
+	int (*m_layout_create)(struct obd_export *exp,
+			       struct md_op_data *op_data,
+			       struct ptlrpc_request **req);
 	struct lu_batch *(*m_batch_create)(struct obd_export *exp,
 					   enum lu_batch_flags flags,
 					   __u32 max_count);

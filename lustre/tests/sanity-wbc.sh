@@ -2020,6 +2020,51 @@ test_105c() {
 }
 run_test 105c "Replay recovery for WBC without canceling unused locks"
 
+test_106() {
+	local flush_mode="aging_keep"
+	local nr=32
+
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch max_batch_count=32 batch_no_layout=1"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+
+	local fileset
+	local mds_index
+
+	for i in $(seq 1 $nr); do
+		fileset+="$DIR/$tdir/$tfile.$i "
+	done
+
+	touch $fileset || error "touch $fileset failed"
+	$LFS wbc state $DIR/$tdir $fileset
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $DIR/$tdir $fileset
+	stat $DIR2/$tdir/$tfile.1
+	$LFS wbc state $DIR2/$tdir/$tfile.1
+}
+run_test 106 "Batched RPC without layout creation"
+
+test_107() {
+	local flush_mode="aging_keep"
+	local max=32
+	local nr=64
+
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch max_batch_count=$max batch_no_layout=1"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+
+	local fileset
+	local mds_index
+
+	mds_index=$(($($LFS getstripe -m $DIR/$tdir) + 1))
+	for i in $(seq 1 $nr); do
+		fileset+="$DIR/$tdir/$tfile.$i "
+	done
+
+	touch $fileset || error "touch $fileset failed"
+	ls $DIR/$tdir
+	drop_batch_reply $mds_index "stat $DIR2/$tdir" || error "stat failed"
+}
+run_test 107 "drop batch reply for batched RPC without layout instantiation"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

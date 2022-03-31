@@ -662,6 +662,79 @@ int mdc_file_resync(struct obd_export *exp, struct md_op_data *op_data)
 	RETURN(rc);
 }
 
+int mdc_layout_create(struct obd_export *exp, struct md_op_data *op_data,
+		      struct ptlrpc_request **request)
+{
+	struct obd_device *obd = class_exp2obd(exp);
+	struct mdt_body *body = NULL;
+	struct layout_intent *layout;
+	struct ptlrpc_request *req;
+	struct mdt_rec_reint *rec;
+	int rc;
+
+	ENTRY;
+
+	LASSERT(op_data != NULL);
+
+	req = ptlrpc_request_alloc(class_exp2cliimp(exp),
+				   &RQF_MDS_REINT_LAYOUT);
+	if (req == NULL)
+		RETURN(-ENOMEM);
+
+	req_capsule_set_size(&req->rq_pill, &RMF_EADATA, RCL_CLIENT, 0);
+	rc = ptlrpc_request_pack(req, LUSTRE_MDS_VERSION, MDS_REINT);
+	if (rc) {
+		ptlrpc_request_free(req);
+		RETURN(rc);
+	}
+
+	rec = req_capsule_client_get(&req->rq_pill, &RMF_REC_REINT);
+	rec->rr_opcode = REINT_LAYOUT;
+	rec->rr_fsuid = op_data->op_fsuid;
+	rec->rr_fsgid = op_data->op_fsgid;
+	rec->rr_cap = op_data->op_cap.cap[0];
+	rec->rr_fid1 = op_data->op_fid1;
+	rec->rr_bias = op_data->op_bias;
+
+	/* pack the layout intent request */
+	layout = req_capsule_client_get(&req->rq_pill, &RMF_LAYOUT_INTENT);
+	LASSERT(op_data->op_data != NULL);
+	LASSERT(op_data->op_data_size == sizeof(*layout));
+	memcpy(layout, op_data->op_data, sizeof(*layout));
+
+	req_capsule_set_size(&req->rq_pill, &RMF_MDT_MD, RCL_SERVER,
+			     obd->u.cli.cl_default_mds_easize);
+	ptlrpc_request_set_replen(req);
+
+	rc = mdc_reint(req, LUSTRE_IMP_FULL);
+	if (rc == -ERESTARTSYS)
+		rc = 0;
+
+	*request = req;
+	body = req_capsule_server_get(&req->rq_pill, &RMF_MDT_BODY);
+	if (body == NULL) {
+		rc = -EPROTO;
+		CERROR("%s: cannot swab mdt_obdy: rc = %d\n",
+		       exp->exp_obd->obd_name, rc);
+		RETURN(rc);
+	}
+
+	if (body->mbo_valid & OBD_MD_FLEASIZE) {
+		void *eadata;
+
+		eadata = req_capsule_server_sized_get(&req->rq_pill,
+						      &RMF_MDT_MD,
+						      body->mbo_eadatasize);
+		if (eadata == NULL)
+			RETURN(-EPROTO);
+
+		if (req->rq_transno)
+			(void)mdc_save_lovea(req, eadata, body->mbo_eadatasize);
+	}
+
+	RETURN(rc);
+}
+
 struct mdc_reint_args {
 	struct md_op_item *ra_item;
 };

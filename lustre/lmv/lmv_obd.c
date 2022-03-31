@@ -3307,6 +3307,28 @@ out_fas:
 	RETURN(rc);
 }
 
+static int lmv_layout_create(struct obd_export *exp, struct md_op_data *op_data,
+			     struct ptlrpc_request **request)
+{
+	struct obd_device *obd = exp->exp_obd;
+	struct lmv_obd *lmv = &obd->u.lmv;
+	struct lmv_tgt_desc *tgt;
+	int rc = 0;
+
+	ENTRY;
+
+	CDEBUG(D_INODE, "LAYOUT create for "DFID"\n",
+	       PFID(&op_data->op_fid1));
+
+	tgt = lmv_fid2tgt(lmv, &op_data->op_fid1);
+	if (IS_ERR(tgt))
+		RETURN(PTR_ERR(tgt));
+
+	rc = md_layout_create(tgt->ltd_exp, op_data, request);
+
+	RETURN(rc);
+}
+
 /* WBC lockless create/setattr/link operations. */
 static int lmv_reint_async(struct obd_export *exp, struct md_op_item *item,
 			   struct ptlrpc_request_set *set)
@@ -4177,6 +4199,7 @@ static const struct md_ops lmv_md_ops = {
 	.m_get_fid_from_lsm	= lmv_get_fid_from_lsm,
 	.m_unpackmd		= lmv_unpackmd,
 	.m_rmfid		= lmv_rmfid,
+	.m_layout_create	= lmv_layout_create,
 	.m_batch_create		= lmv_batch_create,
 	.m_batch_add		= lmv_batch_add,
 	.m_batch_stop		= lmv_batch_stop,

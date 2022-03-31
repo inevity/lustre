@@ -3069,6 +3069,7 @@ static int mdt_reint(struct tgt_session_info *tsi)
 		[REINT_RMENTRY]  = &RQF_MDS_REINT_UNLINK,
 		[REINT_MIGRATE]  = &RQF_MDS_REINT_MIGRATE,
 		[REINT_RESYNC]   = &RQF_MDS_REINT_RESYNC,
+		[REINT_LAYOUT]   = &RQF_MDS_REINT_LAYOUT,
 	};
 
 	ENTRY;
