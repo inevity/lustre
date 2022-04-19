@@ -38,6 +38,7 @@
 
 #define DEBUG_SUBSYSTEM S_MDS
 
+#include <lustre_mds.h>
 #include "mdt_internal.h"
 
 struct lu_buf *mdt_buf(const struct lu_env *env, void *area, ssize_t len)
@@ -324,6 +325,57 @@ static void mdt_reconstruct_setattr(struct mdt_thread_info *mti,
 	mdt_object_put(mti->mti_env, obj);
 }
 
+static void mdt_reconstruct_layout(struct mdt_thread_info *mti,
+				   struct mdt_lock_handle *lhc)
+{
+	struct ptlrpc_request  *req = mdt_info_req(mti);
+	struct obd_export *exp = req->rq_export;
+	struct mdt_device *mdt = mti->mti_mdt;
+	struct md_attr *ma = &mti->mti_attr;
+	struct mdt_object *obj;
+	struct mdt_body *body;
+	int rc;
+
+	mdt_req_from_lrd(req, mti->mti_reply_data);
+	if (req->rq_status)
+		return;
+
+	body = req_capsule_server_get(mti->mti_pill, &RMF_MDT_BODY);
+	obj = mdt_object_find(mti->mti_env, mdt, mti->mti_rr.rr_fid1);
+	if (IS_ERR(obj)) {
+		rc = PTR_ERR(obj);
+		LCONSOLE_WARN("cannot lookup "DFID": rc = %d; "
+			      "evicting client %s with export %s\n",
+			      PFID(mti->mti_rr.rr_fid1), rc,
+			      obd_uuid2str(&exp->exp_client_uuid),
+			      obd_export_nid2str(exp));
+		mdt_export_evict(exp);
+		RETURN_EXIT;
+	}
+
+	ma->ma_need = MA_INODE;
+	ma->ma_valid = 0;
+
+	if (md_should_create(mti->mti_spec.sp_cr_flags))
+		mdt_prep_ma_buf_from_rep(mti, obj, ma);
+	rc = mdt_attr_get_complex(mti, obj, ma);
+	if (rc)
+		GOTO(put_obj, rc);
+
+	if (ma->ma_valid & MA_LOV) {
+		LASSERT(ma->ma_lmm_size != 0);
+		body->mbo_eadatasize = ma->ma_lmm_size;
+		body->mbo_valid |= OBD_MD_FLEASIZE;
+	}
+
+	/* Return fid & attr to client. */
+	if (ma->ma_valid & MA_INODE)
+		mdt_pack_attr2body(mti, body, &ma->ma_attr,
+				   mdt_object_fid(obj));
+put_obj:
+	mdt_object_put(mti->mti_env, obj);
+}
+
 typedef void (*mdt_reconstructor)(struct mdt_thread_info *mti,
 				  struct mdt_lock_handle *lhc);
 
@@ -338,7 +390,7 @@ static mdt_reconstructor reconstructors[REINT_MAX] = {
 	[REINT_RMENTRY]  = mdt_reconstruct_generic,
 	[REINT_MIGRATE]	 = mdt_reconstruct_generic,
 	[REINT_RESYNC]	 = mdt_reconstruct_generic,
-	[REINT_LAYOUT]	 = mdt_reconstruct_generic
+	[REINT_LAYOUT]	 = mdt_reconstruct_layout,
 };
 
 void mdt_reconstruct(struct mdt_thread_info *mti, struct mdt_lock_handle *lhc)

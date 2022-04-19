@@ -2065,6 +2065,69 @@ test_107() {
 }
 run_test 107 "drop batch reply for batched RPC without layout instantiation"
 
+test_108a() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+	local mds_index
+
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch max_batch_count=32 batch_no_layout=1"
+	mkdir $dir || error "mkdir $dir failed"
+	mds_index=$(($($LFS getstripe -m $dir) + 1))
+	echo "QQQQ" > $file || error "write $file failed"
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $file
+	$LFS getstripe $file
+	replay_barrier_nosync mds$mds_index
+	stat $DIR2/$tdir/$tfile
+	fail mds$mds_index
+	$LFS wbc state $file
+	$LFS getstripe $file
+}
+run_test 108a "replay recovery for reint layout operation"
+
+test_108b() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+	local mds_index
+
+	lctl set_param -n ldlm.cancel_unused_locks_before_replay "0"
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch max_batch_count=32 batch_no_layout=1"
+	mkdir $dir || error "mkdir $dir failed"
+	mds_index=$(($($LFS getstripe -m $dir) + 1))
+	echo "QQQQ" > $file || error "write $file failed"
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $file
+	$LFS getstripe $file
+	replay_barrier_nosync mds$mds_index
+	stat $DIR2/$tdir/$tfile
+	fail mds$mds_index
+	$LFS wbc state $file
+	$LFS getstripe $file
+	lctl set_param -n ldlm.cancel_unused_locks_before_replay "1"
+}
+run_test 108b "replay recovery for reint layout without canceling unused locks"
+
+test_109() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+	local mds_index
+
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch max_batch_count=32 batch_no_layout=1"
+	mkdir $dir || error "mkdir $dir failed"
+	mds_index=$(($($LFS getstripe -m $dir) + 1))
+	echo "QQQQ" > $file || error "write $file failed"
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $file
+	do_facet mds$mds_index "lctl set_param fail_loc=0x80000119"
+	stat $DIR2/$tdir/$tfile || error "stat failed"
+	$LFS wbc state $file
+	$LFS getstripe $file
+}
+run_test 109 "reply reconstruct for reint layout operation"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 
