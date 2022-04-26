@@ -933,6 +933,80 @@ static int wbc_inode_flush_lockdrop(struct inode *inode,
 	return rc;
 }
 
+static int wbc_deroot_subtree_topdown(struct list_head *list)
+{
+	struct wbc_dentry *wbcd, *tmp;
+	struct writeback_control_ext wbcx = {
+		.sync_mode = WB_SYNC_ALL,
+		.nr_to_write = 0, /* metadata-only */
+		.for_fsync = 1,
+		.for_callback = 1,
+	};
+	int rc = 0;
+
+	ENTRY;
+
+	list_for_each_entry_safe(wbcd, tmp, list, wbcd_fsync_item) {
+		struct ll_dentry_data *lld;
+		struct dentry *dentry;
+		struct inode *inode;
+
+		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
+		dentry = lld->lld_dentry;
+		inode = dentry->d_inode;
+		list_del_init(&wbcd->wbcd_fsync_item);
+
+		if (rc == 0)
+			rc = wbc_inode_flush_lockdrop(inode, &wbcx);
+
+		spin_lock(&inode->i_lock);
+		ll_i2wbci(inode)->wbci_flags &= ~WBC_STATE_FL_WRITEBACK;
+		spin_unlock(&inode->i_lock);
+		wbc_inode_writeback_complete(inode);
+	}
+
+	RETURN(rc);
+
+}
+
+int wbc_make_subtree_deroot(struct dentry *dentry)
+{
+	LIST_HEAD(list);
+
+	for (;;) {
+		struct inode *inode = dentry->d_inode;
+		struct wbc_inode *wbci = ll_i2wbci(inode);
+		struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
+
+		spin_lock(&inode->i_lock);
+		if (wbci->wbci_flags & WBC_STATE_FL_WRITEBACK) {
+			__wbc_inode_wait_for_writeback(inode);
+			LASSERT(wbc_inode_written_out(wbci));
+		}
+
+		if (wbc_inode_none(wbci)) {
+			spin_unlock(&inode->i_lock);
+			break;
+		}
+
+		if (inode->i_state & I_SYNC)
+			__inode_wait_for_writeback(inode);
+
+		LASSERT(!(inode->i_state & I_SYNC));
+		if (wbc_inode_none(wbci)) {
+			spin_unlock(&inode->i_lock);
+			break;
+		}
+
+		wbci->wbci_flags |= WBC_STATE_FL_WRITEBACK;
+		list_add(&wbcd->wbcd_fsync_item, &list);
+		spin_unlock(&inode->i_lock);
+		dentry = dentry->d_parent;
+	}
+
+	return wbc_deroot_subtree_topdown(&list);
+}
+
 void wbc_inode_init(struct wbc_inode *wbci)
 {
 	wbci->wbci_flags = WBC_STATE_FL_NONE;

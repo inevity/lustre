@@ -341,12 +341,30 @@ int memfs_mkdir(struct inode *dir, struct dentry *dchild, umode_t mode)
 static int memfs_link(struct dentry *old_dentry, struct inode *dir,
 		      struct dentry *new_dentry)
 {
+	struct inode *old_inode = d_inode(old_dentry);
+	struct wbc_inode *old_wbci = ll_i2wbci(old_inode);
+	struct wbc_inode *wbci = ll_i2wbci(dir);
+	int rc;
+
 	ENTRY;
 
 	LASSERT(wbc_inode_has_protected(ll_i2wbci(dir)));
 
-	/* XXX Need to ensure we are in the same dir. */
-	RETURN(simple_link(old_dentry, dir, new_dentry));
+	if (wbc_inode_has_protected(old_wbci)) {
+		rc = wbc_make_subtree_deroot(old_dentry);
+		if (rc)
+			RETURN(rc);
+	}
+
+	if (wbc_inode_has_protected(wbci)) {
+		LASSERT(dir == new_dentry->d_parent->d_inode);
+		rc = wbc_make_subtree_deroot(new_dentry->d_parent);
+		if (rc)
+			RETURN(rc);
+	}
+
+	rc = ll_dir_inode_operations.link(old_dentry, dir, new_dentry);
+	RETURN(rc);
 }
 
 static int memfs_remove_policy(struct inode *dir, struct dentry *dchild,

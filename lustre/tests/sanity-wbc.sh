@@ -2128,6 +2128,73 @@ test_109() {
 }
 run_test 109 "reply reconstruct for reint layout operation"
 
+test_110_base() {
+	local flush_mode=$1
+	local dir=$DIR/$tdir
+	local file1
+	local file2
+	local file3
+	local dir1
+	local dir2
+	local dir3
+
+	echo "flush_mode=$flush_mode"
+	setup_wbc "flush_mode=$flush_mode"
+
+	file1=$DIR/$tfile-1
+	file2=$dir/$tfile-2
+	mkdir $dir || error "mkdir $dir failed"
+	touch $file1 || error "touch $file1 failed"
+	ln $file1 $file2 || error "ln $file1 $file2 failed"
+	$LFS wbc state $dir $file1 $file2
+	rm -rf $dir || error "rm $dir failed"
+
+	file1=$dir/$tfile-1
+	file2=$dir/$tfile-2
+	mkdir $dir || error "mkdir $dir failed"
+	touch $file1 || error "touch $file1 failed"
+	$LFS wbc state $dir $file1
+	ln $file1 $file2 || error "ln $file $file2 failed"
+	$LFS wbc state $dir $file1 $file2
+	rm -rf $dir || error "rm $dir failed"
+
+	file1=$dir/$tfile-1
+	dir2=$dir/dir.l1.i1
+	file2=$dir2/$tfile-2
+	mkdir $dir || error "mkdir $dir failed"
+	touch $file1 || error "touch $file1 failed"
+	mkdir $dir2 || error "mkdir $dir2 failed"
+	ln $file1 $file2 || error "ln $file1 $file2 failed"
+	$LFS wbc state $dir $file1 $dir2 $file2
+	rm -rf $dir || error "rm $dir failed"
+
+	echo "Three level directory TEST"
+	mkdir $dir || error "mkdir $dir failed"
+	dir1=$dir/dir.l1.i1/dir.l2.i1/dir.l3.i1
+	file1=$dir1/$tfile-1
+	mkdir -p $dir1 || error "mkdir $dir1 failed"
+	touch $file1 || error "touch $file1 failed"
+	dir2=$dir/dir.l1.i2/dir.l2.i2/dir.l3.i2
+	file2=$dir2/$tfile-2
+	mkdir -p $dir2 || error "mkdir $dir2 failed"
+	touch $file2 || error "touch $file2 failed"
+	dir3=$dir/dir.l1.i3/dir.l2.i3/dir.l3.i3
+	file3=$dir3/$tfile-3
+	mkdir -p $dir3 || error "mkdir $dir3 failed"
+	ln $file1 $file3 || error "ln $file1 $file3 failed"
+	$LFS wbc state $dir1 $file1 $dir2 $file2 $dir3 $file3 ||
+		error "$LFS wbc state failed"
+	rm -rf $dir || error "rm $dir failed"
+}
+
+test_110() {
+	test_110_base "lazy_drop"
+	test_110_base "lazy_keep"
+	test_110_base "aging_drop"
+	test_110_base "aging_keep"
+}
+run_test 110 "hardlink operation support for WBC"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

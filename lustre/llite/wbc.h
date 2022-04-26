@@ -518,6 +518,7 @@ void wbc_inode_writeback_complete(struct inode *inode);
 int wbc_make_inode_sync(struct dentry *dentry);
 int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
 			  struct writeback_control_ext *wbcx);
+int wbc_make_subtree_deroot(struct dentry *dentry);
 int wbc_make_inode_decomplete(struct inode *inode, unsigned int unrsv_children);
 int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent,
 			    unsigned int unrsv_children);
