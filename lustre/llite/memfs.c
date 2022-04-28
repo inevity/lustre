@@ -470,26 +470,31 @@ static int memfs_rename(struct inode *src, struct dentry *src_dchild,
 #endif
 			)
 {
+	struct wbc_inode *src_wbci = ll_i2wbci(src);
+	struct wbc_inode *tgt_wbci = ll_i2wbci(tgt);
 	int rc;
 
 	ENTRY;
 
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(src)));
+	if (wbc_inode_has_protected(src_wbci)) {
+		rc = wbc_make_subtree_deroot(src_dchild);
+		if (rc)
+			RETURN(rc);
+	}
 
-	if (!wbc_inode_complete(ll_i2wbci(src)) ||
-	    !wbc_inode_complete(ll_i2wbci(tgt)))
-		RETURN(-EXDEV);
+	if (wbc_inode_has_protected(tgt_wbci)) {
+		LASSERT(tgt == tgt_dchild->d_parent->d_inode);
+		rc = wbc_make_subtree_deroot(tgt_dchild->d_parent);
+		if (rc)
+			RETURN(rc);
+	}
 
-	rc = simple_rename(src, src_dchild, tgt, tgt_dchild
+	rc = ll_dir_inode_operations.rename(src, src_dchild, tgt, tgt_dchild
 #ifdef HAVE_IOPS_RENAME_WITH_FLAGS
 			   , flags
 #endif
 			  );
-	if (rc)
-		RETURN(rc);
-
-	d_move(src_dchild, tgt_dchild);
-	RETURN(wbcfs_d_init(tgt_dchild));
+	RETURN(rc);
 }
 
 /*

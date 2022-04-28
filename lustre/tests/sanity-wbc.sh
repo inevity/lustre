@@ -2195,6 +2195,144 @@ test_110() {
 }
 run_test 110 "hardlink operation support for WBC"
 
+test_111() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local dir1
+	local dir2
+	local file1
+	local file2
+
+	echo "flush_mode=$flush_mode"
+	setup_wbc "flush_mode=$flush_mode"
+
+	# rename file to non-existent target
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	touch $DIR/$tdir/$tfile || error "touch $DIR/$tdir/$tfile failed"
+	mv $DIR/$tdir/$tfile $DIR/$tdir/${tfile}-2 || error "mv files failed"
+	$LFS wbc state $DIR/$tdir $DIR/$tdir/${tfile}-2
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	dir1=$DIR/$tdir-1
+	dir2=$DIR/$tdir-2
+	file1=$dir1/$tfile-1
+	file2=$dir2/$tfile-2
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	mkdir $dir2 || error "mkdir $dir2 failed"
+	touch $file1 || error "touch $file1 failed"
+	mv $file1 $file2 || error "mv $file1 $file2 failed"
+	$LFS wbc state $dir1 $dir2 $file2
+	rm -rf $dir1 $dir2 || error "rm -rf $dir1 $dir2 failed"
+
+	# rename file to existing target
+	dir1=$DIR/$tdir-1
+	dir2=$DIR/$tdir-2
+	file1=$dir1/$tfile-1
+	file2=$dir2/$tfile-2
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	mkdir $dir2 || error "mkdir $dir2 failed"
+	touch $file1 || error "touch $file1 failed"
+	touch $file2 || error "touch $file2 failed"
+	mv $file1 $file2 || error "mv $file1 $file2 failed"
+	$LFS wbc state $dir1 $dir2 $file2
+	$CHECKSTAT -a $file1 || error "$file1 exists"
+	$CHECKSTAT -t file $file2 || error "$file2 not a file"
+	rm -rf $dir1 $dir2 || error "rm -rf $dir1 $dir2 failed"
+
+	# rename directory to non-existent target
+	dir1=$DIR/$tdir/d$testnum.1
+	dir2=$DIR/$tdir/d$testnum.2
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir1 || error "mkdir $dir1 failed"
+	mv $dir1 $dir2 || error "mv $dir1 $dir2 failed"
+	$CHECKSTAT -a $dir1 || error "$dir1 exists"
+	$CHECKSTAT -t dir $dir2 || error "$dir2 not dir"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	# rename directory to existing target
+	mkdir -p $dir1 || error "mkdir $dir1 failed"
+	mkdir -p $dir2 || error "mkdir $dir2 failed"
+	mv $dir1 $dir2 || error "mv $dir1 $dir2 failed"
+	$CHECKSTAT -a $dir1 || error "$dir1 exists"
+	$CHECKSTAT -t dir $dir2 || error "$dir2 not dir"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	# cross directory renames for two files
+	dir1=$DIR/d$testnum.l1.i1/d$testnum.l2.i1/d$testnum.l3.i1
+	dir2=$DIR/d$testnum.l1.i2/d$testnum.l2.i2/d$testnum.l3.i2
+	file1=$dir1/f$testnum.i1
+	file2=$dir2/f$testnum.i2
+	mkdir -p $dir1 || error "mkdir -p $dir1 failed"
+	mkdir -p $dir2 || error "mkdir -p $dir2 failed"
+	touch $file1 || error "touch $file1 failed"
+	mv $file1 $file2 || error "mv $file1 $file2 failed"
+	$CHECKSTAT -a $file1 || error "$file1 exists"
+	$CHECKSTAT -t file $file2 || error "$file2 not file type"
+	rm -rf $DIR/* || error "rm -rf $DIR/* failed"
+
+	mkdir -p $dir1 || error "mkdir -p $dir1 failed"
+	mkdir -p $dir2 || error "mkdir -p $dir2 failed"
+	touch $file1 $file2 || error "touch $file1 $file2 failed"
+	mv $file1 $file2 || error "mv $file1 $file2 failed"
+	$CHECKSTAT -a $file1 || error "$file1 exists"
+	$CHECKSTAT -t file $file2 || error "$file2 not file type"
+	rm -rf $DIR/* || error "rm -rf $DIR/* failed"
+
+	# corss directory renames for two directories
+	mkdir -p $dir1 || error "mkdir -p $dir1 failed"
+	mkdir -p $dir2 || error "mkdir -p $dir2 failed"
+	$LFS wbc state $dir1 $dir2
+	dir2=$dir2/d$testnum.l4.i2
+	mv $dir1 $dir2 || error "mv $dir1 $dir2 failed"
+	$CHECKSTAT -a $dir1 || error "$dir1 exists"
+	$CHECKSTAT -t dir $dir2 || error "$dir2 not a dir"
+	rm -rf $DIR/* || error "rm -rf $DIR/* failed"
+
+	mkdir -p $dir1 || error "mkdir -p $dir1 failed"
+	mkdir -p $dir2 || error "mkdir -p $dir2 failed"
+	$LFS wbc state $dir1 $dir2
+	mv $dir1 $dir2 || error "mv $dir1 $dir2 failed"
+	$CHECKSTAT -a $dir1 || error "$dir1 exists"
+	$CHECKSTAT -t dir $dir2 || error "$dir2 not a dir"
+	rm -rf $DIR/* || error "rm -rf $DIR/* failed"
+}
+run_test 111 "rename operation support for WBC"
+
+test_112() {
+	local interval=$(sysctl -n vm.dirty_writeback_centisecs)
+	local expire=$(sysctl -n vm.dirty_expire_centisecs)
+	local flush_mode="aging_keep"
+	local file1
+	local file2
+	local file3
+	local dir1
+	local dir2
+	local dir3
+
+	echo "dirty_writeback_centisecs: $interval"
+	interval=$((interval + 100))
+	stack_trap "sysctl -w vm.dirty_expire_centisecs=$expire" EXIT
+	sysctl -w vm.dirty_expire_centisecs=$interval
+
+	setup_wbc "flush_mode=$flush_mode"
+
+	dir1=$DIR/d$testnum.l1.i1/d$testnum.l2.i1/d$testnum.l3.i1
+	file1=$dir1/$tfile-1
+	dir2=$DIR/d$testnum.l1.i2/d$testnum.l2.i2/d$testnum.l3.i2
+	file2=$dir2/$tfile-2
+	dir3=$DIR/d$testnum.l1.i3/d$testnum.l2.i3/d$testnum.l3.i3
+	file3=$dir3/$tfile-3
+	mkdir -p $dir1 $dir2 $dir3 || error "mkdir -p $dir1 $dir2 $dir3 failed"
+	touch $file1 $file2 $file3 || error "touch $file1 $file2 $file3 failed"
+	wait_wbc_sync_state $file1
+	$LFS wbc state $file1 $file2 $file3
+	mv $file1 $file2 || error "mv $file1 $file2 failed"
+	$CHECKSTAT -a $file1 || error "$file1 exists"
+	$CHECKSTAT -t file $file2 || error "$file2 not a file"
+	$LFS wbc state $dir1 $file2 $file3
+}
+run_test 112 "rename operation for flushed files"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 
