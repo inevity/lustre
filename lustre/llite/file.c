@@ -4420,6 +4420,8 @@ out_state:
 	case LL_IOC_WBC_STATE:
 		/* fall through */
 	case LL_IOC_WBC_UNRESERVE:
+		/* fall through */
+	case LL_IOC_WBC_UNCACHE:
 		RETURN(wbc_ioctl(file, cmd, arg));
 	default:
 		RETURN(obd_iocontrol(cmd, ll_i2dtexp(inode), 0, NULL,

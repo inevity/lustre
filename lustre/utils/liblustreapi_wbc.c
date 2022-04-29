@@ -114,3 +114,23 @@ int llapi_wbc_unreserve_file(const char *path, __u32 unrsv_siblings)
 	close(fd);
 	return rc;
 }
+
+/**
+ * Uncache the given file pointed by \a path from WBC.
+ * \return 0 on success, an error code otherwise.
+ */
+int llapi_wbc_uncache_file(const char *path)
+{
+	int fd;
+	int rc;
+
+	fd = open(path, O_RDONLY | O_NONBLOCK);
+	if (fd < 0)
+		return -errno;
+
+	rc = ioctl(fd, LL_IOC_WBC_UNCACHE);
+	rc = rc ? -errno : 0;
+	close(fd);
+
+	return rc;
+}

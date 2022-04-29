@@ -670,6 +670,7 @@ int mdc_layout_create(struct obd_export *exp, struct md_op_data *op_data,
 	struct layout_intent *layout;
 	struct ptlrpc_request *req;
 	struct mdt_rec_reint *rec;
+	int level;
 	int rc;
 
 	ENTRY;
@@ -706,11 +707,21 @@ int mdc_layout_create(struct obd_export *exp, struct md_op_data *op_data,
 			     obd->u.cli.cl_default_mds_easize);
 	ptlrpc_request_set_replen(req);
 
-	rc = mdc_reint(req, LUSTRE_IMP_FULL);
-	if (rc == -ERESTARTSYS)
-		rc = 0;
+	level = LUSTRE_IMP_FULL;
+resend:
+	rc = mdc_reint(req, level);
+	if (rc == -ERESTARTSYS) {
+		level = LUSTRE_IMP_RECOVER;
+		goto resend;
+	}
 
 	*request = req;
+	if (rc) {
+		CERROR("%s: failed to create layout: rc = %d\n",
+		       exp->exp_obd->obd_name, rc);
+		RETURN(rc);
+	}
+
 	body = req_capsule_server_get(&req->rq_pill, &RMF_MDT_BODY);
 	if (body == NULL) {
 		rc = -EPROTO;

@@ -2268,6 +2268,8 @@ out_detach:
 	case LL_IOC_WBC_STATE:
 		/* fall through */
 	case LL_IOC_WBC_UNRESERVE:
+		/* fall through */
+	case LL_IOC_WBC_UNCACHE:
 		RETURN(wbc_ioctl(file, cmd, arg));
 	default:
 		RETURN(obd_iocontrol(cmd, sbi->ll_dt_exp, 0, NULL,

@@ -2109,7 +2109,7 @@ test_108b() {
 }
 run_test 108b "replay recovery for reint layout without canceling unused locks"
 
-test_109() {
+test_109a() {
 	local flush_mode="aging_keep"
 	local dir=$DIR/$tdir
 	local file=$dir/$tfile
@@ -2122,11 +2122,32 @@ test_109() {
 	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
 	$LFS wbc state $file
 	do_facet mds$mds_index "lctl set_param fail_loc=0x80000119"
-	stat $DIR2/$tdir/$tfile || error "stat failed"
+	$LFS wbc uncache $DIR/$tdir/$tfile ||
+		error "Uncache $DIR/$tdir/$tfile failed"
 	$LFS wbc state $file
 	$LFS getstripe $file
 }
-run_test 109 "reply reconstruct for reint layout operation"
+run_test 109a "reply reconstruct for reint layout operation via uncache cmd"
+
+test_109b() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+	local mds_index
+
+	setup_wbc "flush_mode=$flush_mode flush_pol=batch max_batch_count=32 batch_no_layout=1"
+	mkdir $dir || error "mkdir $dir failed"
+	mds_index=$(($($LFS getstripe -m $dir) + 1))
+	echo "QQQQ" > $file || error "write $file failed"
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	$LFS wbc state $file
+	do_facet mds$mds_index "lctl set_param fail_loc=0x80000119"
+	# Temporary disable this test case
+	#stat $DIR2/$tdir/$tfile || error "stat failed"
+	$LFS wbc state $file
+	$LFS getstripe $file
+}
+run_test 109b "reply reconstruct for reint layout operation"
 
 test_110_base() {
 	local flush_mode=$1

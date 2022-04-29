@@ -137,6 +137,7 @@ static int lfs_migrate_to_dom(int fd, int fdv, char *name,
 			      __u64 migration_flags);
 static int lfs_wbc_state(int argc, char **argv);
 static int lfs_wbc_unreserve(int argc, char **argv);
+static int lfs_wbc_uncache(int argc, char **argv);
 static int lfs_wbc(int argc, char **argv);
 static int lfs_wbc_list_commands(int argc, char **argv);
 
@@ -325,6 +326,9 @@ command_t wbc_cmdlist[] = {
 	{ .pc_name = "unreserve", .pc_func = lfs_wbc_unreserve,
 	  .pc_help = "Unreserve the given file(s) from WBC.\n"
 		"usage: lfs wbc unreserve <file> ...\n"},
+	{ .pc_name = "uncache", .pc_func = lfs_wbc_uncache,
+	  .pc_help = "Uncache the given file(s) from WBC.\n"
+		"usage: lfs wbc uncache <file> ...\n"},
 	{ .pc_name = "list-commands", .pc_func = lfs_wbc_list_commands,
 	  .pc_help = "list commands supported by lfs wbc"},
 	{ .pc_name = "help", .pc_func = Parser_help, .pc_help = "help" },
@@ -12819,6 +12823,45 @@ static int lfs_wbc_unreserve(int argc, char **argv)
 				rc = rc2;
 		}
 	}
+	return rc;
+}
+
+static int lfs_wbc_uncache(int argc, char **argv)
+{
+	int rc = 0;
+	const char *path;
+	char fullpath[PATH_MAX];
+
+	optind = 1;
+
+	if (argc <= 1) {
+		fprintf(stderr, "%s: must specify one or more file names\n",
+			argv[0]);
+		return CMD_HELP;
+	}
+
+	while (optind < argc) {
+		int rc2;
+
+		path = argv[optind++];
+		if (realpath(path, fullpath) == NULL) {
+			fprintf(stderr, "%s: could not find path '%s': %s\n",
+				argv[0], path, strerror(errno));
+			if (rc == 0)
+				rc = -EINVAL;
+			continue;
+		}
+
+		rc2 = llapi_wbc_uncache_file(fullpath);
+		if (rc2 < 0) {
+			if (rc == 0)
+				rc = rc2;
+			fprintf(stderr, "%s: cannot uncache '%s' from WBC: "
+				"%s\n", argv[0], path, strerror(-rc2));
+			continue;
+		}
+	}
+
 	return rc;
 }
 

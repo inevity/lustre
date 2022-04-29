@@ -637,6 +637,7 @@ struct ll_ioc_lease_id {
 #define LL_IOC_PROJECT			_IOW('f', 253, struct lu_project)
 #define LL_IOC_WBC_STATE		_IOR('f', 254, struct lu_wbc_state)
 #define LL_IOC_WBC_UNRESERVE		_IOW('f', 254, struct lu_wbc_unreserve)
+#define LL_IOC_WBC_UNCACHE		_IO('f', 254)
 
 #ifndef	FS_IOC_FSGETXATTR
 /*

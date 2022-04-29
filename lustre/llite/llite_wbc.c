@@ -99,6 +99,13 @@ out_unrsv_free:
 		OBD_FREE_PTR(unrsv);
 		RETURN(rc);
 	}
+	case LL_IOC_WBC_UNCACHE: {
+		if (wbc_inode_none(ll_i2wbci(inode)))
+			RETURN(0);
+
+		rc = wbc_make_subtree_deroot(file_dentry(file));
+		RETURN(rc);
+	}
 	case LL_IOC_GET_MDTIDX:
 		RETURN(ll_dir_operations.unlocked_ioctl(file, cmd, arg));
 	case LL_IOC_LMV_GETSTRIPE:
