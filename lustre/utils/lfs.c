@@ -12739,10 +12739,14 @@ static int lfs_wbc_state(int argc, char **argv)
 
 		if (S_ISREG(state.wbcs_fmode)) {
 			printf(", data:");
-			if (state.wbcs_flags & WBC_STATE_FL_DATA_COMMITTED)
-				printf(" lustre");
-			else
+			if (state.wbcs_flags & WBC_STATE_FL_DATA_COMMITTED) {
+				if (state.wbcs_cache_mode == WBC_MODE_DATA_PCC)
+					printf(" PCC(%s)", state.wbcs_path);
+				else
+					printf(" lustre");
+			} else {
 				printf(" ram");
+			}
 		} else if (S_ISDIR(state.wbcs_fmode)) {
 			printf(", metadata:");
 			if (state.wbcs_flags & WBC_STATE_FL_INODE_RESERVED)
@@ -12767,6 +12771,8 @@ static int lfs_wbc_state(int argc, char **argv)
 
 		printf(", flush_mode: %s",
 		       wbc_flushmode2string(state.wbcs_flush_mode));
+		printf(", cache_mode: %s",
+		       wbc_cachemode2string(state.wbcs_cache_mode));
 		printf("\n");
 	}
 	return rc;

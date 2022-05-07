@@ -45,6 +45,30 @@ static inline int wbc_ioctl_unreserve(struct dentry *dchild,
 	return rc;
 }
 
+static int wbc_ioctl_state(struct file *file, struct inode *inode,
+			   struct lu_wbc_state *state)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc = 0;
+
+	ENTRY;
+
+	state->wbcs_fmode = inode->i_mode;
+	state->wbcs_cache_mode = wbci->wbci_cache_mode;
+	state->wbcs_flush_mode = wbci->wbci_flush_mode;
+	state->wbcs_dirty_flags = wbci->wbci_dirty_flags;
+
+	down_read(&wbci->wbci_rw_sem);
+	state->wbcs_flags = wbci->wbci_flags;
+	/* Data on PCC. */
+	if (wbci->wbci_cache_mode == WBC_MODE_DATA_PCC &&
+	    wbc_inode_assimilated(wbci))
+		rc = pcc_wbc_state_get(file, inode, state);
+	up_read(&wbci->wbci_rw_sem);
+
+	RETURN(rc);
+}
+
 long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = file_inode(file);
@@ -63,12 +87,7 @@ long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (state == NULL)
 			RETURN(-ENOMEM);
 
-		state->wbcs_fmode = inode->i_mode;
-		state->wbcs_flags = wbci->wbci_flags;
-		state->wbcs_cache_mode = wbci->wbci_cache_mode;
-		state->wbcs_flush_mode = wbci->wbci_flush_mode;
-		state->wbcs_dirty_flags = wbci->wbci_dirty_flags;
-
+		rc = wbc_ioctl_state(file, inode, state);
 		if (copy_to_user(ustate, state, sizeof(*state)))
 			GOTO(out_state, rc = -EFAULT);
 out_state:

@@ -2747,6 +2747,60 @@ out_unlock:
 	RETURN(rc);
 }
 
+int pcc_wbc_state_get(struct file *file, struct inode *inode,
+		      struct lu_wbc_state *state)
+{
+	struct ll_file_data *fd = file->private_data;
+	struct pcc_file *pccf = &fd->fd_pcc_file;
+	struct pcc_inode *pcci;
+	int buf_len;
+	char *path;
+	char *buf;
+	int count;
+	int rc = 0;
+
+	ENTRY;
+
+	LASSERT(S_ISREG(inode->i_mode));
+	buf_len = sizeof(state->wbcs_path);
+	if (buf_len <= 0)
+		RETURN(-EINVAL);
+
+	OBD_ALLOC(buf, buf_len);
+	if (buf == NULL)
+		RETURN(-ENOMEM);
+
+	pcc_inode_lock(inode);
+	pcci = ll_i2pcci(inode);
+	if (pcci == NULL)
+		GOTO(out_unlock, rc);
+
+	count = atomic_read(&pcci->pcci_refcount);
+	if (count == 0) {
+		state->wbcs_open_count = 0;
+		GOTO(out_unlock, rc);
+	}
+
+	if (pcc_inode_has_layout(pcci))
+		count--;
+	if (pccf->pccf_file != NULL)
+		count--;
+
+	state->wbcs_open_count = count;
+	path = dentry_path_raw(pcci->pcci_path.dentry, buf, buf_len);
+	if (IS_ERR(path))
+		GOTO(out_unlock, rc = PTR_ERR(path));
+
+	if (strlcpy(state->wbcs_path, path, buf_len) >= buf_len)
+		GOTO(out_unlock, rc = -ENAMETOOLONG);
+
+out_unlock:
+	pcc_inode_unlock(inode);
+	OBD_FREE(buf, buf_len);
+
+	RETURN(rc);
+}
+
 int pcc_wbc_commit_data(struct inode *inode, __u32 rwid)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
