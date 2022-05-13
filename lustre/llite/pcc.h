@@ -37,58 +37,11 @@
 #include <linux/seq_file.h>
 #include <linux/mm.h>
 #include <uapi/linux/lustre/lustre_user.h>
+#include <obd_rule.h>
 
 extern struct kmem_cache *pcc_inode_slab;
 
 #define LPROCFS_WR_PCC_MAX_CMD 4096
-
-/* User/Group/Project ID */
-struct pcc_match_id {
-	__u32			pmi_id;
-	struct list_head	pmi_linkage;
-};
-
-/* wildcard file name */
-struct pcc_match_fname {
-	char			*pmf_name;
-	struct list_head	 pmf_linkage;
-};
-
-enum pcc_field {
-	PCC_FIELD_UID,
-	PCC_FIELD_GID,
-	PCC_FIELD_PROJID,
-	PCC_FIELD_FNAME,
-	PCC_FIELD_MAX
-};
-
-struct pcc_expression {
-	enum pcc_field		pe_field;
-	struct list_head	pe_cond;
-	struct list_head	pe_linkage;
-};
-
-struct pcc_conjunction {
-	/* link to disjunction */
-	struct list_head	pc_linkage;
-	/* list of logical conjunction */
-	struct list_head	pc_expressions;
-};
-
-/**
- * Match rule for auto PCC-cached files.
- */
-struct pcc_match_rule {
-	char			*pmr_conds_str;
-	struct list_head	 pmr_conds;
-};
-
-struct pcc_matcher {
-	__u32		 pm_uid;
-	__u32		 pm_gid;
-	__u32		 pm_projid;
-	struct qstr	*pm_name;
-};
 
 enum pcc_dataset_flags {
 	PCC_DATASET_INVALID	= 0x0,
@@ -114,7 +67,7 @@ enum pcc_dataset_flags {
 struct pcc_dataset {
 	__u32			pccd_rwid;	 /* Archive ID */
 	__u32			pccd_roid;	 /* Readonly ID */
-	struct pcc_match_rule	pccd_rule;	 /* Match rule */
+	struct cfs_rule		pccd_rule;	 /* Match rule */
 	enum pcc_dataset_flags	pccd_flags;	 /* Flags of PCC backend */
 	char			pccd_pathname[PATH_MAX]; /* full path */
 	struct path		pccd_path;	 /* Root path */
@@ -204,8 +157,7 @@ struct pcc_cmd {
 		struct pcc_cmd_add {
 			__u32			 pccc_rwid;
 			__u32			 pccc_roid;
-			struct list_head	 pccc_conds;
-			char			*pccc_conds_str;
+			struct cfs_rule		 pccc_rule;
 			enum pcc_dataset_flags	 pccc_flags;
 		} pccc_add;
 		struct pcc_cmd_del {
@@ -261,7 +213,7 @@ int pcc_inode_create_fini(struct inode *inode, struct pcc_create_attach *pca);
 void pcc_create_attach_cleanup(struct super_block *sb,
 			       struct pcc_create_attach *pca);
 struct pcc_dataset *pcc_dataset_match_get(struct pcc_super *super,
-					  struct pcc_matcher *matcher);
+					  struct cfs_matcher *matcher);
 void pcc_dataset_put(struct pcc_dataset *dataset);
 void pcc_inode_free(struct inode *inode);
 void pcc_layout_invalidate(struct inode *inode);

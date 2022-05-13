@@ -1242,13 +1242,13 @@ static int ll_atomic_open(struct inode *dir, struct dentry *dentry,
 		/* Volatile file is used for HSM restore, so do not use PCC */
 		if (!filename_is_volatile(dentry->d_name.name,
 					  dentry->d_name.len, NULL)) {
-			struct pcc_matcher item;
+			struct cfs_matcher item;
 			struct pcc_dataset *dataset;
 
-			item.pm_uid = from_kuid(&init_user_ns, current_uid());
-			item.pm_gid = from_kgid(&init_user_ns, current_gid());
-			item.pm_projid = ll_i2info(dir)->lli_projid;
-			item.pm_name = &dentry->d_name;
+			item.mc_uid = from_kuid(&init_user_ns, current_uid());
+			item.mc_gid = from_kgid(&init_user_ns, current_gid());
+			item.mc_projid = ll_i2info(dir)->lli_projid;
+			item.mc_name = &dentry->d_name;
 			dataset = pcc_dataset_match_get(&sbi->ll_pcc_super,
 							&item);
 			pca.pca_dataset = dataset;
