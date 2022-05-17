@@ -1774,7 +1774,7 @@ void wbc_intent_inode_init(struct inode *dir, struct inode *inode,
 }
 
 /*
- * TODO: Customizable rule based auto WBC.
+ * Customizable rule based auto WBC.
  * Define various auto caching rule for WBC on a client similar to TBF or PCC.
  * When a newly creating directory meets the rule condition, it can try to
  * obtain EX WBC lock from MDS and keep exclusive access on the directory
@@ -1789,9 +1789,25 @@ ll_mkdir_policy_get(struct ll_sb_info *sbi, struct inode *dir,
 		    __u64 *extra_lock_flags)
 {
 	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
+	struct cfs_rule *rule = &conf->wbcc_rule;
 	struct wbc_inode *wbci = ll_i2wbci(dir);
+	struct cfs_matcher matcher;
+	bool excl_cache;
 
 	if (conf->wbcc_cache_mode == WBC_MODE_NONE) {
+		excl_cache = false;
+	} else if (rule->rl_conds_str == NULL) {
+		excl_cache = true;
+	} else {
+		matcher.mc_uid = from_kuid(&init_user_ns, current_uid());
+		matcher.mc_gid = from_kgid(&init_user_ns, current_gid());
+		matcher.mc_projid = ll_i2info(dir)->lli_projid;
+		matcher.mc_name = &dentry->d_name;
+
+		excl_cache = cfs_rule_match(rule, &matcher);
+	}
+
+	if (!excl_cache) {
 		*extra_lock_flags = 0;
 		return sbi->ll_intent_mkdir_enabled ?
 		       MKDIR_POL_INTENT : MKDIR_POL_REINT;
@@ -1872,6 +1888,10 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 		   percpu_counter_sum(&conf->wbcc_used_pages)));
 	seq_printf(m, "pages_hiwm: %u\n", conf->wbcc_hiwm_pages_count);
 	seq_printf(m, "batch_no_layout: %d\n", conf->wbcc_batch_no_layout);
+	if (conf->wbcc_rule.rl_conds_str)
+		seq_printf(m, "rule: %s\n", conf->wbcc_rule.rl_conds_str);
+	else
+		seq_printf(m, "rule: *\n");
 
 	return 0;
 }
@@ -2024,6 +2044,45 @@ static ssize_t wbc_rmpol_seq_write(struct file *file,
 }
 LDEBUGFS_SEQ_FOPS(wbc_rmpol);
 
+static int wbc_rule_seq_show(struct seq_file *m, void *v)
+{
+	struct super_block *sb = m->private;
+	struct wbc_conf *conf = ll_s2wbcc(sb);
+
+	if (conf->wbcc_rule.rl_conds_str)
+		seq_printf(m, "rule: %s\n", conf->wbcc_rule.rl_conds_str);
+
+	return 0;
+}
+
+static ssize_t wbc_rule_seq_write(struct file *file, const char __user *buffer,
+				  size_t count, loff_t *off)
+{
+	struct seq_file *m = file->private_data;
+	struct super_block *sb = m->private;
+	char *kernbuf;
+	int rc;
+
+	if (count >= LPROCFS_WR_WBC_MAX_CMD)
+		return -EINVAL;
+
+	/*
+	 * TODO: Check for the WBC support via the connection flag.
+	 */
+	OBD_ALLOC(kernbuf, count + 1);
+	if (kernbuf == NULL)
+		return -ENOMEM;
+
+	if (copy_from_user(kernbuf, buffer, count))
+		GOTO(out_free_kernbuff, rc = -EFAULT);
+
+	rc = wbc_rule_parse_and_handle(kernbuf, count, ll_s2wbcs(sb));
+out_free_kernbuff:
+	OBD_FREE(kernbuf, count + 1);
+	return rc ? rc : count;
+}
+LDEBUGFS_SEQ_FOPS(wbc_rule);
+
 struct ldebugfs_vars ldebugfs_llite_wbc_vars[] = {
 	{ .name =	"conf",
 	  .fops =	&wbc_conf_fops		},
@@ -2033,6 +2092,8 @@ struct ldebugfs_vars ldebugfs_llite_wbc_vars[] = {
 	  .fops =	&wbc_max_rpcs_fops,	},
 	{ .name =	"rmpol",
 	  .fops =	&wbc_rmpol_fops,	},
+	{ .name =	"rule",
+	  .fops =	&wbc_rule_fops,		},
 	{ NULL }
 };
 

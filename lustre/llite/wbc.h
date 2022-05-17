@@ -35,6 +35,7 @@
 #include <linux/seq_file.h>
 #include <linux/mm.h>
 #include <uapi/linux/lustre/lustre_user.h>
+#include <obd_rule.h>
 
 enum lu_mkdir_policy {
 	MKDIR_POL_REINT,
@@ -178,6 +179,9 @@ struct wbc_conf {
 	int			wbcc_hiwm_ratio; /* High watermark. */
 	__u32			wbcc_hiwm_inodes_count;
 	__u32			wbcc_hiwm_pages_count;
+
+	/* Auto writeback caching rule */
+	struct cfs_rule		wbcc_rule;
 };
 
 struct wbc_super {
@@ -321,6 +325,8 @@ enum wbc_cmd_type {
 	WBC_CMD_CONFIG,
 	WBC_CMD_CHANGE,
 	WBC_CMD_CLEAR,
+	WBC_CMD_RULE_SET,
+	WBC_CMD_RULE_CLEAR,
 };
 
 enum wbc_cmd_op {
@@ -336,7 +342,7 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_MAX_BATCH_COUNT	= 0x0200,
 	WBC_CMD_OP_MAX_QLEN		= 0x0400,
 	WBC_CMD_OP_BATCH_NO_LAYOUT	= 0x0800,
-	WBC_CMD_OP_MAX_NRPAGES_PER_FILE	= 0x0800,
+	WBC_CMD_OP_MAX_NRPAGES_PER_FILE	= 0x1000,
 };
 
 struct wbc_cmd {
@@ -570,6 +576,8 @@ void wbc_dentry_init(struct dentry *dentry);
 int wbc_cmd_handle(struct wbc_super *super, struct wbc_cmd *cmd);
 int wbc_cmd_parse_and_handle(char *buffer, unsigned long count,
 			     struct wbc_super *super);
+int wbc_rule_parse_and_handle(char *buffer, unsigned long count,
+			      struct wbc_super *super);
 
 /* memfs.c */
 void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);

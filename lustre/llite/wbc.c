@@ -1387,6 +1387,8 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 
 void wbc_super_fini(struct wbc_super *super)
 {
+	struct wbc_conf *conf = &super->wbcs_conf;
+
 	LASSERT(list_empty(&super->wbcs_rsvd_inode_lru));
 	LASSERT(list_empty(&super->wbcs_data_inode_lru));
 
@@ -1395,7 +1397,8 @@ void wbc_super_fini(struct wbc_super *super)
 		super->wbcs_reclaim_task = NULL;
 	}
 
-	percpu_counter_destroy(&super->wbcs_conf.wbcc_used_pages);
+	percpu_counter_destroy(&conf->wbcc_used_pages);
+	cfs_rule_fini(&conf->wbcc_rule);
 }
 
 int wbc_super_init(struct wbc_super *super)
@@ -1416,6 +1419,8 @@ int wbc_super_init(struct wbc_super *super)
 	conf->wbcc_cache_mode = WBC_MODE_NONE;
 	conf->wbcc_flush_mode = WBC_FLUSH_NONE;
 	wbc_super_reset_common_conf(conf);
+	conf->wbcc_rule.rl_conds_str = NULL;
+	INIT_LIST_HEAD(&conf->wbcc_rule.rl_conds);
 	spin_lock_init(&super->wbcs_lock);
 	INIT_LIST_HEAD(&super->wbcs_roots);
 	INIT_LIST_HEAD(&super->wbcs_lazy_roots);
@@ -1699,6 +1704,92 @@ int wbc_cmd_parse_and_handle(char *buffer, unsigned long count,
 		return PTR_ERR(cmd);
 
 	rc = wbc_cmd_handle(super, cmd);
+	OBD_FREE_PTR(cmd);
+	return rc;
+}
+
+static struct wbc_cmd *wbc_rule_parse(char *buffer, unsigned long count)
+{
+	struct wbc_cmd *cmd;
+	char *token;
+	char *val;
+	int rc = 0;
+
+	ENTRY;
+
+	OBD_ALLOC_PTR(cmd);
+	if (cmd == NULL)
+		RETURN(ERR_PTR(-ENOMEM));
+
+	if (strncmp(buffer, "clear", 5) == 0) {
+		cmd->wbcc_cmd = WBC_CMD_RULE_CLEAR;
+		RETURN(cmd);
+	}
+
+	val = buffer;
+	token = strsep(&val, " ");
+	if (val == NULL || strlen(val) == 0)
+		GOTO(out_free_cmd, rc = -EINVAL);
+
+	if (strcmp(token, "set") == 0)
+		cmd->wbcc_cmd = WBC_CMD_RULE_SET;
+	else
+		GOTO(out_free_cmd, rc = -EINVAL);
+
+	token = val;
+	val = strrchr(token, '}');
+	if (!val)
+		GOTO(out_free_cmd, rc = -EINVAL);
+
+	/* Skip '}' */
+	val++;
+	if (*val == '\0') {
+		val = NULL;
+	} else if (*val == ' ') {
+		*val = '\0';
+		val++;
+	} else {
+		GOTO(out_free_cmd, rc = -EINVAL);
+	}
+
+	rc = cfs_rule_parse_init(&cmd->wbcc_conf.wbcc_rule, token);
+	if (rc)
+		GOTO(out_free_cmd, rc);
+
+	RETURN(cmd);
+out_free_cmd:
+	OBD_FREE_PTR(cmd);
+	RETURN(ERR_PTR(rc));
+}
+
+int wbc_rule_parse_and_handle(char *buffer, unsigned long count,
+			      struct wbc_super *super)
+{
+	struct wbc_conf *conf = &super->wbcs_conf;
+	struct wbc_cmd *cmd;
+	int rc = 0;
+
+	ENTRY;
+
+	cmd = wbc_rule_parse(buffer, count);
+	if (IS_ERR(cmd))
+		return PTR_ERR(cmd);
+
+	if (cmd->wbcc_cmd == WBC_CMD_RULE_SET) {
+		struct cfs_rule *cmdrule = &cmd->wbcc_conf.wbcc_rule;
+
+		if (conf->wbcc_rule.rl_conds_str)
+			rc = -EALREADY;
+		else
+			rc = cfs_rule_parse_init(&conf->wbcc_rule,
+						 cmdrule->rl_conds_str);
+		cfs_rule_fini(cmdrule);
+	} else if (cmd->wbcc_cmd == WBC_CMD_RULE_CLEAR) {
+		cfs_rule_fini(&conf->wbcc_rule);
+	} else {
+		rc = -EINVAL;
+	}
+
 	OBD_FREE_PTR(cmd);
 	return rc;
 }

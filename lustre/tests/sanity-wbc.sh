@@ -105,6 +105,27 @@ setup_wbc()
 	wbc_conf_show
 }
 
+wbc_rule_clear()
+{
+	local mnt=${1:-$MOUNT}
+	local fsuuid=$($LFS getname $mnt | awk '{print $1}')
+
+	$LCTL set_param llite.$fsuuid.wbc.rule="clear"
+}
+
+wbc_rule_set()
+{
+	local param="$1"
+	local mnt=${2:-$MOUNT}
+	local fsuuid=$($LFS getname $mnt | awk '{print $1}')
+
+	$LCTL set_param llite.$fsuuid.wbc.rule="clear"
+	stack_trap "wbc_rule_clear $mnt" EXIT
+	$LCTL set_param llite.$fsuuid.wbc.rule="set $param" ||
+		error "failed to set WBC caching rule: $param"
+	$LCTL get_param llite.$fsuuid.wbc.rule
+}
+
 get_wbc_flags() {
 	local file=$1
 	local st
@@ -2510,6 +2531,205 @@ test_112() {
 	$LFS wbc state $dir1 $file2 $file3
 }
 run_test 112 "rename operation for flushed files"
+
+test_rule_ugid() {
+	local flush_mode="aging_keep"
+	local rule="$1={$2}"
+	local myRUNAS="$3"
+	local dir=$DIR/$tdir
+
+	mkdir $dir || error "mkdir $dir failed"
+	chmod 777 $dir || error "chmod 777 $dir failed"
+
+	setup_wbc "flush_mode=$flush_mode"
+	wbc_rule_set "$rule"
+
+	mkdir $dir/d.notcache || error "mkdir $dir/d.notcache failed"
+	check_wbc_flags $dir/d.notcache "0x00000000"
+
+	$myRUNAS mkdir $dir/d0 || error "mkdir $dir/d0 failed"
+	check_wbc_flags $dir/d0 "0x0000000f"
+
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_113a() {
+	test_rule_ugid "uid" "500" "runas -u 500"
+	test_rule_ugid "gid" "500" "runas -u 500 -g 500"
+}
+run_test 113a "Test auto WBC caching for UID/GID rules"
+
+test_113b() {
+	local flush_mode="lazy_drop"
+	local dir=$DIR/$tdir
+
+	is_project_quota_supported || skip "project quota is not supported"
+	enable_project_quota
+
+	setup_wbc "flush_mode=$flush_mode"
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir/d0 || error "mkdir $dir/d0 failed"
+	$LFS wbc state $dir $dir/d0
+	check_wbc_flags $dir "0x0000000f"
+	check_wbc_flags $dir/d0 "0x00000015"
+	rm -rf $dir || error "rm $dir failed"
+
+	cleanup_wbc
+
+	local projid=100
+	local dirp=$DIR/$tdir.$projid
+
+	mkdir $dirp || error "mkdir $dirp failed"
+	$LFS project -sp $projid $dirp ||
+		error "lfs project -sp $projid $dirp failed"
+
+	setup_wbc "flush_mode=$flush_mode"
+	wbc_rule_set "projid={$projid}"
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir/d0 || error "mkdir $dir/d0 failed"
+	check_fileset_wbc_flags "$dir $dir/d0" "0x00000000"
+	mkdir $dirp/d0 || error "mkdir $dirp/d0 failed"
+	mkdir $dirp/d0/d1 || error "mkdir $dirp/d0/d1 failed"
+	check_wbc_flags $dirp/d0 "0x0000000f"
+	check_wbc_flags $dirp/d0/d1 "0x00000015"
+	$LFS wbc state $dir $dir/d0 $dirp/d0 $dirp/d0/d1
+}
+run_test 113b "Auto cache with the specified project ID"
+
+test_113c() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+
+	mkdir $dir || error "mkdir $dir failed"
+	chmod 777 $dir || error "chmod 777 $dir failed"
+
+	setup_wbc "flush_mode=$flush_mode"
+	wbc_rule_set "fname={*.h5 suffix.* mid*dle}"
+
+	mkdir $dir/d.notcache || error "mkdir $dir/d.notcache failed"
+	check_wbc_flags $dir/d.notcache "0x00000000"
+
+	mkdir $dir/d0.h5 || error "mkdir $dir/d0.h5 failed"
+	check_wbc_flags $dir/d0.h5 "0x0000000f"
+
+	mkdir $dir/suffix.d1 || error "mkdir $dir/suffix.d1 failed"
+	check_wbc_flags $dir/suffix.d1 "0x0000000f"
+
+	mkdir $dir/midPADdle || error "mkdir $dir/midPADdle failed"
+	check_wbc_flags $dir/midPADdle "0x0000000f"
+}
+run_test 113c "Test auto writeback caching for file name with wildcard"
+
+test_113d() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local tgtdir
+	local myRUNAS
+
+	is_project_quota_supported || skip "project quota is not supported"
+	enable_project_quota
+
+	mkdir $dir || error "mkdir $dir failed"
+	chmod 777 $dir || error "chmod 777 $dir failed"
+
+	setup_wbc "flush_mode=$flush_mode"
+	wbc_rule_set "projid={100 200}&fname={*.h5},uid={500}&gid={1000}"
+
+	mkdir $dir/d.p100 || error "mkdir $dir/d.p100 failed"
+	mkdir $dir/d.p200 || error "mkdir $dir/d.p200 failed"
+	$LFS project -sp 100 $dir/d.p100 ||
+		error "failed to set project 100 for $dir/d.p100"
+	$LFS project -sp 200 $dir/d.p200 ||
+		error "failed to set project 200 for $dir/d.p200"
+
+	tgtdir=$dir/d.p100/d.notcache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x00000000"
+
+	tgtdir=$dir/d.p100/d.cache.h5
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x0000000f"
+
+	tgtdir=$dir/d.p200/d.notcache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x00000000"
+
+	tgtdir=$dir/d.p200/d.cache.h5
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x0000000f"
+
+	tgtdir=$dir/d.ugid
+	myRUNAS="runas -u 500 -g 1000"
+	$myRUNAS mkdir $tgtdir || error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x0000000f"
+}
+run_test 113d "Check auto writeback caching for UID/GID/PROJID/fname rule"
+
+test_113e() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local tgtdir
+	local myRUNAS
+
+	is_project_quota_supported || skip "project quota is not supported"
+	enable_project_quota
+
+	mkdir $dir || error "mkdir $dir failed"
+
+	mkdir $dir/d.p99 || error "mkdir $dir/d.p99 failed"
+	$LFS project -sp 99 $dir/d.p99 ||
+		error "set project 99 for $dir/d.p99 failed"
+	mkdir $dir/d.p101 || error "mkdir $dir/d.p101 failed"
+	$LFS project -sp 101 $dir/d.p101 ||
+		error "set project 101 for $dir/d.p101 failed"
+	setup_wbc "flush_mode=$flush_mode"
+	wbc_rule_set "projid>{100}"
+	tgtdir=$dir/d.p99/d.notcache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x00000000"
+	tgtdir=$dir/d.p101/d.cache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x0000000f"
+	cleanup_wbc
+
+	mkdir $dir/d.p102 || error "mkdir $dir/d.p102 failed"
+	$LFS project -sp 102 $dir/d.p102 ||
+		error "set project 102 for $dir/d.p102 failed"
+	mkdir $dir/d.p98 || error "mkdir $dir/d.p98 failed"
+	$LFS project -sp 98 $dir/d.p98 ||
+		error "set project 98 for $dir/d.p98 failed"
+	setup_wbc "flush_mode=$flush_mode"
+	wbc_rule_set "projid<{100}"
+	tgtdir=$dir/d.p102/d.notcache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x00000000"
+	tgtdir=$dir/d.p98/d.cache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x0000000f"
+	cleanup_wbc
+
+	mkdir $dir/d.p121 || error "mkdir $dir/d.p121 failed"
+	$LFS project -sp 121 $dir/d.p121 ||
+		error "set project 121 for $dir/d.p121 failed"
+	mkdir $dir/d.p109 || error "mkdir $dir/d.p109 failed"
+	$LFS project -sp 109 $dir/d.p109 ||
+		error "set project 109 for $dir/d.p109 failed"
+	mkdir $dir/d.p115 || error "mkdir $dir/d.p115 failed"
+	$LFS project -sp 115 $dir/d.p115 ||
+		error "set project 115 for $dir/d.p115 failed"
+	setup_wbc "flush_mode=$flush_mode"
+	wbc_rule_set "projid<{120}&projid>{110}"
+	tgtdir=$dir/d.p121/d.notcache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x00000000"
+	tgtdir=$dir/d.p109/d.notcache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x00000000"
+	tgtdir=$dir/d.p115/d.cache
+	mkdir $tgtdir|| error "mkdir $tgtdir failed"
+	check_wbc_flags $tgtdir "0x0000000f"
+}
+run_test 113e "Cache rule with comparator (>, <) for Project ID range"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
