@@ -1812,7 +1812,7 @@ static inline struct wbc_conf *ll_i2wbcc(struct inode *inode)
 	return &ll_i2wbcs(inode)->wbcs_conf;
 }
 
-static inline bool ll_data_in_lustre(struct inode *inode)
+static inline bool ll_data_on_lustre(struct inode *inode)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
 	struct wbc_inode *wbci = ll_i2wbci(inode);
@@ -1821,6 +1821,9 @@ static inline bool ll_data_in_lustre(struct inode *inode)
 		return true;
 
 	if (wbc_inode_assimilated(wbci)) {
+		if (wbc_cache_mode_dop(wbci))
+			return false;
+
 		LASSERT(wbc_inode_has_protected(wbci) && lli->lli_clob != NULL);
 		return true;
 	}

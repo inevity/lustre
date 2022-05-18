@@ -680,10 +680,20 @@ static int memfs_getattr(const struct path *path, struct kstat *stat,
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_has_protected(wbci))
-		rc = simple_getattr(path, stat, request_mask, flags);
-	else
+	if (wbc_inode_has_protected(wbci)) {
+		if (wbc_inode_dop_assimilated(wbci)) {
+			bool cached;
+
+			rc = pcc_inode_getattr(inode, request_mask,
+					       flags, &cached);
+			if (rc == 0)
+				generic_fillattr(inode, stat);
+		} else {
+			rc = simple_getattr(path, stat, request_mask, flags);
+		}
+	} else {
 		rc = inode->i_op->getattr(path, stat, request_mask, flags);
+	}
 	up_read(&wbci->wbci_rw_sem);
 
 	RETURN(rc);
@@ -699,10 +709,20 @@ static int memfs_getattr(struct vfsmount *mnt, struct dentry *de,
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_has_protected(wbci))
-		rc = simple_getattr(mnt, de, stat);
-	else
+	if (wbc_inode_has_protected(wbci)) {
+		if (wbc_inode_dop_assimilated(wbci)) {
+			bool cached;
+
+			rc = pcc_inode_getattr(inode, STATX_BASIC_STATS,
+					       AT_STATX_SYNC_AS_STAT, &cached);
+			if (rc == 0)
+				generic_fillattr(inode, stat);
+		} else {
+			rc = simple_getattr(mnt, de, stat);
+		}
+	} else {
 		rc = inode->i_op->getattr(mnt, de, stat);
+	}
 	up_read(&wbci->wbci_rw_sem);
 
 	RETURN(rc);

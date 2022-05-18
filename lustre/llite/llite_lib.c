@@ -2845,7 +2845,7 @@ void ll_delete_inode(struct inode *inode)
 		 * local inode gets i_nlink 0 from server only for the last
 		 * unlink, so that file is not opened somewhere else
 		 */
-		if (ll_data_in_lustre(inode))
+		if (ll_data_on_lustre(inode))
 			cl_sync_file_range(inode, 0, OBD_OBJECT_EOF,
 					   inode->i_nlink ? CL_FSYNC_LOCAL :
 					   CL_FSYNC_DISCARD, 1);

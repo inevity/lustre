@@ -1992,7 +1992,6 @@ test_32() {
 	wait_wbc_sync_state $file
 	$LFS wbc state $file
 
-	#sleep 10
 	$LFS wbc state $file
 	$LFS pcc state $file
 	cat $file
@@ -2007,6 +2006,74 @@ test_32() {
 
 }
 run_test 32 "DOP for aging_keep flush mode"
+
+test_33() {
+	local loopfile="$TMP/$tfile"
+	local mntpt="/mnt/pcc.$tdir"
+	local hsm_root="$mntpt/$tdir"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+
+	setup_loopdev client $loopfile $mntpt 60
+	mkdir $hsm_root || error "mkdir $hsm_root failed"
+	copytool setup -m "$MOUNT" -a "$HSM_ARCHIVE_NUMBER" --facet client
+	setup_pcc_mapping client \
+		"projid={100}\ rwid=$HSM_ARCHIVE_NUMBER"
+	$LCTL pcc list $MOUNT
+
+	reset_kernel_writeback_param
+	interval=$(sysctl -n vm.dirty_expire_centisecs)
+	echo "dirty_writeback_centisecs: $interval"
+	setup_wbc "cache_mode=dop flush_mode=aging_keep max_nrpages_per_file=0"
+
+	local size
+
+	mkdir $dir || error "mkdir $dir failed"
+	echo "Data_on_PCC" > $file || error "write $file failed"
+	# state: protect complete reserved committed
+	check_wbc_flags $file "0x00000035"
+	wait_wbc_sync_state $file
+	# state: protected sync complete reserved committed
+	check_wbc_flags $file "0x00000037"
+	size=$(stat -c %s $file)
+	[[ $size == 12 ]] || error "file size ($size) wrong: expect 12"
+	$LFS pcc detach -k $file || error "failed to detach $file from PCC"
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	mkdir $dir || error "mkdir $dir failed"
+	dd if=/dev/zero of=$file bs=4K count=2 || error "dd write $file failed"
+	# state: protect complete reserved committed
+	check_wbc_flags $file "0x00000035"
+	$MULTIOP $file oyc || error "$MULTIOP $file oyc failed"
+	# state: protected sync complete reserved committed
+	check_wbc_flags $file "0x00000037"
+	size=$(stat -c %s $file)
+	[[ $size == 8192 ]] || error "file size ($size) wrong: expect 8192"
+	$LFS pcc detach -k $file || error "failed to detach $file from PCC"
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	setup_wbc "cache_mode=dop flush_mode=aging_keep max_nrpages_per_file=4"
+	mkdir $dir || error "mkdir $dir failed"
+	dd if=/dev/zero of=$file bs=4K count=2 || error "dd write $file failed"
+	# state: protected complete reserved
+	check_wbc_flags $file "0x00000015"
+	size=$(stat -c %s $file)
+	[[ $size == 8192 ]] || error "file size ($size) wrong: expect 8192"
+	dd if=/dev/zero of=$file bs=4K count=8 conv=notrunc ||
+		error "dd write $file failed"
+	# state: protected complete reserved committed
+	check_wbc_flags $file "0x00000035"
+	size=$(stat -c %s $file)
+	[[ $size == 32768 ]] || error "file size ($size) wrong: expect 32768"
+	$MULTIOP $file oyc || error "$MULTIOP $file oyc failed"
+	# state: protected sync complete reserved committed
+	check_wbc_flags $file "0x00000037"
+	size=$(stat -c %s $file)
+	[[ $size == 32768 ]] || error "file size ($size) wrong: expect 32768"
+	$LFS pcc detach -k $file || error "failed to detach $file from PCC"
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+run_test 33 "Obtain attr from PCC once data on PCC"
 
 test_100() {
 	local dir=$DIR/$tdir

@@ -61,8 +61,7 @@ static int wbc_ioctl_state(struct file *file, struct inode *inode,
 	down_read(&wbci->wbci_rw_sem);
 	state->wbcs_flags = wbci->wbci_flags;
 	/* Data on PCC. */
-	if (wbci->wbci_cache_mode == WBC_MODE_DATA_PCC &&
-	    wbc_inode_assimilated(wbci))
+	if (wbc_inode_dop_assimilated(wbci))
 		rc = pcc_wbc_state_get(file, inode, state);
 	up_read(&wbci->wbci_rw_sem);
 
@@ -126,6 +125,7 @@ out_unrsv_free:
 		RETURN(rc);
 	}
 	case LL_IOC_PCC_STATE:
+	case LL_IOC_PCC_DETACH:
 		RETURN(ll_i2sbi(inode)->ll_fop->unlocked_ioctl(file, cmd, arg));
 	case LL_IOC_GET_MDTIDX:
 		RETURN(ll_dir_operations.unlocked_ioctl(file, cmd, arg));
@@ -1316,6 +1316,7 @@ static int wbc_commit_data_pcc(struct inode *inode)
 		rc = nr_pages;
 	mapping_clear_unevictable(mapping);
 
+	/* XXX call @truncate_inode_pages() to release the whole pages. */
 	RETURN(rc);
 }
 
@@ -1355,7 +1356,8 @@ void wbc_free_inode_pages_final(struct inode *inode,
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 
 	if (wbc_inode_has_protected(wbci)) {
-		LASSERT(!wbc_inode_data_committed(wbci));
+		if (wbc_inode_dop_assimilated(wbci))
+			return;
 
 		if (inode->i_nlink) {
 			(void) wbcfs_commit_cache_pages(inode);
@@ -1888,6 +1890,8 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 		   percpu_counter_sum(&conf->wbcc_used_pages)));
 	seq_printf(m, "pages_hiwm: %u\n", conf->wbcc_hiwm_pages_count);
 	seq_printf(m, "batch_no_layout: %d\n", conf->wbcc_batch_no_layout);
+	seq_printf(m, "max_nrpages_per_file: %lu\n",
+		   conf->wbcc_max_nrpages_per_file);
 	if (conf->wbcc_rule.rl_conds_str)
 		seq_printf(m, "rule: %s\n", conf->wbcc_rule.rl_conds_str);
 	else
