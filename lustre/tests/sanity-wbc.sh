@@ -632,7 +632,8 @@ test_6_base() {
 	local file2="$dir1/file2"
 	local dir2="$dir1/dir2"
 	local file3="$dir2/file3"
-	local flags="0x00000000"
+	local dirflags="0x00000000"
+	local regflags="0x00000000"
 	local interval
 	local oldmd5
 	local newmd5
@@ -642,8 +643,10 @@ test_6_base() {
 	echo "dirty_writeback_centisecs: $interval"
 
 	setup_wbc "flush_mode=$flush_mode"
-	wbc_conf_show | grep "flush_mode: aging_keep" &&
-		flags="0x00000017"
+	wbc_conf_show | grep "flush_mode: aging_keep" && {
+		dirflags="0x00000017"
+		regflags="0x00000037"
+	}
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	$LFS wbc state $DIR/$tdir
 	mkdir $DIR/$dir1 || error "mkdir $DIR/$dir1 failed"
@@ -654,7 +657,9 @@ test_6_base() {
 	oldmd5=$(md5sum $DIR/$file2 | awk '{print $1}')
 	echo "KKKKK" > $DIR/$file3 || error "write  $DIR/$file3 failed"
 
-	local fileset="$file1 $dir1 $file2 $dir2 $file3"
+	local dirset="$dir1 $dir2"
+	local regset="$file1 $file2 $file3"
+	local fileset="$dirset $regset"
 
 	ls -R $DIR/$tdir
 	check_fileset_wbc_flags "$fileset" "0x00000015" $DIR
@@ -663,7 +668,8 @@ test_6_base() {
 	wait_wbc_sync_state $DIR/$file3
 	$LFS wbc state $DIR/$tdir $DIR/$file1 $DIR/$dir1 $DIR/$file2 \
 		$DIR/$dir2 $DIR/$file3
-	check_fileset_wbc_flags "$fileset" "$flags" $DIR
+	check_fileset_wbc_flags "$dirset" "$dirflags" $DIR
+	check_fileset_wbc_flags "$regset" "$regflags" $DIR
 	check_mdt_fileset_exist "$fileset" 0 ||
 		error "'$fileset' should exist on MDT"
 
@@ -795,7 +801,7 @@ test_9() {
 	sleep $((interval / 100))
 	wait_wbc_sync_state $DIR/$file
 	$LFS wbc state $DIR/$file
-	check_wbc_flags $DIR/$file "0x00000017"
+	check_wbc_flags $DIR/$file "0x00000037"
 	unlink $DIR/$file || error "unlink $DIR/$file failed"
 	check_mdt_fileset_exist "$file" 1 ||
 		error "'$file' should not exist under ROOT on MDT"
@@ -822,10 +828,10 @@ test_10() {
 	echo "$file access rights: $accf"
 	sleep $((interval / 100))
 	wait_wbc_sync_state $file
-	check_wbc_flags $file "0x00000017"
+	check_wbc_flags $file "0x00000037"
 	chmod $expected $file || error "chmod $file failed"
 	stat $file || error "stat $file failed"
-	check_wbc_flags $file "0x00000017"
+	check_wbc_flags $file "0x00000037"
 	accf=$(stat -c %a $file)
 	[ $accf == $expected ] ||
 		error "$file access rights: $accf, expect $expected"
@@ -883,7 +889,7 @@ test_11() {
 	check_wbc_flags $file "0x00000015"
 	oldmd5=$(md5sum $file | awk '{print $1}')
 	wait_wbc_sync_state $file
-	check_wbc_flags $file "0x00000017"
+	check_wbc_flags $file "0x00000037"
 	remount_client $MOUNT || error "remount_client $MOUNT failed"
 	newmd5=$(md5sum $file | awk '{print $1}')
 	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
@@ -2075,6 +2081,28 @@ test_33() {
 }
 run_test 33 "Obtain attr from PCC once data on PCC"
 
+test_34() {
+	local dir=$DIR/$tdir
+
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS setdirstripe -D -c $MDSCOUNT $dir ||
+		error "set default stripe on $dir failed"
+	reset_kernel_writeback_param
+	interval=$(sysctl -n vm.dirty_expire_centisecs)
+	echo "dirty_writeback_centisecs: $interval"
+	setup_wbc "flush_mode=aging_keep"
+
+	mkdir $dir/d0 || error "mkdir $dir/d0 failed"
+	mkdir $dir/d0/d1.i1 || error "create dirs failed"
+	$LFS wbc state $dir/d0 $dir/d0/*
+	wait_wbc_sync_state $dir/d0/d1.i1
+	$LFS wbc state $dir/d0 $dir/d0/*
+	$LFS getdirstripe $dir/d0 $dir/d0/d1.i1
+	echo "checking default stripe"
+	$LFS getdirstripe -D $dir/d0 $dir/d0/d1.i1
+}
+run_test 34 "Test for DNE env with setting of default striped dir"
+
 test_100() {
 	local dir=$DIR/$tdir
 	local file1="$dir/$tfile.1"
@@ -2392,7 +2420,8 @@ test_109b() {
 	$LFS wbc state $file
 	$LFS getstripe $file
 }
-run_test 109b "reply reconstruct for reint layout operation"
+# Skip this test case temporarily
+#run_test 109b "reply reconstruct for reint layout operation"
 
 test_110_base() {
 	local flush_mode=$1

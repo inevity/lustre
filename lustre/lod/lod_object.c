@@ -2319,6 +2319,30 @@ int lod_alloc_foreign_lmv(struct lod_object *lo, size_t size)
 	return 0;
 }
 
+static int lod_prep_md_specified_create(const struct lu_env *env,
+					struct dt_object *dt,
+					struct lu_attr *attr,
+					const struct lu_buf *lmv_buf,
+					struct dt_object_format *dof,
+					struct thandle *th)
+{
+	struct lod_object *lo = lod_dt_obj(dt);
+	int rc;
+
+	ENTRY;
+
+	mutex_lock(&lo->ldo_layout_mutex);
+	rc = lod_parse_dir_striping(env, lo, lmv_buf);
+	if (rc == 0) {
+		lo->ldo_dir_stripe_loaded = 1;
+		lo->ldo_dir_striped = 1;
+		rc = lod_dir_declare_create_stripes(env, dt, attr, dof, th);
+	}
+	mutex_unlock(&lo->ldo_layout_mutex);
+
+	RETURN(rc);
+}
+
 /**
  * Declare create striped md object.
  *
@@ -2345,9 +2369,10 @@ static int lod_declare_xattr_set_lmv(const struct lu_env *env,
 				     struct dt_object_format *dof,
 				     struct thandle *th)
 {
-	struct lod_object	*lo = lod_dt_obj(dt);
-	struct lmv_user_md_v1	*lum = lum_buf->lb_buf;
-	int			rc;
+	struct lod_object *lo = lod_dt_obj(dt);
+	struct lmv_user_md_v1 *lum = lum_buf->lb_buf;
+	int rc;
+
 	ENTRY;
 
 	LASSERT(lum != NULL);
@@ -2360,15 +2385,22 @@ static int lod_declare_xattr_set_lmv(const struct lu_env *env,
 		if (lo->ldo_dir_is_foreign) {
 			rc = lod_alloc_foreign_lmv(lo, lum_buf->lb_len);
 			if (rc != 0)
-				GOTO(out, rc);
+				RETURN(rc);
 			memcpy(lo->ldo_foreign_lmv, lum, lum_buf->lb_len);
 			lo->ldo_dir_stripe_loaded = 1;
 		}
-		GOTO(out, rc = 0);
+		RETURN(0);
 	}
 
-	/* prepare dir striped objects */
-	rc = lod_prep_md_striped_create(env, dt, attr, lum, dof, th);
+	/*
+	 * client replayed striped directory creation with LMV or
+	 * WBC with shard FIDs specificed.
+	 */
+	if (le32_to_cpu(lum->lum_magic) == LMV_MAGIC_V1)
+		rc = lod_prep_md_specified_create(env, dt, attr, lum_buf,
+						  dof, th);
+	else
+		rc = lod_prep_md_striped_create(env, dt, attr, lum, dof, th);
 	if (rc != 0) {
 		/* failed to create striping, let's reset
 		 * config so that others don't get confused */

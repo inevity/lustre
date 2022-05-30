@@ -153,6 +153,9 @@ union lmv_mds_md;
 
 void lmv_free_memmd(struct lmv_stripe_md *lsm);
 
+int lmv_lsm_packmd(const struct lmv_stripe_md *lsm,
+		   struct lmv_mds_md_v1 *lmm, size_t lmm_size);
+
 static inline void lmv1_le_to_cpu(struct lmv_mds_md_v1 *lmv_dst,
 				  const struct lmv_mds_md_v1 *lmv_src)
 {

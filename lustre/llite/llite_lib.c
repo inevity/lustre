@@ -1523,6 +1523,7 @@ void ll_dir_clear_lsm_md(struct inode *inode)
 
 static struct inode *ll_iget_anon_dir(struct super_block *sb,
 				      const struct lu_fid *fid,
+				      const struct lu_fid *pfid,
 				      struct lustre_md *md)
 {
 	struct ll_sb_info *sbi = ll_s2sbi(sb);
@@ -1542,10 +1543,20 @@ static struct inode *ll_iget_anon_dir(struct super_block *sb,
 		RETURN(ERR_PTR(-ENOENT));
 	}
 
+	/* Under WBC, it does not prepare @mdt_body which is null. */
+	if (body) {
+		LASSERT(lu_fid_eq(pfid, &body->mbo_fid1));
+		pfid = &body->mbo_fid1;
+	}
+
 	lli = ll_i2info(inode);
 	if (inode->i_state & I_NEW) {
-		inode->i_mode = (inode->i_mode & ~S_IFMT) |
-				(body->mbo_mode & S_IFMT);
+		if (body)
+			inode->i_mode = (inode->i_mode & ~S_IFMT) |
+					(body->mbo_mode & S_IFMT);
+		else
+			inode->i_mode = (inode->i_mode & ~S_IFMT) | S_IFDIR;
+
 		LASSERTF(S_ISDIR(inode->i_mode), "Not slave inode "DFID"\n",
 			 PFID(fid));
 
@@ -1565,7 +1576,7 @@ static struct inode *ll_iget_anon_dir(struct super_block *sb,
 		ll_lli_init(lli);
 
 		/* master object FID */
-		lli->lli_pfid = body->mbo_fid1;
+		lli->lli_pfid = *pfid;
 		CDEBUG(D_INODE, "lli %p slave "DFID" master "DFID"\n",
 		       lli, PFID(fid), PFID(&lli->lli_pfid));
 		unlock_new_inode(inode);
@@ -1574,7 +1585,7 @@ static struct inode *ll_iget_anon_dir(struct super_block *sb,
 		 * transformed to a stripe if it's plain, set its pfid here,
 		 * otherwise ll_lock_cancel_bits() can't find the master inode.
 		 */
-		lli->lli_pfid = body->mbo_fid1;
+		lli->lli_pfid = *pfid;
 	}
 
 	RETURN(inode);
@@ -1611,7 +1622,8 @@ static int ll_init_lsm_md(struct inode *inode, struct lustre_md *md)
 		 * different, so it reset lsm_md to NULL to avoid
 		 * initializing lsm for slave inode. */
 		lsm->lsm_md_oinfo[i].lmo_root =
-				ll_iget_anon_dir(inode->i_sb, fid, md);
+				ll_iget_anon_dir(inode->i_sb, fid,
+						 &lli->lli_fid, md);
 		if (IS_ERR(lsm->lsm_md_oinfo[i].lmo_root)) {
 			int rc = PTR_ERR(lsm->lsm_md_oinfo[i].lmo_root);
 
@@ -1669,11 +1681,10 @@ static void ll_update_default_lsm_md(struct inode *inode, struct lustre_md *md)
 	RETURN_EXIT;
 }
 
-static int ll_update_lsm_md(struct inode *inode, struct lustre_md *md)
+int ll_update_lsm_md(struct inode *inode, struct lustre_md *md)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
 	struct lmv_stripe_md *lsm = md->lmv;
-	struct cl_attr	*attr;
 	int rc = 0;
 
 	ENTRY;
@@ -1743,6 +1754,23 @@ static int ll_update_lsm_md(struct inode *inode, struct lustre_md *md)
 	 * this lsm.
 	 */
 	md->lmv = NULL;
+	RETURN(0);
+unlock:
+	up_read(&lli->lli_lsm_sem);
+	RETURN(rc);
+}
+
+static int ll_update_lsm_and_attr(struct inode *inode, struct lustre_md *md)
+{
+	struct ll_inode_info *lli = ll_i2info(inode);
+	struct cl_attr	*attr;
+	int rc;
+
+	ENTRY;
+
+	rc = ll_update_lsm_md(inode, md);
+	if (rc)
+		RETURN(rc);
 
 	/* md_merge_attr() may take long, since lsm is already set, switch to
 	 * read lock.
@@ -2605,7 +2633,7 @@ int ll_update_inode(struct inode *inode, struct lustre_md *md)
 	}
 
 	if (S_ISDIR(inode->i_mode)) {
-		rc = ll_update_lsm_md(inode, md);
+		rc = ll_update_lsm_and_attr(inode, md);
 		if (rc != 0)
 			return rc;
 	}
@@ -3320,7 +3348,13 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 
 	if (i2) {
 		op_data->op_fid2 = *ll_inode2fid(i2);
-		if (S_ISDIR(i2->i_mode)) {
+		/*
+		 * Under WBC, @i2 (child inode) has already initialized with
+		 * stripe md allocated.
+		 * It should not take the @lli_lsm_sem here as it will cause
+		 * deadlock in the following @ll_prep_inode during WBC flush.
+		 */
+		if (S_ISDIR(i2->i_mode) && opc != LUSTRE_OPC_MKDIR) {
 			if (i2 != i1) {
 				/* i2 is typically a child of i1, and MUST be
 				 * further from the root to avoid deadlocks.

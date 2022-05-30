@@ -754,7 +754,7 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 		repbody->mbo_valid |= OBD_MD_FLDIREA | OBD_MD_DEFAULT_MEA;
 	}
 
-	if (info->mti_parent_locked && ma->ma_attr_flags & MDS_WBC_LOCKLESS) {
+	if (ma->ma_attr_flags & MDS_WBC_LOCKLESS) {
 		mdt_set_disposition(info, dlmrep, DISP_LOOKUP_NEG);
 	} else if (info->mti_intent_lock) {
 		/*

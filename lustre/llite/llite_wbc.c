@@ -208,13 +208,44 @@ static inline void wbc_context_note(struct wbc_context *ctx, int ioret)
 		wbc_sync_io_note(&ctx->ioc_anchor, ioret);
 }
 
+static int wbc_lsm_packmd(struct inode *inode, struct md_op_data *op_data)
+{
+	struct ll_inode_info *lli;
+	struct lmv_stripe_md *lsm;
+	struct lmv_mds_md_v1 *lmm;
+	ssize_t lmm_size;
+	int rc;
+
+	ENTRY;
+
+	lli = ll_i2info(inode);
+	lsm = lli->lli_lsm_md;
+	lmm_size = lmv_mds_md_size(lsm->lsm_md_stripe_count, lsm->lsm_md_magic);
+	if (lmm_size < 0)
+		RETURN(lmm_size);
+
+	OBD_ALLOC(lmm, lmm_size);
+	if (lmm == NULL)
+		RETURN(-ENOMEM);
+
+	rc = lmv_lsm_packmd(lsm, lmm, lmm_size);
+	if (rc < 0) {
+		OBD_FREE(lmm, lmm_size);
+		RETURN(rc);
+	}
+
+	op_data->op_data = lmm;
+	op_data->op_data_size = lmm_size;
+	RETURN(0);
+}
+
 static inline bool wbc_inode_should_pccrw(struct inode *inode)
 {
 	return S_ISREG(inode->i_mode) && wbc_cache_mode_dop(ll_i2wbci(inode));
 }
 
 static int wbc_pccrw_md_set(struct inode *inode, struct md_op_data *op_data,
-			    __u64 *cr_flags, struct lov_user_md **md)
+			    __u64 *cr_flags)
 {
 	struct pcc_dataset *dataset;
 	struct lov_user_md *lum;
@@ -239,8 +270,6 @@ static int wbc_pccrw_md_set(struct inode *inode, struct md_op_data *op_data,
 	op_data->op_archive_id = dataset->pccd_rwid;
 	ll_i2wbci(inode)->wbci_archive_id = dataset->pccd_rwid;
 	*cr_flags |= MDS_OPEN_PCC;
-	if (md)
-		*md = lum;
 out:
 	pcc_dataset_put(dataset);
 	RETURN(rc);
@@ -259,6 +288,10 @@ static void wbc_fini_op_item(struct md_op_item *item, int ioret)
 
 		LASSERT(op_data->op_data_size == sizeof(*lum));
 		OBD_FREE_PTR(lum);
+	} else if (op_data->op_code == LUSTRE_OPC_MKDIR &&
+		   op_data->op_data_size) {
+		/* Free allocated @lmm for striped dir. */
+		OBD_FREE(op_data->op_data, op_data->op_data_size);
 	}
 
 	wbc_context_note(item->mop_owner, ioret);
@@ -298,7 +331,7 @@ static int wbc_create_exlock_cb(struct req_capsule *pill,
 	 * Or notify the user via console messages.
 	 */
 	if (rc) {
-		CERROR("Failed to async create: rc = %d!\n", rc);
+		CERROR("Failed to async create (%pd): rc = %d!\n", dentry, rc);
 		mapping_clear_unevictable(inode->i_mapping);
 		GOTO(out_dput, rc);
 	}
@@ -347,6 +380,7 @@ static int wbc_fill_create_common(struct inode *dir,
 	struct lookup_intent *it = &item->mop_it;
 	struct inode *inode = dchild->d_inode;
 	int opc;
+	int rc;
 
 	ENTRY;
 
@@ -388,9 +422,11 @@ static int wbc_fill_create_common(struct inode *dir,
 		op_data->op_data = lli->lli_symlink_name;
 		op_data->op_data_size = strlen(lli->lli_symlink_name) + 1;
 	} else if (wbc_inode_should_pccrw(inode)) {
-		int rc;
-
-		rc = wbc_pccrw_md_set(inode, op_data, &it->it_flags, NULL);
+		rc = wbc_pccrw_md_set(inode, op_data, &it->it_flags);
+		if (rc)
+			RETURN(rc);
+	} else if (ll_dir_striped(inode)) {
+		rc = wbc_lsm_packmd(inode, op_data);
 		if (rc)
 			RETURN(rc);
 	}
@@ -885,9 +921,8 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 	struct inode *dir = dchild->d_parent->d_inode;
 	struct ptlrpc_request *request = NULL;
 	struct ll_sb_info *sbi = ll_i2sbi(dir);
-	struct lov_user_md *lum = NULL;
 	struct md_op_data *op_data;
-	const void *data = NULL;
+	void *data = NULL;
 	size_t datalen = 0;
 	umode_t mode = 0;
 	__u64 cr_flags = 0;
@@ -925,7 +960,14 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 		RETURN(PTR_ERR(op_data));
 
 	if (wbc_inode_should_pccrw(inode)) {
-		rc = wbc_pccrw_md_set(inode, op_data, &cr_flags, &lum);
+		rc = wbc_pccrw_md_set(inode, op_data, &cr_flags);
+		if (rc)
+			GOTO(out, rc);
+
+		data = op_data->op_data;
+		datalen = op_data->op_data_size;
+	} else if (ll_dir_striped(inode)) {
+		rc = wbc_lsm_packmd(inode, op_data);
 		if (rc)
 			GOTO(out, rc);
 
@@ -947,8 +989,8 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 	rc = ll_prep_inode(&inode, &request->rq_pill, dchild->d_sb, NULL);
 	ptlrpc_req_finished(request);
 out:
-	if (lum != NULL)
-		OBD_FREE_PTR(lum);
+	if (data != NULL)
+		OBD_FREE(data, datalen);
 	ll_finish_md_op_data(op_data);
 	RETURN(rc);
 }

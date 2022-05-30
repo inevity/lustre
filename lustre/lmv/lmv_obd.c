@@ -3604,6 +3604,44 @@ static int lmv_unpackmd(struct obd_export *exp, struct lmv_stripe_md **lsmp,
 	RETURN(lsm_size);
 }
 
+int lmv_lsm_packmd(const struct lmv_stripe_md *lsm,
+		   struct lmv_mds_md_v1 *lmm, size_t lmm_size)
+{
+	int i;
+
+	ENTRY;
+
+	LASSERT(lsm->lsm_md_magic == LMV_MAGIC_V1);
+	LASSERT(lmm_size >=
+		lmv_mds_md_size(lsm->lsm_md_stripe_count, lsm->lsm_md_magic));
+
+	lmm->lmv_magic = cpu_to_le32(LMV_MAGIC_V1);
+	lmm->lmv_stripe_count = cpu_to_le32(lsm->lsm_md_stripe_count);
+	lmm->lmv_master_mdt_index = cpu_to_le32(lsm->lsm_md_master_mdt_index);
+	lmm->lmv_hash_type = cpu_to_le32(lsm->lsm_md_hash_type);
+	lmm->lmv_layout_version = cpu_to_le32(lsm->lsm_md_layout_version);
+	lmm->lmv_migrate_offset = cpu_to_le32(lsm->lsm_md_migrate_offset);
+	lmm->lmv_migrate_hash = cpu_to_le32(lsm->lsm_md_migrate_hash);
+
+	/* TODO: handling for pool name. */
+
+	CDEBUG(D_INFO, "pack lsm count %d/%d, master %d hash_type %#x/%#x "
+	       "layout_version %d\n", lsm->lsm_md_stripe_count,
+	       lsm->lsm_md_migrate_offset, lsm->lsm_md_master_mdt_index,
+	       lsm->lsm_md_hash_type, lsm->lsm_md_migrate_hash,
+	       lsm->lsm_md_layout_version);
+
+	for (i = 0; i < lsm->lsm_md_stripe_count; i++) {
+		fid_cpu_to_le(&lmm->lmv_stripe_fids[i],
+			      &lsm->lsm_md_oinfo[i].lmo_fid);
+		CDEBUG(D_INFO, "pack fid #%d "DFID"\n",
+		       i, PFID(&lsm->lsm_md_oinfo[i].lmo_fid));
+	}
+
+	RETURN(0);
+}
+EXPORT_SYMBOL(lmv_lsm_packmd);
+
 void lmv_free_memmd(struct lmv_stripe_md *lsm)
 {
 	lmv_unpackmd(NULL, &lsm, NULL, 0);
@@ -3709,6 +3747,316 @@ lmv_get_lustre_md(struct obd_export *exp, struct req_capsule *pill,
 		return -EINVAL;
 
 	return md_get_lustre_md(tgt->ltd_exp, pill, dt_exp, md_exp, md);
+}
+
+static inline int *lmv_tgt_in_use_alloc(__u32 stripe_count)
+{
+	int *tgts;
+
+	OBD_ALLOC_PTR_ARRAY(tgts, stripe_count);
+	if (tgts == NULL) {
+		CERROR("can't allocate memory for tgt-in-use array\n");
+		return NULL;
+	}
+
+	memset(tgts, -1, sizeof(int) * stripe_count);
+	return tgts;
+}
+
+/**
+ * Remember a target in the array of used targets.
+ * Mark the given target as used for a new striping being created.
+ */
+static inline void lmv_tgt_in_use_set(int *tgts, int idx, int tgt_idx)
+{
+	tgts[idx] = tgt_idx;
+}
+
+static bool lmv_is_tgt_used(int *tgts, int tgt_idx, __u32 stripe_count)
+{
+	__u32 i;
+
+	for (i = 0; i < stripe_count; i++) {
+		if (tgts[i] == tgt_idx)
+			return true;
+		if (tgts[i] == -1)
+			return false;
+	}
+	return false;
+}
+
+static inline void lmv_tgt_in_use_free(int *tgts, __u32 stripe_count)
+{
+	OBD_FREE_PTR_ARRAY(tgts, stripe_count);
+}
+
+static int lmv_mdt_alloc_rr(struct lmv_obd *lmv, struct lmv_stripe_md *lsm,
+			    __u32 stripe_idx, int *tgts)
+{
+	struct lu_tgt_desc *tgt;
+	struct lu_fid fid = {0};
+	__u32 saved_idx = stripe_idx;
+	int mdt_idx;
+	int i;
+
+	ENTRY;
+
+	spin_lock(&lmv->lmv_lock);
+	for (i = 0; i < lmv->lmv_mdt_descs.ltd_tgts_size &&
+	     stripe_idx < lsm->lsm_md_stripe_count; i++) {
+		int rc;
+
+		mdt_idx = lmv->lmv_qos_rr_index %
+			  lmv->lmv_mdt_descs.ltd_tgts_size;
+
+		lmv->lmv_qos_rr_index = (lmv->lmv_qos_rr_index + 1) %
+					lmv->lmv_mdt_descs.ltd_tgts_size;
+
+		/* do not put >1 objects on one MDT. */
+		if (lmv_is_tgt_used(tgts, mdt_idx, stripe_idx))
+			continue;
+
+		tgt = lmv_tgt(lmv, mdt_idx);
+		if (!tgt || !tgt->ltd_exp || !tgt->ltd_active)
+			continue;
+
+		spin_unlock(&lmv->lmv_lock);
+
+		mutex_lock(&tgt->ltd_fid_mutex);
+		rc = obd_fid_alloc(NULL, tgt->ltd_exp, &fid, NULL);
+		mutex_unlock(&tgt->ltd_fid_mutex);
+		if (rc < 0) {
+			CDEBUG(D_OTHER, "#%d: alloc FID failed: %d\n",
+			       mdt_idx, rc);
+			spin_lock(&lmv->lmv_lock);
+			continue;
+		}
+
+		lmv_tgt_in_use_set(tgts, stripe_idx, mdt_idx);
+		lsm->lsm_md_oinfo[stripe_idx].lmo_fid = fid;
+		lsm->lsm_md_oinfo[stripe_idx].lmo_mds = tgt->ltd_index;
+		stripe_idx++;
+		spin_lock(&lmv->lmv_lock);
+	}
+	spin_unlock(&lmv->lmv_lock);
+	if (stripe_idx > saved_idx)
+		/* at least one stripe is allocated. */
+		RETURN(stripe_idx);
+
+	RETURN(-ENODEV);
+}
+
+static int lmv_mdt_alloc_specific(struct lmv_obd *lmv,
+				  struct lmv_stripe_md *lsm,
+				  int *mdt_indices, bool is_specific)
+{
+	__u32 stripe_count = lsm->lsm_md_stripe_count;
+	struct lu_fid fid = { 0 };
+	__u32 master_index;
+	int stripe_idx = 1;
+	int idx;
+	int rc;
+	int j;
+
+	ENTRY;
+
+	master_index = lsm->lsm_md_oinfo[0].lmo_mds;
+	if (!is_specific && stripe_count > 1)
+		/* Set the start index for the 2nd stripe allocation */
+		mdt_indices[1] = (mdt_indices[0] + 1) %
+				 lmv->lmv_mdt_descs.ltd_tgts_size;
+
+	for (; stripe_idx < stripe_count; stripe_idx++) {
+		struct lu_tgt_desc *tgt = NULL;
+
+		/* Try to find next available target. */
+		idx = mdt_indices[stripe_idx];
+		for (j = 0; j < lmv->lmv_mdt_descs.ltd_tgts_size;
+		     j++, idx = (idx + 1) % lmv->lmv_mdt_descs.ltd_tgts_size) {
+			CDEBUG(D_INFO, "Try idx %d, mdt cnt %u, allocated %u\n",
+			       idx, lmv->lmv_mdt_descs.ltd_tgts_size,
+			       stripe_idx);
+
+			if (!is_specific &&
+			    lmv_is_tgt_used(mdt_indices, idx, stripe_idx))
+				continue;
+
+			tgt = lmv_tgt(lmv, idx);
+			if (!tgt || !tgt->ltd_exp || !tgt->ltd_active)
+				continue;
+
+			mutex_lock(&tgt->ltd_fid_mutex);
+			rc = obd_fid_alloc(NULL, tgt->ltd_exp, &fid, NULL);
+			mutex_unlock(&tgt->ltd_fid_mutex);
+			if (rc < 0)
+				continue;
+
+			break;
+		}
+
+		/* Can not allocate more stripes */
+		if (j == lmv->lmv_mdt_descs.ltd_tgts_size) {
+			CDEBUG(D_INFO, "Require stripes %u only get %d\n",
+			       stripe_count, stripe_idx);
+			break;
+		}
+
+		CDEBUG(D_INFO, "Get idx %d for stripe %d "DFID"\n",
+		       idx, stripe_idx, PFID(&fid));
+		lmv_tgt_in_use_set(mdt_indices, stripe_idx, idx);
+		/* Set the start index for the next stripe allocation. */
+		if (!is_specific && stripe_idx < stripe_count - 1)
+			mdt_indices[stripe_idx + 1] = (idx + 1) %
+					lmv->lmv_mdt_descs.ltd_tgts_size;
+
+		LASSERT(tgt != NULL);
+		LASSERT(fid_is_sane(&fid));
+		lsm->lsm_md_oinfo[stripe_idx].lmo_fid = fid;
+		lsm->lsm_md_oinfo[stripe_idx].lmo_mds = tgt->ltd_index;
+	}
+
+	return stripe_idx;
+}
+
+static int lmv_mdt_alloc_local(struct lmv_obd *lmv,
+			       struct lmv_tgt_desc *tgt,
+			       struct lmv_stripe_md *default_mea,
+			       struct lustre_md *md)
+{
+	struct lu_fid fid = { 0 };
+	struct lmv_stripe_md *lsm;
+	__u32 stripe_count;
+	int *tgts = NULL;
+	int lsm_size;
+	int rc;
+
+	ENTRY;
+
+	stripe_count = default_mea->lsm_md_stripe_count;
+	if (stripe_count > lmv->lmv_mdt_count)
+		stripe_count = lmv->lmv_mdt_count;
+
+	lsm_size = lmv_stripe_md_size(stripe_count);
+	OBD_ALLOC(lsm, lsm_size);
+	if (lsm == NULL)
+		RETURN(-ENOMEM);
+
+	/* Inherit dir striped LMVEA from the default value. */
+	lsm->lsm_md_magic = LMV_MAGIC_V1;
+	lsm->lsm_md_stripe_count = stripe_count;
+	lsm->lsm_md_hash_type = default_mea->lsm_md_hash_type;
+	lsm->lsm_md_pool_name[LOV_MAXPOOLNAME] = 0;
+
+	if (lsm->lsm_md_hash_type == LMV_HASH_TYPE_UNKNOWN)
+		lsm->lsm_md_hash_type = LMV_HASH_TYPE_DEFAULT;
+
+	/* Allocate the first stripe locally. */
+	mutex_lock(&tgt->ltd_fid_mutex);
+	rc = obd_fid_alloc(NULL, tgt->ltd_exp, &fid, NULL);
+	mutex_unlock(&tgt->ltd_fid_mutex);
+	if (rc < 0)
+		GOTO(err_up, rc);
+
+	tgts = lmv_tgt_in_use_alloc(stripe_count);
+	if (tgts == NULL)
+		GOTO(err_up, rc = -ENOMEM);
+
+	lsm->lsm_md_oinfo[0].lmo_fid = fid;
+	lsm->lsm_md_oinfo[0].lmo_mds = tgt->ltd_index;
+	lmv_tgt_in_use_set(tgts, 0, tgt->ltd_index);
+	lsm->lsm_md_master_mdt_index = tgt->ltd_index;
+	if (default_mea->lsm_md_master_mdt_index == LMV_OFFSET_DEFAULT)
+		/* Allocate a striping using round-robin algorithm. */
+		rc = lmv_mdt_alloc_rr(lmv, lsm, 1, tgts);
+	else
+		rc = lmv_mdt_alloc_specific(lmv, lsm, tgts, false);
+	if (rc < 0)
+		GOTO(err_up, rc);
+
+	if (rc < lsm->lsm_md_stripe_count) {
+		CDEBUG(D_ERROR, "Require %u stripes only alloc %d\n",
+		       lsm->lsm_md_stripe_count, rc);
+		/* TODO: shrink @lsm to only contain allocated @rc stripes. */
+	}
+
+	md->lmv = lsm;
+	lmv_tgt_in_use_free(tgts, stripe_count);
+	RETURN(0);
+
+err_up:
+	LASSERT(rc < 0);
+
+	if (tgts)
+		lmv_tgt_in_use_free(tgts, stripe_count);
+
+	OBD_FREE(lsm, lsm_size);
+	RETURN(rc);
+}
+
+static int lmv_prep_lustre_md(struct obd_export *exp,
+			      struct lu_fid *fid,
+			      struct md_op_data *op_data,
+			      struct obd_export *dt_exp,
+			      struct obd_export *md_exp,
+			      struct lustre_md *md)
+{
+	struct obd_device *obd = class_exp2obd(exp);
+	struct lmv_obd *lmv = &obd->u.lmv;
+	struct lmv_tgt_desc *tgt;
+	struct lmv_stripe_md *lsm;
+	int lsm_size;
+	int rc;
+
+	LASSERT(fid);
+	LASSERT(op_data);
+
+	tgt = lmv_locate_tgt_create(obd, lmv, op_data);
+	if (IS_ERR(tgt))
+		RETURN(PTR_ERR(tgt));
+
+	if (!tgt->ltd_active || !tgt->ltd_exp)
+		RETURN(-ENODEV);
+
+	/*
+	 * New seq alloc and FLD setup should be atomic. Otherwise we may find
+	 * on server that seq in new allocated fid is not yet known.
+	 */
+	mutex_lock(&tgt->ltd_fid_mutex);
+	rc = obd_fid_alloc(NULL, tgt->ltd_exp, fid, NULL);
+	mutex_unlock(&tgt->ltd_fid_mutex);
+	if (rc < 0)
+		RETURN(rc);
+	if (rc > 0) {
+		LASSERT(fid_is_sane(fid));
+		rc = 0;
+	}
+
+	if (!S_ISDIR(op_data->op_mode))
+		RETURN(rc);
+
+	if (op_data->op_default_mea1 == NULL)
+		RETURN(rc);
+
+	if (lmv->lmv_mdt_count < 2)
+		RETURN(rc);
+
+	/* For default dirstripe, the stripe count should be 0 then. */
+	lsm_size = lmv_stripe_md_size(0);
+	OBD_ALLOC(lsm, lsm_size);
+	if (lsm == NULL)
+		RETURN(-ENOMEM);
+
+	memcpy(lsm, op_data->op_default_mea1, lsm_size);
+	md->default_lmv = lsm;
+
+	/* Allocate shard FIDs locally according to the default LMVEA. */
+	rc = lmv_mdt_alloc_local(lmv, tgt, op_data->op_default_mea1, md);
+	if (rc) {
+		OBD_FREE(lsm, lsm_size);
+		md->default_lmv = NULL;
+	}
+
+	RETURN(rc);
 }
 
 static int lmv_free_lustre_md(struct obd_export *exp, struct lustre_md *md)
@@ -4190,6 +4538,7 @@ static const struct md_ops lmv_md_ops = {
         .m_set_lock_data        = lmv_set_lock_data,
         .m_lock_match           = lmv_lock_match,
 	.m_get_lustre_md        = lmv_get_lustre_md,
+	.m_prep_lustre_md	= lmv_prep_lustre_md,
 	.m_free_lustre_md       = lmv_free_lustre_md,
 	.m_merge_attr		= lmv_merge_attr,
         .m_set_open_replay_data = lmv_set_open_replay_data,

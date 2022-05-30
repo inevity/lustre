@@ -1619,6 +1619,23 @@ static inline int md_get_lustre_md(struct obd_export *exp,
 	return MDP(exp->exp_obd, get_lustre_md)(exp, pill, dt_exp, md_exp, md);
 }
 
+static inline int md_prep_lustre_md(struct obd_export *exp,
+				    struct lu_fid *fid,
+				    struct md_op_data *op_data,
+				    struct obd_export *dt_exp,
+				    struct obd_export *md_exp,
+				    struct lustre_md *md)
+{
+	int rc;
+
+	rc = exp_check_ops(exp);
+	if (rc)
+		return rc;
+
+	return MDP(exp->exp_obd, prep_lustre_md)(exp, fid, op_data,
+						 dt_exp, md_exp, md);
+}
+
 static inline int md_free_lustre_md(struct obd_export *exp,
                                     struct lustre_md *md)
 {

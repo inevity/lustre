@@ -1294,6 +1294,10 @@ struct md_ops {
 			       struct obd_export *, struct obd_export *,
 			       struct lustre_md *);
 
+	int (*m_prep_lustre_md)(struct obd_export *, struct lu_fid *,
+				struct md_op_data *, struct obd_export *,
+				struct obd_export *, struct lustre_md *);
+
 	int (*m_free_lustre_md)(struct obd_export *, struct lustre_md *);
 
 	int (*m_merge_attr)(struct obd_export *,

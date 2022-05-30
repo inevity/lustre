@@ -91,6 +91,27 @@ wbc_dirent_account_dec(struct inode *dir, struct dentry *dchild)
 	ll_d2wbcd(dchild->d_parent)->wbcd_dirent_num--;
 }
 
+static int wbc_prep_lustre_md(struct ll_sb_info *sbi, struct inode *inode,
+			      struct md_op_data *op_data)
+{
+	struct lustre_md md = { NULL };
+	int rc;
+
+	ENTRY;
+
+	rc = md_prep_lustre_md(sbi->ll_md_exp, &ll_i2info(inode)->lli_fid,
+			       op_data, sbi->ll_dt_exp, sbi->ll_md_exp, &md);
+	if (rc)
+		RETURN(rc);
+
+	if (S_ISDIR(inode->i_mode))
+		rc = ll_update_lsm_md(inode, &md);
+
+	/* cleanup will be done if necessary. */
+	md_free_lustre_md(sbi->ll_md_exp, &md);
+	RETURN(rc);
+}
+
 /*
  * These are the methods to create virtual entries for MD WBC.
  * Borrowing heavily from ramfs code.
@@ -113,7 +134,11 @@ static struct inode *wbc_get_inode(struct inode *dir, int mode, dev_t dev,
 	inode_init_owner(inode, dir, mode);
 	lli = ll_i2info(inode);
 	ll_lli_init(lli);
-	rc = obd_fid_alloc(NULL, sbi->ll_md_exp, &lli->lli_fid, op_data);
+	/*
+	 * Allocate FID and shard FIDs (if the file will be created as a striped
+	 * directory.
+	 */
+	rc = wbc_prep_lustre_md(sbi, inode, op_data);
 	if (rc) {
 		iput(inode);
 		RETURN(ERR_PTR(rc));
@@ -187,7 +212,7 @@ static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 		tgt_len = strlen(tgt) + 1;
 
 	op_data = ll_prep_md_op_data(NULL, dir, NULL, name->name,
-				     name->len, 0, opc, NULL);
+				     name->len, mode, opc, NULL);
 	if (IS_ERR(op_data))
 		RETURN(PTR_ERR(op_data));
 
