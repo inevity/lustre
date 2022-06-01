@@ -68,6 +68,89 @@ static int wbc_ioctl_state(struct file *file, struct inode *inode,
 	RETURN(rc);
 }
 
+static int wbc_ioctl_lmv_getstripe(struct file *file, struct inode *inode,
+				   unsigned long arg)
+{
+	struct lmv_user_md __user *ulmv = (struct lmv_user_md __user *)arg;
+	struct lmv_user_md lum;
+	struct lmv_user_md *lump = NULL;
+	struct lmv_stripe_md *lsm;
+	int max_stripe_count;
+	int stripe_count;
+	int lum_size;
+	int rc = 0;
+	int i;
+
+	ENTRY;
+
+	if (copy_from_user(&lum, ulmv, sizeof(*ulmv)))
+		RETURN(-EFAULT);
+
+	max_stripe_count = lum.lum_stripe_count;
+	/*
+	 * @magic indicates which LMV stripe the ioctl will like to get.
+	 * LMV_MAGIC_V1 is for normal LMV stripe, LMV_USER_MAGIC is for
+	 * default LMV stripe.
+	 */
+	/* Get default LMV EA. */
+	if (lum.lum_magic == LMV_USER_MAGIC) {
+		lsm = ll_i2info(inode)->lli_default_lsm_md;
+		/* TODO: If the directory does not have its own default layout,
+		 * then it will request the default layout from root FID.
+		 */
+		if (lsm == NULL)
+			RETURN(-ENODATA);
+
+		lum.lum_stripe_count = lsm->lsm_md_stripe_count;
+		lum.lum_stripe_offset = lsm->lsm_md_master_mdt_index;
+		lum.lum_hash_type = lsm->lsm_md_hash_type;
+		lum.lum_max_inherit = lsm->lsm_md_max_inherit;
+		lum.lum_max_inherit_rr = lsm->lsm_md_max_inherit_rr;
+		lum.lum_pool_name[LOV_MAXPOOLNAME] = 0;
+
+		if (copy_to_user(ulmv, &lum, sizeof(lum)))
+			RETURN(-EFAULT);
+
+		RETURN(0);
+	}
+
+	if (lum.lum_magic != LMV_MAGIC_V1)
+		RETURN(-EINVAL);
+
+	lsm = ll_i2info(inode)->lli_lsm_md;
+	if (lsm == NULL)
+		RETURN(-ENODATA);
+
+	stripe_count = lsm->lsm_md_stripe_count;
+	if (max_stripe_count < stripe_count) {
+		lum.lum_stripe_count = stripe_count;
+		if (copy_to_user(ulmv, &lum, sizeof(lum)))
+			RETURN(-EFAULT);
+		RETURN(-E2BIG);
+	}
+
+	lum_size = lmv_user_md_size(stripe_count, LMV_USER_MAGIC_SPECIFIC);
+	OBD_ALLOC(lump, lum_size);
+	if (lump == NULL)
+		RETURN(-ENOMEM);
+
+	lump->lum_magic = LMV_MAGIC_V1;
+	lump->lum_stripe_count = 0;
+	lump->lum_stripe_offset = lsm->lsm_md_master_mdt_index;
+	lump->lum_hash_type = lsm->lsm_md_hash_type;
+	for (i = 0; i < stripe_count; i++) {
+		lump->lum_objects[i].lum_mds = lsm->lsm_md_oinfo[i].lmo_mds;
+		lump->lum_objects[i].lum_fid = lsm->lsm_md_oinfo[i].lmo_fid;
+		lump->lum_stripe_count++;
+	}
+
+	if (copy_to_user(ulmv, lump, lum_size))
+		GOTO(out_free, rc = -EFAULT);
+out_free:
+	OBD_FREE(lump, lum_size);
+	RETURN(rc);
+}
+
 long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = file_inode(file);
@@ -129,12 +212,18 @@ out_unrsv_free:
 		RETURN(ll_i2sbi(inode)->ll_fop->unlocked_ioctl(file, cmd, arg));
 	case LL_IOC_GET_MDTIDX:
 		RETURN(ll_dir_operations.unlocked_ioctl(file, cmd, arg));
-	case LL_IOC_LMV_GETSTRIPE:
-		if (wbc_inode_was_flushed(wbci))
-			RETURN(ll_dir_operations.unlocked_ioctl(file, cmd,
-								arg));
+	case LL_IOC_LMV_GETSTRIPE: {
+		if (!S_ISDIR(inode->i_mode))
+			RETURN(-EINVAL);
+
+		down_read(&wbci->wbci_rw_sem);
+		if (wbc_inode_has_protected(wbci))
+			rc = wbc_ioctl_lmv_getstripe(file, inode, arg);
 		else
-			RETURN(-ENODATA);
+			rc = ll_dir_operations.unlocked_ioctl(file, cmd, arg);
+		up_read(&wbci->wbci_rw_sem);
+		RETURN(rc);
+	}
 	default:
 		RETURN(-ENOTTY);
 	}

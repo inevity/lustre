@@ -2094,11 +2094,18 @@ test_34() {
 
 	mkdir $dir/d0 || error "mkdir $dir/d0 failed"
 	mkdir $dir/d0/d1.i1 || error "create dirs failed"
-	$LFS wbc state $dir/d0 $dir/d0/*
+	$LFS wbc state $dir/d0 $dir/d0/d1.i1
 	wait_wbc_sync_state $dir/d0/d1.i1
-	$LFS wbc state $dir/d0 $dir/d0/*
+	$LFS wbc state $dir/d0 $dir/d0/d1.i1
 	$LFS getdirstripe $dir/d0 $dir/d0/d1.i1
-	echo "checking default stripe"
+	echo "Checking default stripe:"
+	$LFS getdirstripe -D $dir/d0 $dir/d0/d1.i1
+
+	echo "Uncache file: $dir/d0/d1.i1"
+	stat $DIR2/$tdir/d0/d1.i1
+	$LFS wbc state $dir/d0 $dir/d0/d1.i1
+	$LFS getdirstripe $dir/d0 $dir/d0/d1.i1
+	echo "Checking default stripe:"
 	$LFS getdirstripe -D $dir/d0 $dir/d0/d1.i1
 }
 run_test 34 "Test for DNE env with setting of default striped dir"
