@@ -2110,6 +2110,90 @@ test_34() {
 }
 run_test 34 "Test for DNE env with setting of default striped dir"
 
+test_35_check_default_striped_dir() {
+	local dirname=$1
+	local default_count=$2
+	local default_index=$3
+	local stripe_count
+	local stripe_index
+	local dir_stripe_index
+	local dir
+
+	echo "checking $dirname $default_count $default_index"
+	lctl set_param debug=trace+info
+	lctl set_param subsystem_debug=llite
+	lctl clear
+	$LFS setdirstripe -D -c $default_count -i $default_index \
+		-H all_char $DIR/$tdir/$dirname ||
+		error "set default stripe on striped dir error"
+	stripe_count=$($LFS getdirstripe -D -c $DIR/$tdir/$dirname)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dirname"
+
+	stripe_index=$($LFS getdirstripe -D -i $DIR/$tdir/$dirname)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dirname"
+
+	mkdir $DIR/$tdir/$dirname/{test1,test2,test3,test4} ||
+						error "create dirs failed"
+	$LFS getdirstripe $DIR/$tdir/$dirname/*
+	$LFS wbc state $DIR/$tdir/$dirname $DIR/$tdir/$dirname/*
+	createmany -o $DIR/$tdir/$dirname/f- 10 || error "create files failed"
+	unlinkmany $DIR/$tdir/$dirname/f- 10	|| error "unlink files failed"
+	for dir in $(find $DIR/$tdir/$dirname/*); do
+		stripe_count=$($LFS getdirstripe -c $dir)
+		(( $stripe_count == $default_count )) ||
+		(( $stripe_count == $MDSCOUNT && $default_count == -1 )) ||
+		(( $stripe_count == 0 )) || (( $default_count == 1 )) ||
+		error "stripe count $default_count != $stripe_count for $dir"
+
+		stripe_index=$($LFS getdirstripe -i $dir)
+		[ $default_index -eq -1 ] ||
+			[ $stripe_index -eq $default_index ] ||
+			error "$stripe_index != $default_index for $dir"
+
+		#check default stripe
+		stripe_count=$($LFS getdirstripe -D -c $dir)
+		[ $stripe_count -eq $default_count ] ||
+		error "default count $default_count != $stripe_count for $dir"
+
+		stripe_index=$($LFS getdirstripe -D -i $dir)
+		[ $stripe_index -eq $default_index ] ||
+		error "default index $default_index != $stripe_index for $dir"
+	done
+	rmdir $DIR/$tdir/$dirname/* || error "rmdir failed"
+}
+
+test_35() {
+	[ $MDSCOUNT -lt 2 ] && skip_env "nees >= 2 MDTs"
+
+	mkdir_on_mdt0 $DIR/$tdir || error "mkdir_on_mdt0 $DIR/$tdir failed"
+	setup_wbc "flush_mode=aging_keep"
+
+	mkdir $DIR/$tdir/normal_dir || error "mkdir $DIR/$tdir failed"
+	$LFS wbc state $DIR/$tdir/normal_dir ||
+		error "failed to get WBC state for $DIR/$tdir/normal_dir"
+	# check default stripe count/stripe index
+	test_35_check_default_striped_dir normal_dir $MDSCOUNT 1
+	test_35_check_default_striped_dir normal_dir 1 0
+	test_35_check_default_striped_dir normal_dir -1 1
+	test_35_check_default_striped_dir normal_dir 2 -1
+
+	#delete default stripe information
+	echo "delete default stripeEA"
+	$LFS setdirstripe -d $DIR/$tdir/normal_dir ||
+		error "set default stripe on striped dir error"
+	$LFS getdirstripe -D $DIR/$tdir/normal_dir
+
+	mkdir -p $DIR/$tdir/normal_dir/{test1,test2,test3,test4}
+	for dir in $(find $DIR/$tdir/normal_dir/*); do
+		stripe_count=$($LFS getdirstripe -c $dir)
+		[ $stripe_count -eq 0 ] ||
+			error "expect 1 get $stripe_count for $dir"
+	done
+}
+run_test 35 "Check default striped directory"
+
 test_100() {
 	local dir=$DIR/$tdir
 	local file1="$dir/$tfile.1"

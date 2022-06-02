@@ -1181,7 +1181,7 @@ static int mdt_reint_setattr(struct mdt_thread_info *info,
 				if (IS_ERR(pobj))
 					GOTO(out_put, rc = PTR_ERR(pobj));
 
-				if (mdt_object_remote(pobj))
+				if (mdt_object_remote(pobj) && !lockless)
 					rc = mdt_remote_object_lock(info, pobj,
 						mdt_object_fid(mo),
 						&lh->mlh_rreg_lh, LCK_EX,

@@ -50,9 +50,6 @@
 	((size) == 0 && (count) == 0 &&					\
 	 (offset) == (typeof(offset))(-1) && (pool) == NULL)
 
-#define LMVEA_DELETE_VALUES(count, offset)				\
-	((count) == 0 && (offset) == (typeof(offset))(-1))
-
 struct pool_desc {
 	char			 pool_name[LOV_MAXPOOLNAME + 1];
 	struct lu_tgt_pool	 pool_obds;	/* pool members */

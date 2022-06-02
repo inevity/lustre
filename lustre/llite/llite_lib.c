@@ -1641,7 +1641,7 @@ out:
 	return 0;
 }
 
-static void ll_update_default_lsm_md(struct inode *inode, struct lustre_md *md)
+void ll_update_default_lsm_md(struct inode *inode, struct lustre_md *md)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
 

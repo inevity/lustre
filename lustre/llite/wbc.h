@@ -612,6 +612,7 @@ int wbcfs_dcache_dir_close(struct inode *inode, struct file *file);
 int wbcfs_setattr_data_object(struct inode *inode, struct iattr *attr);
 void wbc_free_inode_pages_final(struct inode *inode,
 				struct address_space *mapping);
+int wbc_dir_setstripe(struct inode *inode, struct lmv_user_md *lump);
 
 void wbc_tunables_init(struct super_block *sb);
 void wbc_tunables_fini(struct super_block *sb);

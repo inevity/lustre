@@ -1079,6 +1079,9 @@ static inline bool lmv_hash_is_layout_changing(__u32 hash)
 	       lmv_hash_is_migrating(hash);
 }
 
+#define LMVEA_DELETE_VALUES(count, offset)				\
+	((count) == 0 && (offset) == (typeof(offset))(-1))
+
 struct lustre_foreign_type {
 	__u32		lft_type;
 	const char	*lft_name;

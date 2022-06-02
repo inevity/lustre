@@ -661,6 +661,7 @@ int ll_dir_setstripe(struct inode *inode, struct lov_user_md *lump,
 	if (IS_ERR(op_data))
 		RETURN(PTR_ERR(op_data));
 
+	op_data->op_bias |= wbc_md_op_bias(ll_i2wbci(inode));
 	/* swabbing is done in lov_setstripe() on server side */
 	rc = md_setattr(sbi->ll_md_exp, op_data, lump, lum_size, &req);
 	ll_finish_md_op_data(op_data);
@@ -668,6 +669,7 @@ int ll_dir_setstripe(struct inode *inode, struct lov_user_md *lump,
 	if (rc)
 		RETURN(rc);
 
+	rc = wbc_dir_setstripe(inode, (struct lmv_user_md *)lump);
 	RETURN(rc);
 }
 

@@ -151,6 +151,39 @@ out_free:
 	RETURN(rc);
 }
 
+int wbc_dir_setstripe(struct inode *inode, struct lmv_user_md *lump)
+{
+	struct ll_sb_info *sbi = ll_i2sbi(inode);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	struct lustre_md md = { NULL };
+	int rc;
+
+	ENTRY;
+
+	LASSERT(S_ISDIR(inode->i_mode));
+	if (lump == NULL)
+		RETURN(0);
+
+	/* @lump has already swabed for wire in @ll_dir_setstripe(). */
+	if (lump->lum_magic != cpu_to_le32(LMV_USER_MAGIC))
+		RETURN(0);
+
+	if (!wbc_inode_has_protected(wbci))
+		RETURN(0);
+
+	if (!LMVEA_DELETE_VALUES(le32_to_cpu(lump->lum_stripe_count),
+				 le32_to_cpu(lump->lum_stripe_offset))) {
+		rc = md_unpackmd(sbi->ll_md_exp, &md.default_lmv,
+				 (union lmv_mds_md *)lump, sizeof(*lump));
+		if (rc < 0)
+			RETURN(rc);
+	}
+
+	ll_update_default_lsm_md(inode, &md);
+	md_free_lustre_md(sbi->ll_md_exp, &md);
+	RETURN(0);
+}
+
 long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = file_inode(file);
@@ -221,6 +254,25 @@ out_unrsv_free:
 			rc = wbc_ioctl_lmv_getstripe(file, inode, arg);
 		else
 			rc = ll_dir_operations.unlocked_ioctl(file, cmd, arg);
+		up_read(&wbci->wbci_rw_sem);
+		RETURN(rc);
+	}
+	case LL_IOC_LMV_SET_DEFAULT_STRIPE: {
+		if (!S_ISDIR(inode->i_mode))
+			RETURN(-EINVAL);
+
+		down_read(&wbci->wbci_rw_sem);
+		if (wbc_inode_written_out(wbci))
+			rc = ll_dir_operations.unlocked_ioctl(file, cmd, arg);
+		else
+			/*
+			 * TODO: Add support for set default LMV EA for a
+			 * directory that does not flush back to the server. It
+			 * can save the setting of the defulat LMV EA locally
+			 * into @lli_default_lsm_md and delay to update it to
+			 * the server until the WBC flush time.
+			 */
+			rc = -EINVAL;
 		up_read(&wbci->wbci_rw_sem);
 		RETURN(rc);
 	}
