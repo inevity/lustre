@@ -1149,13 +1149,6 @@ static int wbc_do_create(struct inode *inode)
 		RETURN(0);
 
 	rc = wbc_sync_create(inode, dentry);
-	/*
-	 * TODO: for WB_SYNC_NONE mode, do async create and data flush on
-	 * background.
-	 */
-	if (rc == 0 && S_ISREG(inode->i_mode))
-		wbcfs_commit_cache_pages(inode);
-
 	dput(dentry);
 	RETURN(rc);
 }
@@ -1236,6 +1229,7 @@ static int wbc_commit_data_lustre(struct inode *inode)
 
 	ENTRY;
 
+	LASSERT(rwsem_is_locked(&wbci->wbci_rw_sem));
 	/* The file data has already assimilated from MemFS into Lustre. */
 	if (wbc_inode_data_committed(wbci) || wbc_inode_none(wbci))
 		RETURN(0);
@@ -1580,9 +1574,12 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 		/*
 		 * For background writeout, assimilate the cache page to free
 		 * up pinnned memory in MemFS and make them reclaimable
-		 * immediately.
+		 * immediately. (@for_background, see LU-15413 for details)
+		 *
+		 * TODO: For WB_SYNC_NONE mode, do async create and data flush
+		 * on background.
 		 */
-		if (wbcx->for_background)
+		if (rc == 0)
 			rc =  wbc_make_inode_assimilated(inode);
 		break;
 	case MD_OP_SETATTR_LOCKLESS: {

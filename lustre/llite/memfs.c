@@ -583,6 +583,7 @@ static int memfs_write_begin(struct file *file, struct address_space *mapping,
 
 	ENTRY;
 
+	LASSERT(rwsem_is_locked(&wbci->wbci_rw_sem));
 	LASSERT(wbc_inode_data_caching(wbci));
 
 	rc = memfs_write_getpage(inode, index, pagep);
@@ -606,10 +607,12 @@ static int memfs_write_end(struct file *file, struct address_space *mapping,
 			   struct page *page, void *fsdata)
 {
 	struct inode *inode = file_inode(file);
+	struct wbc_inode *wbci = ll_i2wbci(inode);
 
 	ENTRY;
 
-	LASSERT(wbc_inode_data_caching(ll_i2wbci(inode)));
+	LASSERT(rwsem_is_locked(&wbci->wbci_rw_sem));
+	LASSERT(wbc_inode_data_caching(wbci));
 
 	if (pos + copied > inode->i_size)
 		i_size_write(inode, pos + copied);
@@ -643,13 +646,8 @@ static loff_t memfs_file_seek(struct file *file, loff_t offset, int origin)
 
 static int memfs_flush(struct file *file, fl_owner_t id)
 {
-	struct inode *inode = file_inode(file);
-
-	ENTRY;
-
-	LASSERT(wbc_inode_has_protected(ll_i2wbci(inode)));
 	/* Not support now */
-	RETURN(0);
+	return 0;
 }
 
 /*
@@ -967,6 +965,13 @@ repeat:
 		inode_unlock(inode);
 		if (rc == -ENOSPC)
 			GOTO(repeat, rc);
+		/*
+		 * TODO: ->generic_perform_write() may return the result of
+		 * partial successful write (not -ENOSPC), but the file data
+		 * has already Assimilated into Lustre from MemFS.
+		 * At this time, it would better to retry the write via Lustre
+		 * I/O engine instead of just returning partial write result.
+		 */
 		if (rc > 0) {
 			up_read(&wbci->wbci_rw_sem);
 			rc = generic_write_sync(iocb, rc);
