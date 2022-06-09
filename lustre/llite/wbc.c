@@ -241,9 +241,11 @@ void wbc_inode_data_lru_del(struct inode *inode)
 }
 
 static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci,
-					     unsigned int *valid)
+					     unsigned int *valid,
+					     __u32 *dirty_flags)
 {
 	*valid = wbci->wbci_dirty_attr;
+	*dirty_flags = wbci->wbci_dirty_flags;
 	wbci->wbci_dirty_attr = 0;
 	wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
 }
@@ -321,7 +323,7 @@ void wbc_sync_io_note(struct wbc_sync_io *anchor, int ioret)
 
 long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 			  struct writeback_control_ext *wbcx,
-			  unsigned int *valid)
+			  unsigned int *valid, __u32 *dirty_flags)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 	long opc = MD_OP_NONE;
@@ -357,7 +359,7 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 			if (wbcx->unrsv_children_decomp)
 				wbc_inode_unreserve_dput(inode, dchild);
 		} else if (wbc_inode_attr_dirty(wbci)) {
-			wbc_clear_dirty_for_flush(wbci, valid);
+			wbc_clear_dirty_for_flush(wbci, valid, dirty_flags);
 			opc = wbc_flush_need_exlock(wbci, wbcx) ?
 			      MD_OP_SETATTR_EXLOCK : MD_OP_SETATTR_LOCKLESS;
 		} else if (wbc_flush_need_exlock(wbci, wbcx)) {
@@ -368,7 +370,7 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 		 * TODO: Update the metadata attributes on MDT together with
 		 * the file creation.
 		 */
-		wbc_clear_dirty_for_flush(wbci, valid);
+		wbc_clear_dirty_for_flush(wbci, valid, dirty_flags);
 		opc = wbc_flush_need_exlock(wbci, wbcx) ?
 		      MD_OP_CREATE_EXLOCK : MD_OP_CREATE_LOCKLESS;
 	}

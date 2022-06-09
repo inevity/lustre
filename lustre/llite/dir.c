@@ -669,7 +669,6 @@ int ll_dir_setstripe(struct inode *inode, struct lov_user_md *lump,
 	if (rc)
 		RETURN(rc);
 
-	rc = wbc_dir_setstripe(inode, (struct lmv_user_md *)lump);
 	RETURN(rc);
 }
 

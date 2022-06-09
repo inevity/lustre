@@ -2888,28 +2888,33 @@ enum lu_wbc_state_flags {
 };
 
 enum lu_wbc_dirty_flags {
-	WBC_DIRTY_FL_NONE	= 0x0,
+	WBC_DIRTY_FL_NONE		= 0x0,
 	/* The file is up-to-date. */
-	WBC_DIRTY_FL_UPTODATE	= WBC_DIRTY_FL_NONE,
+	WBC_DIRTY_FL_UPTODATE		= WBC_DIRTY_FL_NONE,
 	/* The file is being flushed. */
-	WBC_DIRTY_FL_FLUSHING	= 0x01,
+	WBC_DIRTY_FL_FLUSHING		= 0x01,
 	/* The file was created in MemFS but not yet flushed to MDT. */
-	WBC_DIRTY_FL_CREAT	= 0x02,
+	WBC_DIRTY_FL_CREAT		= 0x02,
 	/*
 	 * Attributes was modified since the file was created in MemFS or
 	 * flushed to MDT last time.
 	 */
-	WBC_DIRTY_FL_ATTR	= 0x04,
+	WBC_DIRTY_FL_ATTR		= 0x04,
 	/*
 	 * New hardlinks were added since the file was create in MemFS or
 	 * flushed to MDT last time.
 	 */
-	WBC_DIRTY_FL_HARDLINK	= 0x08,
+	WBC_DIRTY_FL_HARDLINK		= 0x08,
 	/*
 	 * The file contains dirty pages which are charged and managed
 	 * by MemFS.
 	 */
-	WBC_DIRTY_FL_DATA	= 0x10,
+	WBC_DIRTY_FL_DATA		= 0x10,
+	/*
+	 * The directory has dirty default LVM EA setting that does not
+	 * committed to the server.
+	 */
+	WBC_DIRTY_FL_DEFAULT_MEA	= 0x20,
 };
 
 struct lu_wbc_state {

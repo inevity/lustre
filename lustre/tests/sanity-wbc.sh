@@ -2165,7 +2165,7 @@ test_35_check_default_striped_dir() {
 }
 
 test_35() {
-	[ $MDSCOUNT -lt 2 ] && skip_env "nees >= 2 MDTs"
+	[ $MDSCOUNT -lt 2 ] && skip_env "needs >= 2 MDTs"
 
 	mkdir_on_mdt0 $DIR/$tdir || error "mkdir_on_mdt0 $DIR/$tdir failed"
 	setup_wbc "flush_mode=aging_keep"
@@ -2193,6 +2193,87 @@ test_35() {
 	done
 }
 run_test 35 "Check default striped directory"
+
+test_36_base() {
+	local dir=$DIR/$tdir/d0
+	local default_count=$1
+	local default_index=$2
+	local stripe_count
+	local stripe_index
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir || error "wbc state $dir failed"
+	$LFS setdirstripe -D -c $default_count -i $default_index -H all_char \
+		$dir || error "set default stripe on $dir failed"
+	$LFS wbc state $dir
+
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+
+	wait_wbc_sync_state $dir
+	$LFS wbc state $dir
+
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+
+	stat $DIR2/$tdir/d0 || error "stat $DIR2/$tdir/d0 failed"
+	$LFS wbc state $dir
+
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+
+	echo "delete default stripeEA"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS setdirstripe -D -c $default_count -i $default_index -H all_char \
+		$dir || error "set default stripe on $dir failed"
+	$LFS getdirstripe -D $dir
+	$LFS wbc state $dir
+	$LFS setdirstripe -d $dir ||
+		error "delete default stripe on $dir failed"
+	$LFS getdirstripe -D $dir
+	$LFS wbc state $dir
+	wait_wbc_sync_state $dir
+	$LFS wbc state $dir
+	stat $DIR2/$tdir/d0 || error "state $DIR2/$tdir/d0 failed"
+	$LFS getdirstripe -D $dir
+	$LFS wbc state $dir
+
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_36() {
+	[ $MDSCOUNT -lt 2 ] && skip_env "needs >= 2 MDTs"
+
+	reset_kernel_writeback_param
+	interval=$(sysctl -n vm.dirty_expire_centisecs)
+	echo "dirty_writeback_centisecs: $interval"
+	setup_wbc "flush_mode=aging_keep"
+
+	test_36_base $MDSCOUNT 1
+	test_36_base 1 0
+	test_36_base -1 1
+	test_36_base 2 -1
+}
+run_test 36 "Set default LMV EA on the unflushed file with aging keep mode"
 
 test_100() {
 	local dir=$DIR/$tdir

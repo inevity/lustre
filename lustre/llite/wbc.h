@@ -563,7 +563,7 @@ int wbc_sync_io_wait(struct wbc_sync_io *anchor, long timeout);
 void wbc_sync_io_note(struct wbc_sync_io *anchor, int ioret);
 long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 			  struct writeback_control_ext *wbcx,
-			  unsigned int *valid);
+			  unsigned int *valid, __u32 *dirty_flags);
 void wbc_inode_writeback_complete(struct inode *inode);
 int wbc_make_inode_sync(struct dentry *dentry);
 int wbc_make_inode_deroot(struct inode *inode, struct ldlm_lock *lock,
@@ -612,7 +612,6 @@ int wbcfs_dcache_dir_close(struct inode *inode, struct file *file);
 int wbcfs_setattr_data_object(struct inode *inode, struct iattr *attr);
 void wbc_free_inode_pages_final(struct inode *inode,
 				struct address_space *mapping);
-int wbc_dir_setstripe(struct inode *inode, struct lmv_user_md *lump);
 
 void wbc_tunables_init(struct super_block *sb);
 void wbc_tunables_fini(struct super_block *sb);

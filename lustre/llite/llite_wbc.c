@@ -30,6 +30,7 @@
 
 #define DEBUG_SUBSYSTEM S_LLITE
 
+#include <lustre_swab.h>
 #include "llite_internal.h"
 
 static inline int wbc_ioctl_unreserve(struct dentry *dchild,
@@ -151,7 +152,7 @@ out_free:
 	RETURN(rc);
 }
 
-int wbc_dir_setstripe(struct inode *inode, struct lmv_user_md *lump)
+static int wbc_dir_setstripe(struct inode *inode, struct lmv_user_md *lump)
 {
 	struct ll_sb_info *sbi = ll_i2sbi(inode);
 	struct wbc_inode *wbci = ll_i2wbci(inode);
@@ -182,6 +183,89 @@ int wbc_dir_setstripe(struct inode *inode, struct lmv_user_md *lump)
 	ll_update_default_lsm_md(inode, &md);
 	md_free_lustre_md(sbi->ll_md_exp, &md);
 	RETURN(0);
+}
+
+static int wbc_update_default_lsm_md(struct inode *inode, unsigned long arg)
+{
+	struct lmv_user_md lum;
+	struct lmv_user_md __user *ulump = (struct lmv_user_md __user *)arg;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	int rc;
+
+	ENTRY;
+
+	if (!S_ISDIR(inode->i_mode))
+		RETURN(-EINVAL);
+
+	if (copy_from_user(&lum, ulump, sizeof(lum)))
+		RETURN(-EFAULT);
+
+	if (lum.lum_magic != LMV_USER_MAGIC)
+		RETURN(-EINVAL);
+
+	down_read(&wbci->wbci_rw_sem);
+	if (wbc_inode_written_out(wbci)) {
+		rc = ll_dir_setstripe(inode, (struct lov_user_md *)&lum, 0);
+		if (rc)
+			GOTO(up_rwsem, rc);
+
+		if (wbc_inode_has_protected(wbci))
+			rc = wbc_dir_setstripe(inode, &lum);
+	} else {
+		/*
+		 * The directory is Complete (C) state.
+		 * Add support for set default LMV EA for a directory that does
+		 * not flush back to the server. It can save the setting of the
+		 * defulat LMV EA locally into @lli_default_lsm_md and delay to
+		 * update it to the server until the WBC flush time.
+		 */
+		if (lum.lum_magic != cpu_to_le32(LMV_USER_MAGIC))
+			lustre_swab_lmv_user_md(&lum);
+
+		rc = wbc_dir_setstripe(inode, &lum);
+		if (rc)
+			GOTO(up_rwsem, rc);
+
+		spin_lock(&inode->i_lock);
+		wbci->wbci_dirty_flags |= WBC_DIRTY_FL_DEFAULT_MEA;
+		spin_unlock(&inode->i_lock);
+		if (wbc_flush_mode_aging(wbci))
+			mark_inode_dirty(inode);
+	}
+up_rwsem:
+	up_read(&wbci->wbci_rw_sem);
+
+	RETURN(rc);
+}
+
+static int wbc_flush_default_lsm_md(struct inode *inode)
+{
+	struct ll_inode_info *lli = ll_i2info(inode);
+	struct lmv_stripe_md *lsm;
+	struct lmv_user_md lum;
+	int rc;
+
+	ENTRY;
+
+	down_read(&lli->lli_lsm_sem);
+	if (lli->lli_default_lsm_md == NULL) {
+		up_read(&lli->lli_lsm_sem);
+		RETURN(0);
+	}
+
+	lsm = lli->lli_default_lsm_md;
+	lum.lum_magic = lsm->lsm_md_magic;
+	lum.lum_stripe_count = lsm->lsm_md_stripe_count;
+	lum.lum_stripe_offset = lsm->lsm_md_master_mdt_index;
+	lum.lum_hash_type = lsm->lsm_md_hash_type;
+	lum.lum_max_inherit = lsm->lsm_md_max_inherit;
+	lum.lum_max_inherit_rr = lsm->lsm_md_max_inherit_rr;
+	lum.lum_pool_name[LOV_MAXPOOLNAME] = 0;
+	up_read(&lli->lli_lsm_sem);
+
+	rc = ll_dir_setstripe(inode, (struct lov_user_md *)&lum, 0);
+
+	RETURN(rc);
 }
 
 long wbc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -258,23 +342,7 @@ out_unrsv_free:
 		RETURN(rc);
 	}
 	case LL_IOC_LMV_SET_DEFAULT_STRIPE: {
-		if (!S_ISDIR(inode->i_mode))
-			RETURN(-EINVAL);
-
-		down_read(&wbci->wbci_rw_sem);
-		if (wbc_inode_written_out(wbci))
-			rc = ll_dir_operations.unlocked_ioctl(file, cmd, arg);
-		else
-			/*
-			 * TODO: Add support for set default LMV EA for a
-			 * directory that does not flush back to the server. It
-			 * can save the setting of the defulat LMV EA locally
-			 * into @lli_default_lsm_md and delay to update it to
-			 * the server until the WBC flush time.
-			 */
-			rc = -EINVAL;
-		up_read(&wbci->wbci_rw_sem);
-		RETURN(rc);
+		RETURN(wbc_update_default_lsm_md(inode, arg));
 	}
 	default:
 		RETURN(-ENOTTY);
@@ -1550,13 +1618,14 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 			       struct writeback_control_ext *wbcx)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
+	__u32 dirty_flags = WBC_DIRTY_FL_NONE;
 	unsigned int valid = 0;
 	int rc = 0;
 	long opc;
 
 	ENTRY;
 
-	opc = wbc_flush_opcode_get(inode, NULL, wbcx, &valid);
+	opc = wbc_flush_opcode_get(inode, NULL, wbcx, &valid, &dirty_flags);
 	switch (opc) {
 	case MD_OP_NONE:
 		break;
@@ -1581,6 +1650,8 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 		 */
 		if (rc == 0)
 			rc =  wbc_make_inode_assimilated(inode);
+		if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA)
+			rc = wbc_flush_default_lsm_md(inode);
 		break;
 	case MD_OP_SETATTR_LOCKLESS: {
 		rc = wbc_do_setattr(inode, valid);
@@ -1770,13 +1841,15 @@ int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 			  struct writeback_control_ext *wbcx, bool no_layout)
 {
 	struct md_op_item *item;
+	__u32 dirty_flags = WBC_DIRTY_FL_NONE;
 	unsigned int valid = 0;
 	long opc;
 	int rc;
 
 	ENTRY;
 
-	opc = wbc_flush_opcode_get(dchild->d_inode, dchild, wbcx, &valid);
+	opc = wbc_flush_opcode_get(dchild->d_inode, dchild, wbcx, &valid,
+				   &dirty_flags);
 	if (opc == MD_OP_NONE)
 		RETURN(0);
 
