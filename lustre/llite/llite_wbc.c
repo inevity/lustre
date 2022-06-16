@@ -238,7 +238,7 @@ up_rwsem:
 	RETURN(rc);
 }
 
-static int wbc_flush_default_lsm_md(struct inode *inode)
+int wbc_flush_default_lsm_md(struct inode *inode)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
 	struct lmv_stripe_md *lsm;

@@ -989,6 +989,12 @@ enum md_item_opcode {
 	MD_OP_SETATTR_LOCKLESS	= 4,
 	MD_OP_SETATTR_EXLOCK	= 5,
 	MD_OP_EXLOCK_ONLY	= 6,
+	/*
+	 * This is the opcode to check whether the file contains dirty
+	 * uncommittedmattrs such as file attributes, default LVM EA, XATTR
+	 * for the lockless updates.
+	 */
+	MD_OP_MULTI_LOCKLESS	= 7,
 	MD_OP_MAX,
 };
 

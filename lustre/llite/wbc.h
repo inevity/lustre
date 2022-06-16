@@ -593,6 +593,7 @@ void wbc_inode_unacct_pages(struct inode *inode, long nr_pages);
 void wbcfs_inode_operations_switch(struct inode *inode);
 int wbcfs_d_init(struct dentry *de);
 int wbc_do_setattr(struct inode *inode, unsigned int valid);
+int wbc_flush_default_lsm_md(struct inode *inode);
 int wbc_do_remove(struct inode *dir, struct dentry *dchild, bool rmdir);
 int wbcfs_commit_cache_pages(struct inode *inode);
 int wbcfs_inode_flush_lockless(struct inode *inode,

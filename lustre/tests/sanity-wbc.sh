@@ -2275,6 +2275,52 @@ test_36() {
 }
 run_test 36 "Set default LMV EA on the unflushed file with aging keep mode"
 
+test_37_base() {
+	local dir=$DIR/$tdir/d0
+	local dir2=$DIR2/$tdir/d0
+	local default_count=$1
+	local default_index=$2
+	local stripe_count
+	local stripe_index
+
+	echo "default_count=$default_count default_index=$default_index"
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir || error "wbc state $dir failed"
+	$LFS setdirstripe -D -c $default_count -i $default_index -H all_char \
+		$dir || error "set default stripe on $dir failed"
+
+	$LFS wbc state $dir
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+
+	stat $dir2 || error "stat $dir2 failed"
+	$LFS wbc state $dir
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+
+test_37() {
+	[ $MDSCOUNT -lt 2 ] && skip_env "needs >= 2 MDTs"
+
+	setup_wbc "flush_mode=aging_keep"
+	test_37_base $MDSCOUNT 1
+	test_37_base 1 0
+	test_37_base -1 1
+	test_37_base 2 -1
+}
+run_test 37 "Flush default LMV EA during the revocation of the root WBC lock"
+
 test_100() {
 	local dir=$DIR/$tdir
 	local file1="$dir/$tfile.1"

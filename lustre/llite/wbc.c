@@ -240,14 +240,25 @@ void wbc_inode_data_lru_del(struct inode *inode)
 	}
 }
 
-static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci,
+static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci, long opc,
 					     unsigned int *valid,
 					     __u32 *dirty_flags)
 {
-	*valid = wbci->wbci_dirty_attr;
-	*dirty_flags = wbci->wbci_dirty_flags;
-	wbci->wbci_dirty_attr = 0;
-	wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
+	if (wbci->wbci_dirty_flags & WBC_DIRTY_FL_ATTR) {
+		*valid = wbci->wbci_dirty_attr;
+		*dirty_flags |= WBC_DIRTY_FL_ATTR;
+		wbci->wbci_dirty_attr = 0;
+	}
+
+	if (wbci->wbci_dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA) {
+		if (opc == MD_OP_CREATE_LOCKLESS ||
+		    opc == MD_OP_SETATTR_LOCKLESS ||
+		    opc == MD_OP_MULTI_LOCKLESS)
+			*dirty_flags |= WBC_DIRTY_FL_DEFAULT_MEA;
+	}
+
+	wbci->wbci_dirty_flags |= WBC_DIRTY_FL_FLUSHING;
+	wbci->wbci_dirty_flags &= ~(*dirty_flags);
 }
 
 static inline bool wbc_flush_need_exlock(struct wbc_inode *wbci,
@@ -359,9 +370,10 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 			if (wbcx->unrsv_children_decomp)
 				wbc_inode_unreserve_dput(inode, dchild);
 		} else if (wbc_inode_attr_dirty(wbci)) {
-			wbc_clear_dirty_for_flush(wbci, valid, dirty_flags);
 			opc = wbc_flush_need_exlock(wbci, wbcx) ?
 			      MD_OP_SETATTR_EXLOCK : MD_OP_SETATTR_LOCKLESS;
+			wbc_clear_dirty_for_flush(wbci, opc, valid,
+						  dirty_flags);
 		} else if (wbc_flush_need_exlock(wbci, wbcx)) {
 			opc = MD_OP_EXLOCK_ONLY;
 		}
@@ -370,9 +382,9 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 		 * TODO: Update the metadata attributes on MDT together with
 		 * the file creation.
 		 */
-		wbc_clear_dirty_for_flush(wbci, valid, dirty_flags);
 		opc = wbc_flush_need_exlock(wbci, wbcx) ?
 		      MD_OP_CREATE_EXLOCK : MD_OP_CREATE_LOCKLESS;
+		wbc_clear_dirty_for_flush(wbci, opc, valid, dirty_flags);
 	}
 
 	if (opc != MD_OP_NONE)
@@ -486,8 +498,9 @@ static int wbc_inode_update_metadata(struct inode *inode,
 				     struct writeback_control_ext *wbcx)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
-	long opc = MD_OP_NONE;
-	unsigned int valid;
+	__u32 dirty_flags = WBC_DIRTY_FL_NONE;
+	long opc = MD_OP_MULTI_LOCKLESS;
+	unsigned int valid = 0;
 	int rc = 0;
 
 	ENTRY;
@@ -495,13 +508,7 @@ static int wbc_inode_update_metadata(struct inode *inode,
 	LASSERT(wbc_inode_was_flushed(wbci));
 
 	spin_lock(&inode->i_lock);
-	if (wbc_inode_attr_dirty(wbci)) {
-		valid = wbci->wbci_dirty_attr;
-		wbci->wbci_dirty_flags = WBC_DIRTY_FL_FLUSHING;
-		wbci->wbci_dirty_attr = 0;
-		opc = MD_OP_SETATTR_LOCKLESS;
-	}
-	/* TODO: hardlink. */
+	wbc_clear_dirty_for_flush(wbci, opc, &valid, &dirty_flags);
 	spin_unlock(&inode->i_lock);
 
 	/*
@@ -511,8 +518,12 @@ static int wbc_inode_update_metadata(struct inode *inode,
 	 * permission check for newly file creation under the protection of an
 	 * WBC EX lock.
 	 */
-	if (opc == MD_OP_SETATTR_LOCKLESS)
+	if (dirty_flags & WBC_DIRTY_FL_ATTR)
 		rc = wbc_do_setattr(inode, valid);
+
+	/* TODO: update attrs (file attributes and default LMV EA) batchly. */
+	if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA)
+		rc = wbc_flush_default_lsm_md(inode);
 
 	RETURN(rc);
 }

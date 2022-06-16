@@ -2915,6 +2915,10 @@ enum lu_wbc_dirty_flags {
 	 * committed to the server.
 	 */
 	WBC_DIRTY_FL_DEFAULT_MEA	= 0x20,
+	/*
+	 * The file contains uncommitted dirty XATTR.
+	 */
+	WBC_DIRTY_FL_XATTR		= 0x40,
 };
 
 struct lu_wbc_state {
