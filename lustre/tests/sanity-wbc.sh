@@ -255,9 +255,9 @@ check_wbc_inode_complete() {
 wait_wbc_uptodate() {
 	local file=$1
 	local client=${2:-$HOSTNAME}
-	local uptodate="$LFS wbc state $file"
+	local cmd="$LFS wbc state $file"
 
-	cmd+=" | grep -E -c 'state: .*(none|uptodate)'"
+	cmd+=" | grep -E -c 'dirty: .*(none|uptodate)'"
 
 	echo $cmd
 	wait_update --verbose $client "$cmd" "1" 50 ||
@@ -2320,6 +2320,124 @@ test_37() {
 	test_37_base 2 -1
 }
 run_test 37 "Flush default LMV EA during the revocation of the root WBC lock"
+
+test_38_base() {
+	local dir=$DIR/$tdir
+	local default_count=$1
+	local default_index=$2
+	local stripe_count
+	local stripe_index
+
+	echo "default_count=$default_count default_index=$default_index"
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir|| error "wbc state $dir failed"
+	$LFS setdirstripe -D -c $default_count -i $default_index -H all_char \
+		$dir || error "Set default stripe on $dir failed"
+	$LFS wbc state $dir || error "wbc state $dir failed"
+	wait_wbc_uptodate $dir
+	$LFS wbc state $dir
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	dir=$DIR/$tdir/d0
+	mkdir $dir || error "wbc state $dir failed"
+	$LFS wbc state $dir
+	wait_wbc_sync_state $dir
+	$LFS wbc state $dir
+	$LFS setdirstripe -D -c $default_count -i $default_index -H all_char \
+		$dir || error "Set default stripe on $dir failed"
+	$LFS wbc state $dir
+	wait_wbc_uptodate $dir
+	$LFS wbc state $dir
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+	stat $DIR2/$tdir/d0 || error "stat $DIR2/$tdir/d0 failed"
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+
+test_38() {
+	[ $MDSCOUNT -lt 2 ] && skip_env "needs >= 2 MDTs"
+
+	reset_kernel_writeback_param
+	setup_wbc "flush_mode=aging_keep"
+	test_38_base $MDSCOUNT 1
+	test_38_base 1 0
+	test_38_base -1 1
+	test_38_base 2 -1
+}
+run_test 38 "Test for default LMV EA setting on Protected directory"
+
+test_39() {
+	[ $MDSCOUNT -lt 2 ] && skip_env "needs >= 2 MDTs"
+
+	local dir=$DIR/$tdir
+	local default_count=$MDSCOUNT
+	local default_index=1
+	local expected="400"
+	local mode
+
+	reset_kernel_writeback_param
+	setup_wbc "flush_mode=aging_keep"
+
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS setdirstripe -D -c $default_count -i $default_index -H all_char \
+		$dir || error "Set default stripe on $dir failed"
+	chmod $expected $dir || error "chmod $expected $dir failed"
+	$LFS wbc state $dir
+	wait_wbc_uptodate $dir
+	$LFS wbc state $dir
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+	mode=$(stat -c %a $dir)
+	echo "$dir access rights: $mode"
+	[ $mode == $expected ] ||
+		error "$dir access rights: $mode, expect $expected"
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	dir=$DIR/$tdir/d0
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS setdirstripe -D -c $default_count -i $default_index -H all_char \
+		$dir || error "Set default stripe on $dir failed"
+	chmod $expected $dir || error "chmod $expected $dir failed"
+	$LFS wbc state $dir
+	wait_wbc_uptodate $dir
+	$LFS wbc state $dir
+	stat $DIR2/$tdir || error "stat $DIR2/$tdir failed"
+	stripe_count=$($LFS getdirstripe -D -c $dir)
+	[ $stripe_count -eq $default_count ] ||
+		error "expect $default_count get $stripe_count for $dir"
+	stripe_index=$($LFS getdirstripe -D -i $dir)
+	[ $stripe_index -eq $default_index ] ||
+		error "expect $default_index get $stripe_index for $dir"
+	mode=$(stat -c %a $dir)
+	echo "$dir access rights: $mode"
+	[ $mode == $expected ] ||
+		error "$dir access rights: $mode, expect $expected"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+}
+run_test 39 "Test for a dirty directory with two pending updates under WBC"
 
 test_100() {
 	local dir=$DIR/$tdir

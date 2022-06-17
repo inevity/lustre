@@ -470,7 +470,7 @@ static inline bool wbc_inode_written_out(struct wbc_inode *wbci)
 
 static inline bool wbc_inode_attr_dirty(struct wbc_inode *wbci)
 {
-	return wbci->wbci_dirty_flags & WBC_DIRTY_FL_ATTR;
+	return wbci->wbci_dirty_flags == WBC_DIRTY_FL_ATTR;
 }
 
 static inline bool wbc_decomplete_lock_keep(struct wbc_inode *wbci,

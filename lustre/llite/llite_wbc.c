@@ -204,16 +204,9 @@ static int wbc_update_default_lsm_md(struct inode *inode, unsigned long arg)
 		RETURN(-EINVAL);
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_written_out(wbci)) {
-		rc = ll_dir_setstripe(inode, (struct lov_user_md *)&lum, 0);
-		if (rc)
-			GOTO(up_rwsem, rc);
-
-		if (wbc_inode_has_protected(wbci))
-			rc = wbc_dir_setstripe(inode, &lum);
-	} else {
+	if (wbc_inode_has_protected(wbci)) {
 		/*
-		 * The directory is Complete (C) state.
+		 * The directory is Protected (P) by an root WBC EX lock.
 		 * Add support for set default LMV EA for a directory that does
 		 * not flush back to the server. It can save the setting of the
 		 * defulat LMV EA locally into @lli_default_lsm_md and delay to
@@ -231,6 +224,8 @@ static int wbc_update_default_lsm_md(struct inode *inode, unsigned long arg)
 		spin_unlock(&inode->i_lock);
 		if (wbc_flush_mode_aging(wbci))
 			mark_inode_dirty(inode);
+	} else { /* WBC_STATE_FL_NONE */
+		rc = ll_dir_setstripe(inode, (struct lov_user_md *)&lum, 0);
 	}
 up_rwsem:
 	up_read(&wbci->wbci_rw_sem);
@@ -1631,6 +1626,8 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 		break;
 	case MD_OP_CREATE_LOCKLESS:
 		rc = wbc_do_create(inode);
+		if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA)
+			rc = wbc_flush_default_lsm_md(inode);
 		spin_lock(&inode->i_lock);
 		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
 			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
@@ -1650,11 +1647,26 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 		 */
 		if (rc == 0)
 			rc =  wbc_make_inode_assimilated(inode);
-		if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA)
-			rc = wbc_flush_default_lsm_md(inode);
 		break;
 	case MD_OP_SETATTR_LOCKLESS: {
 		rc = wbc_do_setattr(inode, valid);
+		spin_lock(&inode->i_lock);
+		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
+			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
+		wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
+		spin_unlock(&inode->i_lock);
+		wbc_inode_writeback_complete(inode);
+		break;
+	}
+	case MD_OP_MULTI_LOCKLESS: {
+		if (dirty_flags & WBC_DIRTY_FL_ATTR) {
+			LASSERT(valid != 0);
+			rc = wbc_do_setattr(inode, valid);
+		}
+		if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA) {
+			LASSERT(S_ISDIR(inode->i_mode));
+			rc = wbc_flush_default_lsm_md(inode);
+		}
 		spin_lock(&inode->i_lock);
 		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
 			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);

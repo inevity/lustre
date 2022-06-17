@@ -257,6 +257,11 @@ static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci, long opc,
 			*dirty_flags |= WBC_DIRTY_FL_DEFAULT_MEA;
 	}
 
+	if (opc == MD_OP_CREATE_EXLOCK || opc == MD_OP_CREATE_LOCKLESS) {
+		LASSERT(wbci->wbci_dirty_flags & WBC_DIRTY_FL_CREAT);
+		*dirty_flags |= WBC_DIRTY_FL_CREAT;
+	}
+
 	wbci->wbci_dirty_flags |= WBC_DIRTY_FL_FLUSHING;
 	wbci->wbci_dirty_flags &= ~(*dirty_flags);
 }
@@ -376,6 +381,10 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 						  dirty_flags);
 		} else if (wbc_flush_need_exlock(wbci, wbcx)) {
 			opc = MD_OP_EXLOCK_ONLY;
+		} else {
+			opc = MD_OP_MULTI_LOCKLESS;
+			wbc_clear_dirty_for_flush(wbci, opc,
+						  valid, dirty_flags);
 		}
 	} else {
 		/*
