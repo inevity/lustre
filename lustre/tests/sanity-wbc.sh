@@ -2096,13 +2096,16 @@ test_34() {
 	mkdir $dir/d0/d1.i1 || error "create dirs failed"
 	$LFS wbc state $dir/d0 $dir/d0/d1.i1
 	wait_wbc_sync_state $dir/d0/d1.i1
-	$LFS wbc state $dir/d0 $dir/d0/d1.i1
+	$LFS path2fid $dir/d0 $dir/d0/d1.i1
+	$LFS getdirstripe -m $dir/d0 $dir/d0/d1.i1
 	$LFS getdirstripe $dir/d0 $dir/d0/d1.i1
+	$LFS wbc state $dir/d0 $dir/d0/d1.i1
 	echo "Checking default stripe:"
 	$LFS getdirstripe -D $dir/d0 $dir/d0/d1.i1
 
 	echo "Uncache file: $dir/d0/d1.i1"
-	stat $DIR2/$tdir/d0/d1.i1
+	#stat $DIR2/$tdir/d0/d1.i1
+	$LFS wbc uncache $DIR/$tdir/d0/d1.i1
 	$LFS wbc state $dir/d0 $dir/d0/d1.i1
 	$LFS getdirstripe $dir/d0 $dir/d0/d1.i1
 	echo "Checking default stripe:"
@@ -2438,6 +2441,33 @@ test_39() {
 	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
 }
 run_test 39 "Test for a dirty directory with two pending updates under WBC"
+
+test_40() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+
+	setup_wbc "flush_mode=$flush_mode"
+	mkdir $dir || error "mkdir $dir failed"
+	touch $file || error "touch $file failed"
+	$LFS wbc state $dir $file
+	$LFS wbc uncache $file || error "Uncache $file failed"
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir/d0 || error "mkdir $dir failed"
+	$LFS wbc state $dir $dir/d0
+	$LFS wbc uncache $dir/d0 || error "Uncache $dir/d0 failed"
+	$LFS wbc state $dir $dir/d0
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	mkdir -p $dir/d0/d1 || error "mkdir -p $dir/d0/d1 failed"
+	$LFS wbc state $dir $dir/d0 $dir/d0/d1
+	$LFS wbc uncache $dir/d0/d1 || error "Uncache $dir/d0/d1 failed"
+	$LFS wbc state $dir $dir/d0
+	rm -rf $dir || error "rm -rf $dir failed"
+}
+run_test 40 "Uncache a file under WBC"
 
 test_100() {
 	local dir=$DIR/$tdir

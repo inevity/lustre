@@ -289,14 +289,27 @@ mdc_intent_open_pack(struct obd_export *exp, struct lookup_intent *it,
 						MDS_INODELOCK_OPEN);
 	}
 
-	/* If CREATE, cancel parent's UPDATE lock. */
-	if (it->it_op & IT_CREAT)
-		mode = LCK_EX;
-	else
-		mode = LCK_CR;
-	count += mdc_resource_get_unused(exp, &op_data->op_fid1,
-					 &cancels, mode,
-					 MDS_INODELOCK_UPDATE);
+	/*
+	 * In LMV layer, for striped directory, we can not know parent stripe
+	 * fid without name when open by fid (with flag MDS_OPEN_BY_FID), but
+	 * we can set it to the child fid, and MDT will obtain it from linkea
+	 * in open.
+	 * In such case, we skip to early lock cancel for @op_fid1 which was
+	 * set with the child fid @op_fid2. Otherwise, it will cause deadlock
+	 * when uncache a striped directory (via $LFS wbc uncache $file) and
+	 * reopen the directory under WBC.
+	 */
+	if (!(op_data->op_bias & MDS_WBC_LOCKLESS &&
+	      lu_fid_eq(&op_data->op_fid1, &op_data->op_fid2))) {
+		/* If CREATE, cancel parent's UPDATE lock. */
+		if (it->it_op & IT_CREAT)
+			mode = LCK_EX;
+		else
+			mode = LCK_CR;
+		count += mdc_resource_get_unused(exp, &op_data->op_fid1,
+						 &cancels, mode,
+						 MDS_INODELOCK_UPDATE);
+	}
 
 	req = ptlrpc_request_alloc(class_exp2cliimp(exp),
 				   &RQF_LDLM_INTENT_OPEN);
