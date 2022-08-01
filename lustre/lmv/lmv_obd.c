@@ -1106,6 +1106,29 @@ int lmv_fid_alloc(const struct lu_env *env, struct obd_export *exp,
 	RETURN(rc);
 }
 
+static int lmv_iavail_low_check(struct obd_export *exp, __u64 low)
+{
+	struct obd_device *obd = class_exp2obd(exp);
+	struct lmv_obd *lmv = &obd->u.lmv;
+	struct lu_tgt_desc *tgt;
+
+	ENTRY;
+
+	if (low == 0)
+		RETURN(0);
+
+	lmv_foreach_connected_tgt(lmv, tgt) {
+		if (!tgt->ltd_active)
+			continue;
+
+		lmv_statfs_check_update(obd, tgt);
+		if (tgt->ltd_statfs.os_ffree < low)
+			RETURN(-ENOSPC);
+	}
+
+	RETURN(0);
+}
+
 static int lmv_setup(struct obd_device *obd, struct lustre_cfg *lcfg)
 {
 	struct lmv_obd *lmv = &obd->u.lmv;
@@ -4510,6 +4533,7 @@ static const struct obd_ops lmv_obd_ops = {
         .o_notify               = lmv_notify,
         .o_get_uuid             = lmv_get_uuid,
 	.o_fid_alloc		= lmv_fid_alloc,
+	.o_iavail_low_check	= lmv_iavail_low_check,
         .o_iocontrol            = lmv_iocontrol,
         .o_quotactl             = lmv_quotactl
 };

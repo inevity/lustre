@@ -2157,6 +2157,7 @@ static int wbc_conf_seq_show(struct seq_file *m, void *v)
 	seq_printf(m, "batch_no_layout: %d\n", conf->wbcc_batch_no_layout);
 	seq_printf(m, "max_nrpages_per_file: %lu\n",
 		   conf->wbcc_max_nrpages_per_file);
+	seq_printf(m, "mdt_iavail_low: %llu\n", conf->wbcc_mdt_iavail_low);
 	if (conf->wbcc_rule.rl_conds_str)
 		seq_printf(m, "rule: %s\n", conf->wbcc_rule.rl_conds_str);
 	else
@@ -2266,6 +2267,7 @@ static ssize_t wbc_max_rpcs_seq_write(struct file *file,
 		return rc;
 
 	memset(&cmd, 0, sizeof(cmd));
+	cmd.wbcc_cmd = WBC_CMD_CONFIG;
 	cmd.wbcc_conf.wbcc_max_rpcs = val;
 	cmd.wbcc_flags |= WBC_CMD_OP_MAX_RPCS;
 
@@ -2307,6 +2309,7 @@ static ssize_t wbc_rmpol_seq_write(struct file *file,
 	else
 		return -EINVAL;
 
+	cmd.wbcc_cmd = WBC_CMD_CONFIG;
 	cmd.wbcc_flags |= WBC_CMD_OP_RMPOL;
 	rc = wbc_cmd_handle(ll_s2wbcs(sb), &cmd);
 	return rc ? rc : count;
@@ -2352,6 +2355,40 @@ out_free_kernbuff:
 }
 LDEBUGFS_SEQ_FOPS(wbc_rule);
 
+static int wbc_mdt_iavail_low_seq_show(struct seq_file *m, void *v)
+{
+	struct super_block *sb = m->private;
+	struct wbc_conf *conf = ll_s2wbcc(sb);
+
+	seq_printf(m, "%llu\n", conf->wbcc_mdt_iavail_low);
+
+	return 0;
+}
+
+static ssize_t wbc_mdt_iavail_low_seq_write(struct file *file,
+					    const char __user *buffer,
+					    size_t count, loff_t *off)
+{
+	struct seq_file *m = file->private_data;
+	struct super_block *sb = m->private;
+	struct wbc_cmd cmd;
+	__u64 val;
+	int rc;
+
+	rc = kstrtoull_from_user(buffer, count, 0, &val);
+	if (rc)
+		return rc;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.wbcc_cmd = WBC_CMD_CONFIG;
+	cmd.wbcc_conf.wbcc_mdt_iavail_low = val;
+	cmd.wbcc_flags |= WBC_CMD_OP_MDT_IAVAIL_LOW;
+
+	rc = wbc_cmd_handle(ll_s2wbcs(sb), &cmd);
+	return rc ? rc : count;
+}
+LDEBUGFS_SEQ_FOPS(wbc_mdt_iavail_low);
+
 struct ldebugfs_vars ldebugfs_llite_wbc_vars[] = {
 	{ .name =	"conf",
 	  .fops =	&wbc_conf_fops		},
@@ -2363,6 +2400,8 @@ struct ldebugfs_vars ldebugfs_llite_wbc_vars[] = {
 	  .fops =	&wbc_rmpol_fops,	},
 	{ .name =	"rule",
 	  .fops =	&wbc_rule_fops,		},
+	{ .name =	"mdt_iavail_low",
+	  .fops =	&wbc_mdt_iavail_low_fops,		},
 	{ NULL }
 };
 

@@ -41,6 +41,17 @@
 #define DIRENT64_SIZE(len)	\
 	ALIGN(offsetof(struct linux_dirent64, d_name) + (len) + 1, sizeof(u64))
 
+static int wbc_iavail_low_check(struct inode *dir)
+{
+	struct wbc_conf *conf = ll_i2wbcc(dir);
+
+	if (conf->wbcc_mdt_iavail_low == 0)
+		return 0;
+
+	return obd_iavail_low_check(ll_i2sbi(dir)->ll_md_exp,
+				    conf->wbcc_mdt_iavail_low);
+}
+
 static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
 {
 	struct wbc_inode *wbci = ll_i2wbci(dir);
@@ -54,12 +65,19 @@ static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
 	if (!wbc_inode_has_protected(wbci) || !wbc_inode_complete(wbci))
 		RETURN(0);
 
+	rc = wbc_iavail_low_check(dir);
+	if (rc == -ENOSPC)
+		GOTO(out, rc);
+	if (rc)
+		RETURN(rc);
+
 	rc = wbc_reserve_inode(ll_i2wbcs(dir));
 	if (rc == 0)
 		RETURN(1);
 	if (rc != -ENOSPC)
 		RETURN(rc);
 
+out:
 	up_read(&wbci->wbci_rw_sem);
 	rc = wbc_make_dir_decomplete(dir, parent, 1);
 	down_read(&wbci->wbci_rw_sem);

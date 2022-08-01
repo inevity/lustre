@@ -930,6 +930,26 @@ static inline int obd_fid_alloc(const struct lu_env *env,
 	RETURN(rc);
 }
 
+static inline int obd_iavail_low_check(struct obd_export *exp, __u64 low)
+{
+	int rc;
+
+	ENTRY;
+
+	rc = exp_check_ops(exp);
+	if (rc)
+		RETURN(rc);
+
+	if (!exp->exp_obd->obd_type->typ_dt_ops->o_iavail_low_check) {
+		CERROR("%s: no %s operation\n",
+		       (exp)->exp_obd->obd_name, __func__);
+		RETURN(-ENOTSUPP);
+	}
+
+	rc = OBP(exp->exp_obd, iavail_low_check)(exp, low);
+	RETURN(rc);
+}
+
 static inline int obd_pool_new(struct obd_device *obd, char *poolname)
 {
         int rc;

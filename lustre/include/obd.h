@@ -1121,6 +1121,9 @@ struct obd_ops {
 	int (*o_fid_alloc)(const struct lu_env *env, struct obd_export *exp,
 			   struct lu_fid *fid, struct md_op_data *op_data);
 
+	/* Check whether the available inodes of a target is low. */
+	int (*o_iavail_low_check)(struct obd_export *exp, __u64 low);
+
 	/*
 	 * Object with @fid is getting deleted, we may want to do something
 	 * about this.

@@ -3193,6 +3193,42 @@ test_113e() {
 }
 run_test 113e "Cache rule with comparator (>, <) for Project ID range"
 
+test_114() {
+	local flush_mode="aging_keep"
+	local maxage=$($LCTL get_param -n lmv.*.qos_maxage | head -n1)
+	local ffree=$($LFS df -i $MOUNT | awk "/MDT0000_UUID/ { print \$4 }")
+	local low=$($LCTL get_param -n llite.*.wbc.mdt_iavail_low | head -n1)
+	local dir=$DIR/$tdir
+
+	stack_trap "$LCTL set_param lmv.*.qos_maxage=$maxage" EXIT
+	stack_trap "$LCTL set_param -n llite.*.wbc.mdt_iavail_low=$low" EXIT
+	$LCTL set_param -n lmv.*.qos_maxage=1
+	setup_wbc "flush_mode=$flush_mode"
+
+	$LCTL set_param -n llite.*.wbc.mdt_iavail_low=$((ffree + 100)) ||
+		error "set param for mdt_iavail_low failed"
+	wbc_conf_show
+	$LFS df -i $MOUNT
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+	createmany -d $dir/sub 100 || error "createmany failed"
+	$LFS wbc state $dir
+	check_wbc_flags $DIR/$tdir "0x0000000b"
+	rm -rf $dir || error "rm -rf $dir failed"
+
+	$LCTL set_param -n llite.*.wbc.mdt_iavail_low=10 ||
+		error "set param for mdt_iavail_low failed"
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $dir
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+	createmany -d $dir/sub 100 || error "createmany failed"
+	$LFS wbc state $dir
+	check_wbc_flags $DIR/$tdir "0x0000000f"
+
+}
+run_test 114 "Client can not cache file under WBC when one MDT inodes is low"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

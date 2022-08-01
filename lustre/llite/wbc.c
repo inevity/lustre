@@ -262,7 +262,8 @@ static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci, long opc,
 		*dirty_flags |= WBC_DIRTY_FL_CREAT;
 	}
 
-	wbci->wbci_dirty_flags |= WBC_DIRTY_FL_FLUSHING;
+	if (*dirty_flags)
+		wbci->wbci_dirty_flags |= WBC_DIRTY_FL_FLUSHING;
 	wbci->wbci_dirty_flags &= ~(*dirty_flags);
 }
 
@@ -1310,6 +1311,7 @@ static void wbc_super_reset_common_conf(struct wbc_conf *conf)
 	conf->wbcc_hiwm_ratio = WBC_DEFAULT_HIWM_RATIO;
 	conf->wbcc_hiwm_inodes_count = 0;
 	conf->wbcc_hiwm_pages_count = 0;
+	conf->wbcc_mdt_iavail_low = 0;
 }
 
 /* called with @wbcs_lock hold. */
@@ -1377,6 +1379,9 @@ static int wbc_super_conf_update(struct wbc_conf *conf, struct wbc_cmd *cmd)
 		conf->wbcc_hiwm_pages_count = conf->wbcc_max_pages *
 					      conf->wbcc_hiwm_ratio / 100;
 	}
+
+	if (cmd->wbcc_flags & WBC_CMD_OP_MDT_IAVAIL_LOW)
+		conf->wbcc_mdt_iavail_low = cmd->wbcc_conf.wbcc_mdt_iavail_low;
 
 	if (conf->wbcc_cache_mode == WBC_MODE_NONE)
 		conf->wbcc_cache_mode = WBC_MODE_DEFAULT;
@@ -1600,6 +1605,12 @@ static int wbc_parse_value_pair(struct wbc_cmd *cmd, char *buffer)
 
 		conf->wbcc_batch_no_layout = enable;
 		cmd->wbcc_flags |= WBC_CMD_OP_BATCH_NO_LAYOUT;
+	} else if (strcmp(key, "mdt_iavail_low") == 0) {
+		rc = kstrtoull(val, 10, &conf->wbcc_mdt_iavail_low);
+		if (rc)
+			return rc;
+
+		cmd->wbcc_flags |= WBC_CMD_OP_MDT_IAVAIL_LOW;
 	} else {
 		return -EINVAL;
 	}

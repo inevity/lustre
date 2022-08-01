@@ -180,6 +180,15 @@ struct wbc_conf {
 	__u32			wbcc_hiwm_inodes_count;
 	__u32			wbcc_hiwm_pages_count;
 
+	/*
+	 * Check the inode space of each MDT to determine whether cache the
+	 * file on the client. When the inode space of one MDT is less than
+	 * this value, the client will stop to cache the newly creating file
+	 * under WBC. When set this value with 0, the client will skip this
+	 * check.
+	 */
+	__u64			wbcc_mdt_iavail_low;
+
 	/* Auto writeback caching rule */
 	struct cfs_rule		wbcc_rule;
 };
@@ -343,6 +352,7 @@ enum wbc_cmd_op {
 	WBC_CMD_OP_MAX_QLEN		= 0x0400,
 	WBC_CMD_OP_BATCH_NO_LAYOUT	= 0x0800,
 	WBC_CMD_OP_MAX_NRPAGES_PER_FILE	= 0x1000,
+	WBC_CMD_OP_MDT_IAVAIL_LOW	= 0x2000,
 };
 
 struct wbc_cmd {
