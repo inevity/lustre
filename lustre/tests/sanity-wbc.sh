@@ -252,6 +252,17 @@ check_wbc_inode_complete() {
 		error "$file Complete(C) state: $comp, expected $expected"
 }
 
+wait_wbc_error_state() {
+	local file=$1
+	local client=${2:-$HOSTNAME}
+	local cmd="$LFS wbc state $file"
+
+	cmd+=" | grep -E -c 'state: .*error'"
+	echo $cmd
+	wait_update --verbose $client "$cmd" "1" 50 ||
+		error "$file is not synced"
+}
+
 wait_wbc_uptodate() {
 	local file=$1
 	local client=${2:-$HOSTNAME}
@@ -3225,9 +3236,68 @@ test_114() {
 	createmany -d $dir/sub 100 || error "createmany failed"
 	$LFS wbc state $dir
 	check_wbc_flags $DIR/$tdir "0x0000000f"
-
 }
 run_test 114 "Client can not cache file under WBC when one MDT inodes is low"
+
+test_115() {
+	local flush_mode="aging_keep"
+	local dir="$DIR/$tdir/dir.wbc.fail"
+	local interval
+	local idx
+
+	reset_kernel_writeback_param
+	interval=$(sysctl -n vm.dirty_expire_centisecs)
+	echo "dirty_writeback_centisecs: $interval"
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	idx=$($LFS getdirstripe -m $dir)
+	#define OBD_FAIL_MDS_WBC_CREATE	0x18b
+	do_facet mds$((idx + 1)) $LCTL set_param fail_loc=0x8000018b
+	$LFS wbc state $dir
+	# background writeback failed with -ETIMEDOUT
+	wait_wbc_error_state $dir
+	$LFS wbc state $dir
+	sleep $((interval / 100))
+	sleep 3
+	$LFS wbc state $dir
+	# state: (0x00000017) protected sync complete reserved
+	check_wbc_flags $dir "0x00000017"
+}
+run_test 115 "Retry upon writeback failure"
+
+test_116() {
+	local flush_mode="aging_keep"
+	local dir11="$DIR/$tdir/dir.l1.i1.err"
+	local dir21="$dir11/dir.l2.i1"
+	local dir22="$dir11/dir.l2.i2"
+	local dir31="$dir21/dir.l3.i1"
+	local file="$dir31/file.l4.i1"
+	local fileset="$dir11 $dir21 $dir22 $dir31"
+	local interval
+	local idx
+
+	reset_kernel_writeback_param
+	interval=$(sysctl -n vm.dirty_expire_centisecs)
+	echo "dirty_writeback_centisecs: $interval"
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $fileset || error "mkdir $fileset failed"
+	touch $file || error "touch $file failed"
+	idx=$($LFS getdirstripe -m $dir11)
+	#define OBD_FAIL_MDS_WBC_CREATE	0x18b
+	do_facet mds$((idx + 1)) $LCTL set_param fail_loc=0x8000018b
+	$LFS wbc state $fileset $file
+	# background writeback failed with -ETIMEDOUT
+	wait_wbc_error_state $dir11
+	$LFS wbc state $fileset $file
+	sleep $((interval / 100))
+	sleep 3
+	$LFS wbc state $fileset $file
+}
+run_test 116 "Retry for writeback failure on multiple level WBC tree"
 
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"

@@ -386,6 +386,8 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 			opc = MD_OP_MULTI_LOCKLESS;
 			wbc_clear_dirty_for_flush(wbci, opc,
 						  valid, dirty_flags);
+			if (*dirty_flags == 0)
+				opc = MD_OP_NONE;
 		}
 	} else {
 		/*
@@ -534,6 +536,12 @@ static int wbc_inode_update_metadata(struct inode *inode,
 	/* TODO: update attrs (file attributes and default LMV EA) batchly. */
 	if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA)
 		rc = wbc_flush_default_lsm_md(inode);
+
+	if (dirty_flags) {
+		spin_lock(&inode->i_lock);
+		wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
+		spin_unlock(&inode->i_lock);
+	}
 
 	RETURN(rc);
 }
@@ -911,30 +919,77 @@ int wbc_make_data_commit(struct dentry *dentry)
  * However, other inodes in writeback list may have dependency on this inode
  * which is being written back. When writeback other inodes concurrently, it
  * will happend this dependency problem.
+ *
+ * When metadata is cached on the client, our WBC could be vulnerable to the
+ * update dependency because of its usded Linux writeback mechanism, which
+ * was originally designed fro data and does not consider the hierarchical
+ * dependencies of the tree structure.
+ * We solves this update dependency challenge for metadata by ordering the
+ * flushing. When flushing a file under WBC, its parent is either being
+ * written back or has already flushed back to the server. Thus it only needs
+ * wait for the completion of the parent's writeback.
+ *
+ * When a failure occurs during the writeback for the parent (which is marked
+ * with WBC_STATE_FL_ERROR), it should mark the children @inode as
+ * WBC_STATE_FL_ERROR too, and call @mark_inode_dirty() to requeue the @inode
+ * to retry writeback later.
  */
-static void wbc_flush_dependency_check(struct inode *inode,
+static int wbc_update_dependency_check(struct inode *inode,
 				       struct writeback_control_ext *wbcx)
 {
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+	struct wbc_inode *dwbci;
 	struct dentry *dentry;
 	struct dentry *parent;
+	struct inode *dir;
+	int rc;
 
 	ENTRY;
 
-	/* For WB_SYNC_ALL mode, it wont happen the dependency issues. */
-	if (wbcx->sync_mode == WB_SYNC_ALL)
-		RETURN_EXIT;
+	if (wbc_inode_written_out(wbci))
+		RETURN(0);
 
-	/* FIXME: hardlinks. */
 	dentry = d_find_any_alias(inode);
 	if (dentry == NULL)
-		RETURN_EXIT;
+		RETURN(0);
 
 	parent = dget_parent(dentry);
-	inode_wait_for_writeback(parent->d_inode);
+	dir = d_inode(parent);
+	dwbci = ll_i2wbci(dir);
+
+	/* If the parent has already flushed back to the server, it can
+	 * directly write this @inode.
+	 * FIXME: The server needs to handle permission check carefully as
+	 * the client may be updating the file mode or permission of the parent
+	 * simultaneously.
+	 */
+	if (wbc_inode_written_out(dwbci))
+		GOTO(out, rc = 0);
+
+	inode_wait_for_writeback(dir);
+	if (wbc_inode_written_out(dwbci))
+		GOTO(out, rc = 0);
+
+	spin_lock(&dir->i_lock);
+	if (wbc_inode_written_out(dwbci)) {
+		rc = 0;
+	} else { /* The parent is failed to flush back to the server. */
+		LASSERT(wbc_inode_error(dwbci));
+		rc = 1;
+	}
+	spin_unlock(&dir->i_lock);
+
+	if (rc == 1) {
+		spin_lock(&inode->i_lock);
+		wbci->wbci_flags |= WBC_STATE_FL_ERROR;
+		spin_unlock(&inode->i_lock);
+		mark_inode_dirty(inode);
+		rc = -EAGAIN;
+	}
+out:
 	dput(parent);
 	dput(dentry);
-
-	RETURN_EXIT;
+	RETURN(rc);
 }
 
 static int wbc_inode_flush_lockdrop(struct inode *inode,
@@ -1136,7 +1191,10 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 	if (!wbc_inode_has_protected(wbci))
 		RETURN(0);
 
-	wbc_flush_dependency_check(inode, wbcx);
+	rc = wbc_update_dependency_check(inode, wbcx);
+	if (rc)
+		RETURN(rc);
+
 	/* TODO: Handle WB_SYNC_ALL WB_SYNC_NONE properly. */
 	switch (wbci->wbci_flush_mode) {
 	case WBC_FLUSH_AGING_DROP:

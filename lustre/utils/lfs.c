@@ -12738,6 +12738,8 @@ static int lfs_wbc_state(int argc, char **argv)
 			printf(" writeback");
 		if (state.wbcs_flags & WBC_STATE_FL_DATA_COMMITTED)
 			printf(" committed");
+		if (state.wbcs_flags & WBC_STATE_FL_ERROR)
+			printf(" error");
 
 		if (S_ISREG(state.wbcs_fmode)) {
 			printf(", data:");

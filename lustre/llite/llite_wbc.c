@@ -364,6 +364,18 @@ void wbcfs_inode_operations_switch(struct inode *inode)
 	}
 }
 
+static inline bool wbc_error_is_recoverable(int err)
+{
+	switch (err) {
+	case -ETIMEDOUT:
+	case -ERESTARTSYS:
+	case -EINTR:
+		return true;
+	default:
+		return false;
+	}
+}
+
 /*
  * Same as ll_d_init(), but init with valid flags.
  */
@@ -1191,8 +1203,8 @@ static int wbc_sync_create(struct inode *inode, struct dentry *dchild)
 	ll_update_times(request, dir);
 
 	rc = ll_prep_inode(&inode, &request->rq_pill, dchild->d_sb, NULL);
-	ptlrpc_req_finished(request);
 out:
+	ptlrpc_req_finished(request);
 	if (data != NULL)
 		OBD_FREE(data, datalen);
 	ll_finish_md_op_data(op_data);
@@ -1609,10 +1621,55 @@ void wbc_free_inode_pages_final(struct inode *inode,
 	}
 }
 
+/* Error handling - redirty and requeue the inode. */
+static inline void wbc_redirty_inode(struct inode *inode,
+				      __u32 dirty_flags, unsigned int valid)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	LASSERT(dirty_flags != 0);
+	spin_lock(&inode->i_lock);
+	wbci->wbci_dirty_flags |= dirty_flags;
+	wbci->wbci_dirty_attr |= valid;
+	spin_unlock(&inode->i_lock);
+	CDEBUG(D_CACHE, "Fid="DFID" wbci_flags=%X dirty_flags=%X\n",
+	       PFID(ll_inode2fid(inode)), wbci->wbci_flags,
+	       wbci->wbci_dirty_flags);
+	mark_inode_dirty(inode);
+}
+
+static void wbc_done_writeback(struct inode *inode, long opc, int rc,
+			       __u32 dirty_flags, unsigned int valid)
+{
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	spin_lock(&inode->i_lock);
+	LASSERTF(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
+		 wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING,
+		 "Inode fid="DFID" wbci_flags=%X dirty_flags=%X\n",
+		 PFID(ll_inode2fid(inode)), wbci->wbci_flags,
+		 wbci->wbci_dirty_flags);
+	wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
+	if (rc == 0) {
+		wbci->wbci_flags &= ~WBC_STATE_FL_ERROR;
+		/* The file has flushed (S) back to the server. */
+		if ((opc == MD_OP_CREATE_LOCKLESS ||
+		     opc == MD_OP_CREATE_EXLOCK) &&
+		    !(dirty_flags & WBC_DIRTY_FL_CREAT))
+			wbci->wbci_flags |= WBC_STATE_FL_SYNC;
+	} else {
+		wbci->wbci_flags |= WBC_STATE_FL_ERROR;
+	}
+	spin_unlock(&inode->i_lock);
+	wbc_inode_writeback_complete(inode);
+
+	if (rc < 0 && wbc_error_is_recoverable(rc))
+		wbc_redirty_inode(inode, dirty_flags, valid);
+}
+
 int wbcfs_inode_flush_lockless(struct inode *inode,
 			       struct writeback_control_ext *wbcx)
 {
-	struct wbc_inode *wbci = ll_i2wbci(inode);
 	__u32 dirty_flags = WBC_DIRTY_FL_NONE;
 	unsigned int valid = 0;
 	int rc = 0;
@@ -1625,17 +1682,19 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 	case MD_OP_NONE:
 		break;
 	case MD_OP_CREATE_LOCKLESS:
+		LASSERT(dirty_flags & WBC_DIRTY_FL_CREAT);
 		rc = wbc_do_create(inode);
-		if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA)
+		if (rc)
+			GOTO(done_wb, rc);
+
+		dirty_flags &= ~WBC_DIRTY_FL_CREAT;
+		if (dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA) {
 			rc = wbc_flush_default_lsm_md(inode);
-		spin_lock(&inode->i_lock);
-		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
-			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
-		wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
-		if (rc == 0)
-			wbci->wbci_flags |= WBC_STATE_FL_SYNC;
-		spin_unlock(&inode->i_lock);
-		wbc_inode_writeback_complete(inode);
+			if (rc == 0)
+				dirty_flags &= ~WBC_DIRTY_FL_DEFAULT_MEA;
+		}
+done_wb:
+		wbc_done_writeback(inode, opc, rc, dirty_flags, valid);
 
 		/*
 		 * For background writeout, assimilate the cache page to free
@@ -1650,36 +1709,33 @@ int wbcfs_inode_flush_lockless(struct inode *inode,
 		break;
 	case MD_OP_SETATTR_LOCKLESS: {
 		rc = wbc_do_setattr(inode, valid);
-		spin_lock(&inode->i_lock);
-		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
-			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
-		wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
-		spin_unlock(&inode->i_lock);
-		wbc_inode_writeback_complete(inode);
+		if (rc == 0)
+			dirty_flags &= ~WBC_DIRTY_FL_ATTR;
+
+		wbc_done_writeback(inode, opc, rc, dirty_flags, valid);
 		break;
 	}
 	case MD_OP_MULTI_LOCKLESS: {
 		if (dirty_flags & WBC_DIRTY_FL_ATTR) {
 			LASSERT(valid != 0);
 			rc = wbc_do_setattr(inode, valid);
+			if (rc == 0)
+				dirty_flags &= ~WBC_DIRTY_FL_ATTR;
 		}
+
 		if (rc == 0 && dirty_flags & WBC_DIRTY_FL_DEFAULT_MEA) {
 			LASSERT(S_ISDIR(inode->i_mode));
 			rc = wbc_flush_default_lsm_md(inode);
+			if (rc == 0)
+				dirty_flags &= ~WBC_DIRTY_FL_DEFAULT_MEA;
 		}
-		spin_lock(&inode->i_lock);
-		LASSERT(wbci->wbci_flags & WBC_STATE_FL_WRITEBACK &&
-			wbci->wbci_dirty_flags & WBC_DIRTY_FL_FLUSHING);
-		wbci->wbci_dirty_flags &= ~WBC_DIRTY_FL_FLUSHING;
-		spin_unlock(&inode->i_lock);
-		wbc_inode_writeback_complete(inode);
+
+		wbc_done_writeback(inode, opc, rc, dirty_flags, valid);
 		break;
 	}
 	default:
 		LBUG();
 	}
-
-	/* TODO: error handling - redirty and requeue the inode? */
 
 	RETURN(rc);
 }

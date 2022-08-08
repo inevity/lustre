@@ -593,6 +593,10 @@ static int mdt_create(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	if (!fid_is_md_operative(rr->rr_fid1))
 		RETURN(-EPERM);
 
+	if (ma->ma_attr_flags & MDS_WBC_LOCKLESS &&
+	    OBD_FAIL_CHECK(OBD_FAIL_MDS_WBC_CREATE))
+		RETURN(-ETIMEDOUT);
+
 	if (S_ISDIR(ma->ma_attr.la_mode) &&
 	    spec->u.sp_ea.eadata != NULL && spec->u.sp_ea.eadatalen != 0) {
 		const struct lmv_user_md *lum = spec->u.sp_ea.eadata;
