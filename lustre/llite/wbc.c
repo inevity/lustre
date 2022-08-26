@@ -190,8 +190,7 @@ void wbc_free_inode(struct inode *inode)
 		wbc_unreserve_inode(inode);
 }
 
-void wbc_inode_unreserve_dput(struct inode *inode,
-					    struct dentry *dentry)
+void wbc_inode_unreserve_dput(struct inode *inode, struct dentry *dentry)
 {
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 
@@ -1190,6 +1189,9 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 	/* The inode was flush to MDT due to LRU lock shrinking? */
 	if (!wbc_inode_has_protected(wbci))
 		RETURN(0);
+
+	if (wbc_inode_evicted(wbci))
+		RETURN(-ESTALE);
 
 	rc = wbc_update_dependency_check(inode, wbcx);
 	if (rc)

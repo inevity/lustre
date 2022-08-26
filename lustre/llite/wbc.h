@@ -483,6 +483,11 @@ static inline bool wbc_inode_error(struct wbc_inode *wbci)
 	return wbci->wbci_flags & WBC_STATE_FL_ERROR;
 }
 
+static inline bool wbc_inode_evicted(struct wbc_inode *wbci)
+{
+	return wbci->wbci_flags & WBC_STATE_FL_EVICTED;
+}
+
 static inline bool wbc_inode_attr_dirty(struct wbc_inode *wbci)
 {
 	return wbci->wbci_dirty_flags == WBC_DIRTY_FL_ATTR;

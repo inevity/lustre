@@ -2027,6 +2027,193 @@ int wbcfs_dcache_dir_close(struct inode *inode, struct file *file)
 	return 0;
 }
 
+static inline bool wbc_lock_import_evicted(struct ldlm_lock *lock)
+{
+	struct obd_import *imp;
+
+	if (lock->l_conn_export == NULL)
+		return false;
+
+	imp = class_exp2cliimp(lock->l_conn_export);
+	return imp->imp_state == LUSTRE_IMP_EVICTED;
+}
+
+/* Evict a regular file under WBC. */
+static int wbc_lock_evict_file(struct dentry *dentry)
+{
+	struct inode *inode = dentry->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(inode);
+
+	ENTRY;
+
+	down_write(&wbci->wbci_rw_sem);
+	/* The file data has already assimilated from MemFS into Lustre. */
+	if (wbc_inode_data_committed(wbci) || wbc_inode_none(wbci)) {
+		CDEBUG(D_CACHE,
+		       "The data for "DFID" (%X) has committed into Lustre.\n",
+		       PFID(ll_inode2fid(inode)), wbci->wbci_flags);
+	} else {
+		struct address_space *mapping = inode->i_mapping;
+		unsigned long nrpages = mapping->nrpages;
+
+		ll_truncate_inode_pages_final(inode);
+		spin_lock(&inode->i_lock);
+		wbc_inode_unacct_pages(inode, nrpages);
+		mapping->a_ops = &ll_aops;
+		spin_unlock(&inode->i_lock);
+		mapping_clear_unevictable(mapping);
+	}
+
+	if (wbc_inode_root(wbci))
+		wbc_super_root_del(inode);
+
+	d_lustre_invalidate(dentry);
+	wbc_inode_unreserve_dput(inode, dentry);
+
+	spin_lock(&inode->i_lock);
+	wbcfs_inode_operations_switch(inode);
+	wbci->wbci_flags = WBC_STATE_FL_NONE;
+	spin_unlock(&inode->i_lock);
+	up_write(&wbci->wbci_rw_sem);
+
+	RETURN(0);
+}
+
+static int wbc_lock_evict_dir(struct dentry *parent, struct list_head *head)
+{
+	struct inode *dir = parent->d_inode;
+	struct wbc_inode *wbci = ll_i2wbci(dir);
+	struct dentry *child, *tmp;
+
+	ENTRY;
+
+	down_write(&wbci->wbci_rw_sem);
+	spin_lock(&parent->d_lock);
+	list_for_each_entry_safe(child, tmp, &parent->d_subdirs, d_child) {
+		struct inode *inode;
+		struct wbc_inode *swbci;
+
+		/* Negative entry? or being unlinked? Drop it right away */
+		if (child->d_inode == NULL || d_unhashed(child))
+			continue;
+
+		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
+		if (child->d_inode == NULL || d_unhashed(child)) {
+			spin_unlock(&child->d_lock);
+			continue;
+		}
+
+		/* Pin it first to avoid be deleted. */
+		dget_dlock(child);
+		spin_unlock(&child->d_lock);
+
+		inode = child->d_inode;
+		swbci = ll_i2wbci(inode);
+
+		/* TODO: handling for decompleted @inode. */
+
+		spin_lock(&inode->i_lock);
+		swbci->wbci_flags |= WBC_STATE_FL_EVICTED;
+		swbci->wbci_flags &= ~WBC_STATE_FL_PROTECTED;
+		spin_unlock(&inode->i_lock);
+
+		list_add_tail(&ll_d2wbcd(child)->wbcd_flush_item, head);
+	}
+	spin_unlock(&parent->d_lock);
+
+	d_lustre_invalidate(parent);
+	wbc_inode_unreserve_dput(dir, parent);
+
+	spin_lock(&dir->i_lock);
+	wbcfs_inode_operations_switch(dir);
+	wbci->wbci_flags = WBC_STATE_FL_NONE;
+	spin_unlock(&dir->i_lock);
+	up_write(&wbci->wbci_rw_sem);
+
+	RETURN(0);
+}
+
+static int wbc_lock_evict_one(struct dentry *dentry, struct list_head *head)
+{
+	struct inode *inode = dentry->d_inode;
+	int rc;
+
+	if (S_ISDIR(inode->i_mode))
+		rc = wbc_lock_evict_dir(dentry, head);
+	else if (S_ISREG(inode->i_mode))
+		rc = wbc_lock_evict_file(dentry);
+	else /* TODO: symbol link support */
+		rc = -EOPNOTSUPP;
+
+	return rc;
+}
+
+static int wbc_lock_evict_subtree(struct dentry *root)
+{
+	struct inode *dir = root->d_inode;
+	struct wbc_dentry *wbcd;
+	struct wbc_inode *wbci;
+	LIST_HEAD(head);
+	int ret = 0;
+	int rc;
+
+	ENTRY;
+
+	wbci = ll_i2wbci(dir);
+	down_write(&wbci->wbci_rw_sem);
+	wbcd = ll_d2wbcd(root);
+	list_add_tail(&wbcd->wbcd_flush_item, &head);
+	wbc_super_root_del(dir);
+	spin_lock(&dir->i_lock);
+	wbci->wbci_flags |= WBC_STATE_FL_EVICTED;
+	wbci->wbci_flags &= ~(WBC_STATE_FL_ROOT | WBC_STATE_FL_PROTECTED);
+	spin_unlock(&dir->i_lock);
+	d_lustre_invalidate(root);
+	up_write(&wbci->wbci_rw_sem);
+
+	dget(root);
+	while (!list_empty(&head)) {
+		struct ll_dentry_data *lld;
+		struct dentry *parent;
+
+		wbcd = list_entry(head.next, struct wbc_dentry,
+				  wbcd_flush_item);
+		lld = container_of(wbcd, struct ll_dentry_data, lld_wbc_dentry);
+		parent = lld->lld_dentry;
+		list_del_init(&wbcd->wbcd_flush_item);
+
+		rc = wbc_lock_evict_one(parent, &head);
+		if (!ret && rc)
+			ret = rc;
+
+		dput(parent);
+	}
+
+	RETURN(ret);
+}
+
+static int wbc_lock_evict_cache(struct inode *inode, struct ldlm_lock *lock)
+{
+	struct dentry *dentry;
+	int rc = 0;
+
+	ENTRY;
+
+	dentry = d_find_any_alias(inode);
+	if (dentry == NULL)
+		RETURN(0);
+
+	if (S_ISDIR(inode->i_mode))
+		rc = wbc_lock_evict_subtree(dentry);
+	else if (S_ISREG(inode->i_mode))
+		rc = wbc_lock_evict_file(dentry);
+	else /* TODO: Add symbol link support */
+		rc = -EOPNOTSUPP;
+
+	dput(dentry);
+	RETURN(rc);
+}
+
 void wbc_inode_lock_callback(struct inode *inode, struct ldlm_lock *lock,
 			     bool *cached)
 {
@@ -2042,6 +2229,12 @@ void wbc_inode_lock_callback(struct inode *inode, struct ldlm_lock *lock,
 	*cached = wbc_inode_has_protected(wbci);
 	if (!*cached)
 		RETURN_EXIT;
+
+
+	if (wbc_lock_import_evicted(lock)) {
+		(void) wbc_lock_evict_cache(inode, lock);
+		RETURN_EXIT;
+	}
 
 	down_write(&wbci->wbci_rw_sem);
 	*cached = wbc_inode_has_protected(wbci);

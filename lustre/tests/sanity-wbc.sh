@@ -3299,6 +3299,57 @@ test_116() {
 }
 run_test 116 "Retry for writeback failure on multiple level WBC tree"
 
+test_117() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local dir11="$dir/dir.l1.i1"
+	local dir21="$dir11/dir.l2.i1"
+	local dir22="$dir11/dir.l2.i2"
+	local dir31="$dir21/dir.l3.i1"
+
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir11 || error "mkdir $dir11 failed"
+	mkdir $dir21 || error "mkdir $dir21 failed"
+	mkdir $dir22 || error "mkdir $dir22 failed"
+	mkdir $dir31 || error "mkdir $dir31 failed"
+
+	ls $dir
+	mds_evict_client
+	client_up || client_up || true
+	ls $dir
+}
+run_test 117 "Evicting client should discard caches under WBC lock"
+
+test_118() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local dir11="$dir/dir.l1.i1"
+	local dir21="$dir11/dir.l2.i1"
+	local dir22="$dir11/dir.l2.i2"
+	local file11="$dir/file.l1.i1"
+	local file21="$dir11/file.l2.i1"
+	local file31="$dir21/file.l3.i1"
+
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir11 || error "mkdir $dir11 failed"
+	mkdir $dir21 || error "mkdir $dir21 failed"
+	mkdir $dir22 || error "mkdir $dir22 failed"
+	touch $file11 || error "touch $file11 failed"
+	touch $file21 || error "touch $file21 failed"
+	dd if=/dev/zero of=$file31 bs=4k count=16 ||
+		error "dd write $file31 failed"
+
+	$LFS wbc state $dir $dir11 $dir21 $dir22 $file11 $file21 $file31
+	mds_evict_client
+	client_up || client_up || true
+	ls $dir
+}
+run_test 118 "Evicting client should discard caches of regular files under WBC"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

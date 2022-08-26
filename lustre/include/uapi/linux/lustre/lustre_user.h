@@ -2887,6 +2887,8 @@ enum lu_wbc_state_flags {
 	WBC_STATE_FL_WRITEBACK		= (1 << __WBC_STATE_FL_WRITEBACK),
 	/* Writeback failure happens. */
 	WBC_STATE_FL_ERROR		= (1 << 7),
+	/* The inode was evicted due to the discarded EX WBC lock. */
+	WBC_STATE_FL_EVICTED		= (1 << 8),
 };
 
 enum lu_wbc_dirty_flags {
