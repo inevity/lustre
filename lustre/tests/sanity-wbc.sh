@@ -3350,6 +3350,59 @@ test_118() {
 }
 run_test 118 "Evicting client should discard caches of regular files under WBC"
 
+test_119() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local dir11="$dir/dir.l1.i1"
+	local dir21="$dir11/dir.l2.i1"
+	local dir22="$dir11/dir.l2.i2"
+	local file11="$dir/file.l1.i1"
+	local file21="$dir11/file.l2.i1"
+	local file31="$dir21/file.l3.i1"
+
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $dir11 || error "mkdir $dir11 failed"
+	mkdir $dir21 || error "mkdir $dir21 failed"
+
+	$LFS wbc unreserve $dir11 || error "Uncache $dir11 failed"
+	mkdir $dir22 || error "mkdir $dir22 failed"
+	touch $file11 || error "touch $file11 failed"
+	touch $file21 || error "touch $file21 failed"
+	touch $file31 || error "touch $file32 failed"
+	$LFS wbc state $dir $dir11 $dir21 $dir22 $file11 $file21 $file31
+
+	mds_evict_client
+	client_up || client_up || true
+	ls -R $dir11
+}
+run_test 119 "Evicting client on a subtree with de-completed files"
+
+test_120() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+	local oldmd5
+	local newmd5
+
+	setup_wbc "flush_mode=$flush_mode max_nrpages_per_file=16"
+
+	mkdir $dir || error "mkdir $dir failed"
+	dd if=/dev/urandom of=$file bs=4K count=24 ||
+		error "dd write $file failed"
+	$LFS wbc state $dir $file
+	oldmd5=$(md5sum $file | awk '{print $1}')
+
+	mds_evict_client
+	client_up || client_up || true
+	ls $dir
+	stat $file
+	newmd5=$(md5sum $file | awk '{print $1}')
+	[ "$oldmd5" == "$newmd5" ] || error "md5sum differ: $oldmd5 != $newmd5"
+}
+run_test 120 "Evict caches for a regular file with data committed"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 
