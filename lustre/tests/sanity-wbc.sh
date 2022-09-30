@@ -3403,6 +3403,91 @@ test_120() {
 }
 run_test 120 "Evict caches for a regular file with data committed"
 
+test_121a() {
+	local flush_mode="aging_keep"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+	local pid
+
+	setup_wbc "flush_mode=$flush_mode"
+
+	mkdir $dir || error "mkdir $dir failed"
+	multiop_bg_pause $file O_c || error "multiop_bg_pause $file failed"
+	pid=$!
+	lctl set_param subsystem_debug=llite+mds+mdc+ldlm
+	lctl set_param debug=trace+dentry+cache+vfstrace+ha+dlmtrace+inode
+	lctl clear
+	mds_evict_client
+	client_up || client_up || error "client_up failed"
+	lctl dk > log.f0
+	#$LFS wbc uncache $file
+	ls $dir
+	kill -USR1 $pid || error "multiop $pid not running"
+	wait $pid || error "multiop $pid failed"
+	rm -rf $dir || error "rm -rf $dir failed"
+	lctl dk > log.f1
+
+	echo "DONE phase 1"
+	ls $dir
+	mkdir $dir || error "mkdir $dir failed"
+	mkdir $file || error "mkdir $file failed"
+	lctl dk > log.m0
+	$LFS wbc state $dir $file
+	lctl dk > log.m1
+	multiop_bg_pause $file o_c || error "multiop_bg_pause $file failed"
+	pid=$!
+	lctl dk > log.a0
+	mds_evict_client
+	client_up || client_up || error "client_up failed"
+	lctl dk > log.a1
+	$LFS df $MOUNT
+	ls $dir
+	#$LFS wbc uncache $file
+	kill -USR1 $pid || error "multiop $pid not running"
+	wait $pid || error "multiop $pid failed"
+	lctl dk > log.a2
+	sync log.f1 log.f0 log.m0 log.a0 log.a1 log.a2
+	sleep 2
+	log "after CLOSE"
+	ls $dir
+	return 0
+}
+run_test 121a "close() after client eviction under WBC"
+
+test_121b() {
+	local flush_mode="aging_keep"
+	local dir="$DIR/$tdir/dir.wbc"
+	local pid
+
+	setup_wbc "flush_mode=$flush_mode"
+
+	lctl set_param subsystem_debug=llite+mds+mdc+ldlm
+	lctl set_param debug=trace+dentry+cache+vfstrace+inode+dlmtrace
+	lctl clear
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/$tdir failed"
+	lctl dk > log.b0
+	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+	mkdir $dir || error "mkdir $dir failed"
+	$LFS wbc state $DIR/$tdir $dir
+	lctl dk > log.b1
+	multiop_bg_pause $dir o_c || error "multiop_bg_pause $dir failed"
+	pid=$!
+	lctl dk > log.b2
+	mds_evict_client
+	client_up || client_up || error "client_up failed"
+	lctl dk > log.b3
+	ls $DIR/$tdir
+	kill -USR1 $pid || error "multiop $pid not running"
+	wait $pid || error "multiop $pid failed"
+	log "list after close:"
+	ls $DIR/$tdir
+	sleep 2
+	return 0
+}
+run_test 121b "close)() after client eviction on directory under WBC"
+
 test_sanity() {
 	local cmd="$LCTL set_param llite.*.wbc.conf=enable"
 

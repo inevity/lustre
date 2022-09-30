@@ -326,6 +326,7 @@ struct wbc_file {
 	struct list_head	 wbcf_open_item;
 	enum wbc_readdir_policy	 wbcf_readdir_pol;
 	void			*wbcf_private_data;
+	bool			 wbcf_fail_evicted;
 };
 
 enum wbc_cmd_type {
@@ -633,6 +634,7 @@ int wbcfs_dcache_dir_close(struct inode *inode, struct file *file);
 int wbcfs_setattr_data_object(struct inode *inode, struct iattr *attr);
 void wbc_free_inode_pages_final(struct inode *inode,
 				struct address_space *mapping);
+bool wbc_file_fail_evicted(struct file *file);
 
 void wbc_tunables_init(struct super_block *sb);
 void wbc_tunables_fini(struct super_block *sb);

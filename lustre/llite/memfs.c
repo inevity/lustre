@@ -808,7 +808,7 @@ static int memfs_file_release(struct inode *inode, struct file *file)
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_has_protected(wbci))
+	if (wbc_inode_has_protected(wbci) || wbc_file_fail_evicted(file))
 		rc = memfs_local_release_common(inode, file);
 	else
 		rc = ll_i2sbi(inode)->ll_fop->release(inode, file);
@@ -1447,7 +1447,7 @@ static int memfs_dir_close(struct inode *inode, struct file *file)
 	ENTRY;
 
 	down_read(&wbci->wbci_rw_sem);
-	if (wbc_inode_has_protected(wbci)) {
+	if (wbc_inode_has_protected(wbci) || wbc_file_fail_evicted(file)) {
 		rc = wbcfs_dcache_dir_close(inode, file);
 		if (rc)
 			GOTO(up_rwsem, rc);

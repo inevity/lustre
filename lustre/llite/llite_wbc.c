@@ -2038,6 +2038,28 @@ static inline bool wbc_lock_import_evicted(struct ldlm_lock *lock)
 	return imp->imp_state == LUSTRE_IMP_EVICTED;
 }
 
+bool wbc_file_fail_evicted(struct file *file)
+{
+	struct ll_file_data *fd = file->private_data;
+
+	return fd->fd_wbc_file.wbcf_fail_evicted;
+}
+
+/* Under the protection of the lock @wbci_rw_sem. */
+static void wbc_mark_file_fail_evicted(struct dentry *dentry)
+{
+	struct wbc_dentry *wbcd = ll_d2wbcd(dentry);
+	struct ll_file_data *fd, *tmp;
+
+	list_for_each_entry_safe(fd, tmp, &wbcd->wbcd_open_files,
+				 fd_wbc_file.wbcf_open_item) {
+		struct wbc_file *wbcf = &fd->fd_wbc_file;
+
+		list_del_init(&wbcf->wbcf_open_item);
+		wbcf->wbcf_fail_evicted = true;
+	}
+}
+
 /* Evict a regular file under WBC. */
 static int wbc_lock_evict_file(struct dentry *dentry)
 {
@@ -2074,6 +2096,7 @@ static int wbc_lock_evict_file(struct dentry *dentry)
 	wbcfs_inode_operations_switch(inode);
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
 	spin_unlock(&inode->i_lock);
+	wbc_mark_file_fail_evicted(dentry);
 	up_write(&wbci->wbci_rw_sem);
 
 	RETURN(0);
@@ -2128,6 +2151,7 @@ static int wbc_lock_evict_dir(struct dentry *parent, struct list_head *head)
 	wbcfs_inode_operations_switch(dir);
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
 	spin_unlock(&dir->i_lock);
+	wbc_mark_file_fail_evicted(parent);
 	up_write(&wbci->wbci_rw_sem);
 
 	RETURN(0);
@@ -2138,6 +2162,7 @@ static int wbc_lock_evict_one(struct dentry *dentry, struct list_head *head)
 	struct inode *inode = dentry->d_inode;
 	int rc;
 
+	CDEBUG(D_CACHE, "Evict dentry %pd (%p)\n", dentry, dentry);
 	if (S_ISDIR(inode->i_mode))
 		rc = wbc_lock_evict_dir(dentry, head);
 	else if (S_ISREG(inode->i_mode))
