@@ -973,6 +973,7 @@ struct ptlrpc_request {
 	 */
 	spinlock_t			 rq_lock;
 	spinlock_t			 rq_early_free_lock;
+  //how use?
 	/** client-side flags are serialized by rq_lock @{ */
 	unsigned int rq_intr:1, rq_replied:1, rq_err:1,
                 rq_timedout:1, rq_resend:1, rq_restart:1,

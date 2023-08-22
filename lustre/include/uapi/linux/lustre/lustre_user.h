@@ -2811,6 +2811,7 @@ enum lu_wbc_flush_mode {
 	WBC_FLUSH_DEFAULT_MODE	= WBC_FLUSH_LAZY_DEFAULT,
 };
 
+
 enum lu_wbc_cache_mode {
 	WBC_MODE_NONE,
 	/* Metadata and data are all in MemFS just similar to Linux/tmpfs. */
@@ -2843,6 +2844,7 @@ enum lu_wbc_cache_mode {
 	WBC_MODE_DEFAULT = WBC_MODE_MEMFS,
 };
 
+
 enum lu_wbc_state_flags {
 	WBC_STATE_FL_NONE		= 0x0,
 	/*
@@ -2856,6 +2858,7 @@ enum lu_wbc_state_flags {
 	 * All its ancestor directories should be also flushed to MDT.
 	 */
 	WBC_STATE_FL_SYNC		= (1 << 1),
+
 	/*
 	 * The file or directory is in Complete(P) state:
 	 * - Cached in client-side cache or in Sync(S) state;
@@ -2868,6 +2871,7 @@ enum lu_wbc_state_flags {
 	 * If not in Compelte(P) state, the client must read dentries from MDT.
 	 */
 	WBC_STATE_FL_COMPLETE		= (1 << 2),
+
 	/* Indicate it is a root WBC directory held the root WBC EX lock. */
 	WBC_STATE_FL_ROOT		= (1 << 3),
 	/* The inode is reserved and pinned in MemFS. */

@@ -5633,6 +5633,7 @@ static const struct file_operations ll_file_operations = {
 	.aio_write	= ll_file_aio_write,
 #endif /* HAVE_FILE_OPERATIONS_READ_WRITE_ITER */
 	.unlocked_ioctl	= ll_file_ioctl,
+
 	.open		= ll_file_open,
 	.release	= ll_file_release,
 	.mmap		= ll_file_mmap,
@@ -5709,6 +5710,7 @@ static const struct file_operations ll_file_operations_noflock = {
 	.lock		= ll_file_noflock,
 	.fallocate	= ll_fallocate,
 };
+
 
 const struct inode_operations ll_file_inode_operations = {
 	.setattr	= ll_setattr,

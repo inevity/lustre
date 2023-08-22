@@ -1641,6 +1641,7 @@ out:
 	return 0;
 }
 
+//update default_lsm by md
 void ll_update_default_lsm_md(struct inode *inode, struct lustre_md *md)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
@@ -1674,8 +1675,10 @@ void ll_update_default_lsm_md(struct inode *inode, struct lustre_md *md)
 	down_write(&lli->lli_lsm_sem);
 	if (lli->lli_default_lsm_md)
 		lmv_free_memmd(lli->lli_default_lsm_md);
+  //update
 	lli->lli_default_lsm_md = md->default_lmv;
 	lsm_md_dump(D_INODE, md->default_lmv);
+  //whihc is lsm
 	md->default_lmv = NULL;
 	up_write(&lli->lli_lsm_sem);
 	RETURN_EXIT;
@@ -2618,6 +2621,8 @@ void ll_update_inode_flags(struct inode *inode, unsigned int ext_flags)
 		clear_bit(LLIF_PROJECT_INHERIT, &ll_i2info(inode)->lli_flags);
 }
 
+
+//update inode mem from md 
 int ll_update_inode(struct inode *inode, struct lustre_md *md)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
@@ -2626,6 +2631,7 @@ int ll_update_inode(struct inode *inode, struct lustre_md *md)
 	bool api32;
 	int rc = 0;
 
+  //body is mdt_body
 	if (body->mbo_valid & OBD_MD_FLEASIZE) {
 		rc = cl_file_inode_init(inode, md);
 		if (rc)
@@ -3137,13 +3143,16 @@ int ll_prep_inode(struct inode **inode, struct req_capsule *pill,
 
 	ENTRY;
 
+  //true , and panic 
 	LASSERT(*inode || sb);
 	sbi = sb ? ll_s2sbi(sb) : ll_i2sbi(*inode);
+  //obd get, to md var?
 	rc = md_get_lustre_md(sbi->ll_md_exp, pill, sbi->ll_dt_exp,
 			      sbi->ll_md_exp, &md);
 	if (rc != 0)
 		GOTO(out, rc);
 
+  // whetch lookup_intent
 	if (S_ISDIR(md.body->mbo_mode) && md.lmv && lmv_dir_striped(md.lmv) &&
 	    it && it->it_extra_rpc_check) {
 		/* TODO: Check @lsm unchanged via @lsm_md_eq. */
@@ -3180,6 +3189,7 @@ int ll_prep_inode(struct inode **inode, struct req_capsule *pill,
 			GOTO(out, rc = -EINVAL);
 		}
 
+    //to get inode
 		*inode = ll_iget(sb, cl_fid_build_ino(fid1, api32), &md);
 		if (IS_ERR(*inode)) {
                         lmd_clear_acl(&md);
@@ -3192,17 +3202,22 @@ int ll_prep_inode(struct inode **inode, struct req_capsule *pill,
 
 	/* Handling piggyback layout lock.
 	 * Layout lock can be piggybacked by getattr and open request.
+   *
 	 * The lsm can be applied to inode only if it comes with a layout lock
 	 * otherwise correct layout may be overwritten, for example:
 	 * 1. proc1: mdt returns a lsm but not granting layout
 	 * 2. layout was changed by another client
 	 * 3. proc2: refresh layout and layout lock granted
 	 * 4. proc1: to apply a stale layout */
-	if (it != NULL && it->it_lock_mode != 0) {
+
+	if (it != NULL && it->it_lock_mode != 0) { // as intent lookup, if lock have
+                                             // layout, call layout lock!!!
+                                             // 
 		struct lustre_handle lockh;
 		struct ldlm_lock *lock;
 
 		lockh.cookie = it->it_lock_handle;
+    //do what?
 		lock = ldlm_handle2lock(&lockh);
 		LASSERT(lock != NULL);
 		if (ldlm_has_layout(lock)) {
@@ -3223,6 +3238,7 @@ int ll_prep_inode(struct inode **inode, struct req_capsule *pill,
 
 	/* we may want to apply some policy for foreign file/dir */
 	if (ll_sbi_has_foreign_symlink(sbi)) {
+    //TODO detail
 		rc = ll_manage_foreign(*inode, &md);
 		if (rc < 0)
 			GOTO(out, rc);
@@ -3234,6 +3250,7 @@ out:
 	/* cleanup will be done if necessary */
 	md_free_lustre_md(sbi->ll_md_exp, &md);
 
+  //intent op IT_OPEN so many how ?
 	if (rc != 0 && it != NULL && it->it_op & IT_OPEN) {
 		ll_intent_drop_lock(it);
 		ll_open_cleanup(sb != NULL ? sb : (*inode)->i_sb, pill);
@@ -3303,6 +3320,7 @@ void ll_unlock_md_op_lsm(struct md_op_data *op_data)
 }
 
 /* this function prepares md_op_data hint for passing it down to MD stack. */
+// what is the MD stack?
 struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 				      struct inode *i1, struct inode *i2,
 				      const char *name, size_t namelen,
@@ -3331,6 +3349,7 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 	}
 
 	if (op_data == NULL)
+    //obd alloc? obd as base module? 
 		OBD_ALLOC_PTR(op_data);
 
 	if (op_data == NULL)
@@ -3339,7 +3358,10 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 	ll_i2gids(op_data->op_suppgids, i1, i2);
 	op_data->op_fid1 = *ll_inode2fid(i1);
 
+  //for mkdir , i1 have, i2 = NULL
 	if (S_ISDIR(i1->i_mode)) {
+    //sem read 
+    //strip metadata
 		down_read_non_owner(&ll_i2info(i1)->lli_lsm_sem);
 		op_data->op_mea1_sem = &ll_i2info(i1)->lli_lsm_sem;
 		op_data->op_mea1 = ll_i2info(i1)->lli_lsm_md;
@@ -3347,6 +3369,7 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 	}
 
 	if (i2) {
+    // what op need child inode i2 != NULL?
 		op_data->op_fid2 = *ll_inode2fid(i2);
 		/*
 		 * Under WBC, @i2 (child inode) has already initialized with
@@ -3368,6 +3391,7 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 	} else {
 		fid_zero(&op_data->op_fid2);
 	}
+
 
 	if (test_bit(LL_SBI_64BIT_HASH, ll_i2sbi(i1)->ll_flags))
 		op_data->op_cli_flags |= CLI_HASH64;
@@ -3396,9 +3420,12 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 			lookup = 0;
 		} else {
 			dir = i1;
+      //lookup == any op, which lookup =1 when dir = i1
 			lookup = (int)(opc == LUSTRE_OPC_ANY);
 		}
+
 		if (opc == LUSTRE_OPC_ANY && lookup)
+      //pfid mean pointer fid
 			pfid = &fid;
 		rc = ll_setup_filename(dir, &dname, lookup, &fname, pfid);
 		if (rc) {
@@ -3416,6 +3443,7 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 			op_data->op_flags |= MF_OPNAME_KMALLOCED;
 	}
 
+
 	/* In fact LUSTRE_OPC_LOOKUP, LUSTRE_OPC_OPEN
 	 * are LUSTRE_OPC_ANY
 	 */
@@ -3430,6 +3458,7 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 	op_data->op_fsuid = from_kuid(&init_user_ns, current_fsuid());
 	op_data->op_fsgid = from_kgid(&init_user_ns, current_fsgid());
 	op_data->op_cap = current_cap();
+
 	op_data->op_mds = 0;
 	if ((opc == LUSTRE_OPC_CREATE) && (name != NULL) &&
 	     filename_is_volatile(name, namelen, &op_data->op_mds)) {

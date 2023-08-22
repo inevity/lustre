@@ -63,6 +63,7 @@ struct osc_async_rc {
         __u64   ar_min_xid;
 };
 
+// abbrev
 struct lov_oinfo {                 /* per-stripe data structure */
 	struct ost_id   loi_oi;    /* object ID/Sequence on the target OST */
 	int loi_ost_idx;           /* OST stripe index in lov_tgt_desc->tgts */
@@ -101,6 +102,7 @@ struct obd_info {
          * update some caller data from LOV layer if needed. */
         obd_enqueue_update_f    oi_cb_up;
 };
+
 
 struct obd_type {
 	const struct obd_ops	*typ_dt_ops;
@@ -607,6 +609,7 @@ struct obd_llog_group {
 /* corresponds to one of the obd's */
 #define OBD_DEVICE_MAGIC        0XAB5CD6EF
 
+//  MGC, MDC, OSC, LOV, LMV are examples of obd devices in Lustre 
 struct obd_device {
 	struct obd_type			*obd_type;
 	__u32				 obd_magic; /* OBD_DEVICE_MAGIC */
@@ -820,6 +823,8 @@ enum op_xvalid {
 
 struct lu_context;
 
+
+//it mean op, op to lock_mode parse
 static inline int it_to_lock_mode(struct lookup_intent *it)
 {
 	/* CREAT needs to be tested before open (both could be set) */
@@ -871,6 +876,8 @@ enum md_op_code {
 	LUSTRE_OPC_MKNOD,
 	LUSTRE_OPC_CREATE,
 	LUSTRE_OPC_ANY,
+	// In fact LUSTRE_OPC_LOOKUP, LUSTRE_OPC_OPEN
+	// are LUSTRE_OPC_ANY
 	LUSTRE_OPC_LOOKUP,
 	LUSTRE_OPC_OPEN,
 };
@@ -889,16 +896,22 @@ struct md_op_data {
 	struct lu_fid		op_fid1; /* operation fid1 (usualy parent) */
 	struct lu_fid		op_fid2; /* operation fid2 (usualy child) */
 	struct lu_fid		op_fid3; /* 2 extra fids to find conflicting */
+
 	struct lu_fid		op_fid4; /* to the operation locks. */
+  // open to which mds server
 	u32			op_mds;  /* what mds server open will go to */
 	__u32			op_mode;
+  //mkdir/symlink/mknode/create/lookpu/open/any
 	enum md_op_code		op_code;
+  //just cookie
 	struct lustre_handle	op_open_handle;
 	s64			op_mod_time;
 	const char		*op_name;
 	size_t			op_namelen;
+  //mea1?
 	struct rw_semaphore	*op_mea1_sem;
 	struct rw_semaphore	*op_mea2_sem;
+  // lmv_stripe_md *lsm
 	struct lmv_stripe_md	*op_mea1;
 	struct lmv_stripe_md	*op_mea2;
 	struct lmv_stripe_md	*op_default_mea1;	/* default LMV */
@@ -909,24 +922,27 @@ struct md_op_data {
 	void			*op_data;
 	size_t			op_data_size;
 
-	/* iattr fields and blocks. */
+	/* iattr ? fields and blocks. */
 	struct iattr            op_attr;
+  //x extra
 	enum op_xvalid		op_xvalid;	/* eXtra validity flags */
 	loff_t                  op_attr_blocks;
 	u64			op_valid;	/* OBD_MD_* */
 	unsigned int		op_attr_flags;	/* LUSTRE_{SYNC,..}_FL */
+
 
 	enum md_op_flags	op_flags;
 
 	/* Various operation flags. */
 	enum mds_op_bias        op_bias;
 
-	/* used to transfer info between the stacks of MD client
+	/* used to transfer info between  the stacks of MD client
 	 * see enum op_cli_flags */
 	enum md_cli_flags	op_cli_flags;
 
 	/* File object data version for HSM release, on client */
 	__u64			op_data_version;
+  //? lease ping pong
 	struct lustre_handle	op_lease_handle;
 
 	/* File security context, for creates/metadata ops */
@@ -948,6 +964,7 @@ struct md_op_data {
 		unsigned short	op_dir_depth;
 	};
 
+
 	__u16			op_mirror_id;
 
 	/*
@@ -959,11 +976,13 @@ struct md_op_data {
 	 * order there may be a race with creation by others.
 	 */
 	bool			op_new_layout;
+  //bash hash?
 	/* used to access dir with bash hash */
 	__u32			op_stripe_index;
 	/* Archive ID for PCC attach */
 	__u32			op_archive_id;
 
+  //async op?
 	/* XXX here for now for async creates, but perhaps removed later */
 	__u64			op_rdev;
 };
@@ -1229,6 +1248,7 @@ struct obd_client_handle {
 struct lookup_intent;
 struct cl_attr;
 
+//where the open lookup? 
 struct md_ops {
 	int (*m_close)(struct obd_export *, struct md_op_data *,
 		       struct md_open_data *, struct ptlrpc_request **);
@@ -1244,6 +1264,7 @@ struct md_ops {
 	int (*m_getattr)(struct obd_export *, struct md_op_data *,
 			 struct ptlrpc_request **);
 
+  // m_intent_lock vs m_intent_lock_async
 	int (*m_intent_lock)(struct obd_export *, struct md_op_data *,
 			     struct lookup_intent *,
 			     struct ptlrpc_request **,
@@ -1253,6 +1274,7 @@ struct md_ops {
 				   struct md_op_item *,
 				   struct ptlrpc_request_set *);
 
+  // what m_reint_async
 	int (*m_reint_async)(struct obd_export *, struct md_op_item *,
 			     struct ptlrpc_request_set *);
 
@@ -1283,6 +1305,7 @@ struct md_ops {
 	int (*m_getxattr)(struct obd_export *, const struct lu_fid *,
 			  u64, const char *, size_t, struct ptlrpc_request **);
 
+
 	int (*m_intent_getattr_async)(struct obd_export *,
 				      struct md_op_item *);
 
@@ -1303,6 +1326,7 @@ struct md_ops {
 			       struct obd_export *, struct obd_export *,
 			       struct lustre_md *);
 
+
 	int (*m_prep_lustre_md)(struct obd_export *, struct lu_fid *,
 				struct md_op_data *, struct obd_export *,
 				struct obd_export *, struct lustre_md *);
@@ -1320,8 +1344,10 @@ struct md_ops {
 	int (*m_clear_open_replay_data)(struct obd_export *,
 					struct obd_client_handle *);
 
+
 	int (*m_set_lock_data)(struct obd_export *,
 			       const struct lustre_handle *, void *, __u64 *);
+
 
 	enum ldlm_mode (*m_lock_match)(struct obd_export *, __u64,
 				       const struct lu_fid *, enum ldlm_type,
@@ -1336,6 +1362,7 @@ struct md_ops {
 				  const struct lmv_stripe_md *,
 				  const char *name, int namelen,
 				  struct lu_fid *fid);
+
 	int (*m_unpackmd)(struct obd_export *exp, struct lmv_stripe_md **plsm,
 			  const union lmv_mds_md *lmv, size_t lmv_size);
 	int (*m_rmfid)(struct obd_export *exp, struct fid_array *fa, int *rcs,

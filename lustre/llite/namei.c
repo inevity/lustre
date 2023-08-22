@@ -114,6 +114,7 @@ static int ll_set_inode(struct inode *inode, void *opaque)
  * Get an inode by inode number(@hash), which is already instantiated by
  * the intent lookup).
  */
+// been instantiated by intent lookup, how impl and use?
 struct inode *ll_iget(struct super_block *sb, ino_t hash,
                       struct lustre_md *md)
 {
@@ -542,6 +543,7 @@ int ll_md_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *ld,
 	RETURN(0);
 }
 
+//supplementary group 
 __u32 ll_i2suppgid(struct inode *i)
 {
 	if (in_group_p(i->i_gid))
@@ -803,6 +805,7 @@ static int ll_lookup_it_finish(struct ptlrpc_request *request,
 		 * If file was created on the server, the dentry is revalidated
 		 * in ll_create_it if the lock allows for it.
 		 */
+
 		/* Check that parent has UPDATE lock. */
 		struct lookup_intent parent_it = {
 					.it_op = IT_GETATTR,
@@ -878,15 +881,18 @@ static struct dentry *ll_lookup_it(struct inode *parent, struct dentry *dentry,
 	if (d_mountpoint(dentry))
 		CERROR("Tell Peter, lookup on mtpt, it %s\n", LL_IT2STR(it));
 
+  //just met only two cases
 	if (it == NULL || it->it_op == IT_GETXATTR)
 		it = &lookup_it;
 
+  // override the it_op?
 	if (it->it_op == IT_GETATTR && dentry_may_statahead(parent, dentry)) {
 		rc = ll_revalidate_statahead(parent, &dentry, 0);
 		if (rc == 1)
 			RETURN(dentry == save ? NULL : dentry);
 	}
 
+  // possible? race?
 	if (it->it_op & IT_OPEN && it->it_flags & FMODE_WRITE &&
 	    dentry->d_sb->s_flags & SB_RDONLY)
 		RETURN(ERR_PTR(-EROFS));
@@ -1060,6 +1066,7 @@ inherit:
 		op_data->op_archive_id = pca->pca_dataset->pccd_rwid;
 		it->it_flags |= MDS_OPEN_PCC;
 	}
+
 
 	extra_lock_flags = wbc_intent_lock_flags(ll_i2wbci(parent), it);
 	rc = md_intent_lock(ll_i2mdexp(parent), op_data, it, &req,
@@ -1428,6 +1435,7 @@ static struct inode *ll_create_node(struct inode *dir, struct lookup_intent *it)
  * If the create succeeds, we fill in the inode information
  * with d_instantiate().
  */
+// fill inode info
 static int ll_create_it(struct inode *dir, struct dentry *dentry,
 			struct lookup_intent *it,
 			void *secctx, __u32 secctxlen, bool encrypt,
@@ -1487,6 +1495,7 @@ static int ll_create_it(struct inode *dir, struct dentry *dentry,
 		if (rc)
 			RETURN(rc);
 	}
+
 
 	ll_set_lock_data(ll_i2sbi(dir)->ll_md_exp, inode, it, &bits);
 	if (bits & MDS_INODELOCK_LOOKUP) {
@@ -1569,6 +1578,7 @@ unlock:
 	up_read(&rlli->lli_lsm_sem);
 }
 
+
 static int ll_new_node(struct inode *dir, struct dentry *dchild,
 		       const char *tgt, umode_t mode, __u64 rdev, __u32 opc)
 {
@@ -1576,12 +1586,15 @@ static int ll_new_node(struct inode *dir, struct dentry *dchild,
 	struct ptlrpc_request *request = NULL;
 	struct md_op_data *op_data = NULL;
 	struct inode *inode = NULL;
+  //parent  
 	struct ll_sb_info *sbi = ll_i2sbi(dir);
 	struct llcrypt_str *disk_link = NULL;
 	bool encrypt = false;
 	int err;
 
 	ENTRY;
+  //TODO now tgt == NULL, so false, so no enter into 
+  //??? not exist , ommit
 	if (unlikely(tgt != NULL)) {
 		disk_link = (struct llcrypt_str *)rdev;
 		rdev = 0;
@@ -1596,8 +1609,10 @@ again:
 		GOTO(err_exit, err = PTR_ERR(op_data));
 
 	if (S_ISDIR(mode))
+    //TODO qos 
 		ll_qos_mkdir_prep(op_data, dir);
 
+  //sec
 	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags)) {
 		err = ll_dentry_init_security(dchild, mode, &dchild->d_name,
 					      &op_data->op_file_secctx_name,
@@ -1607,6 +1622,7 @@ again:
 			GOTO(err_exit, err);
 	}
 
+  //encry
 	if (ll_sbi_has_encrypt(sbi) &&
 	    ((IS_ENCRYPTED(dir) &&
 	    (S_ISREG(mode) || S_ISDIR(mode) || S_ISLNK(mode))) ||
@@ -1657,12 +1673,16 @@ again:
 		}
 	}
 
+  //if protetecd state(wb ex lock)  the cache inode' state is: , lockless, or use lock mode
 	op_data->op_bias |= wbc_md_op_bias(ll_i2wbci(dir));
+  //for mkdir, tgt = NULL
+  //TODO obd op detail 
 	err = md_create(sbi->ll_md_exp, op_data, tgt ? disk_link->name : NULL,
 			tgt ? disk_link->len : 0, mode,
 			from_kuid(&init_user_ns, current_fsuid()),
 			from_kgid(&init_user_ns, current_fsgid()),
 			current_cap(), rdev, 0, &request);
+// why obc ocd as lustr version code
 #if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 14, 58, 0)
 	/*
 	 * server < 2.12.58 doesn't pack default LMV in intent_getattr reply,
@@ -1736,10 +1756,12 @@ again:
 
 	CFS_FAIL_TIMEOUT(OBD_FAIL_LLITE_NEWNODE_PAUSE, cfs_fail_val);
 
+  //mdcreate (fill request?)then prep inode frome requet 
 	err = ll_prep_inode(&inode, &request->rq_pill, dchild->d_sb, NULL);
 	if (err)
 		GOTO(err_exit, err);
 
+  //secctx
 	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags)) {
 		/* must be done before d_instantiate, because it calls
 		 * security_d_instantiate, which means a getxattr if security
@@ -1759,6 +1781,7 @@ again:
 	if (err)
 		GOTO(err_exit, err);
 
+  //omit
 	if (encrypt) {
 		err = ll_set_encflags(inode, op_data->op_file_encctx,
 				      op_data->op_file_encctx_size, true);
@@ -1790,9 +1813,11 @@ again:
 	EXIT;
 err_exit:
 	if (request != NULL)
+    //ref drop
 		ptlrpc_req_finished(request);
 
 	if (!IS_ERR_OR_NULL(op_data))
+    //unlock and dealloc
 		ll_finish_md_op_data(op_data);
 
 	RETURN(err);
@@ -1936,24 +1961,34 @@ out:
 	RETURN(err);
 }
 
+//ctlr + g search only three, vfs call to here
 static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 		    struct dentry *dchild, umode_t mode)
 {
+  //mkidr loop intent is IT_CREAT, Here set for mkdir, so the IT_CREATE IT flag 
+  //vs op ??
 	struct lookup_intent mkdir_it = { .it_op = IT_CREAT };
+  // inode 2 superblock info 
 	struct ll_sb_info *sbi = ll_i2sbi(dir);
 	struct ptlrpc_request *request = NULL;
 	struct md_op_data *op_data;
+  //kernel inode, no def 
 	struct inode *inode = NULL;
+  //no def
 	ktime_t kstart = ktime_get();
 	enum lu_mkdir_policy pol;
 	__u64 extra_lock_flags;
 	int rc;
 
+  // # define ENTRY	CDEBUG(D_TRACE, "Process entered\n")
 	ENTRY;
 
+  // dchild to create , dir is parent?
 	CDEBUG(D_VFSTRACE, "VFS Op:name=%pd, dir="DFID"(%p)\n",
 	       dchild, PFID(ll_inode2fid(dir)), dir);
 
+  //obd connection
+	//__u64 ocd_connect_flags; /* OBD_CONNECT_* per above */
 	if (!IS_POSIXACL(dir) || !exp_connect_umask(ll_i2mdexp(dir)))
 		mode &= ~current_umask();
 
@@ -1964,19 +1999,26 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	 * LDLM_FL_NO_LRU.
 	 */
 	pol = ll_mkdir_policy_get(sbi, dir, dchild, mode, &extra_lock_flags);
-	if (pol == MKDIR_POL_REINT) {
+	if (pol == MKDIR_POL_REINT) { //no cache, reint policy
+    // TODO familar
 		mode = (mode & (S_IRWXUGO | S_ISVTX)) | S_IFDIR;
+    // LUSTRE_OPC_MKDIR md op code 
+    // dentry and inode fill
 		rc = ll_new_node(dir, dchild, NULL, mode, 0, LUSTRE_OPC_MKDIR);
 		GOTO(out_tally, rc);
 	}
 
+  // assign it_create_mode
 	mkdir_it.it_create_mode = (mode & (S_IRWXUGO | S_ISVTX)) | S_IFDIR;
+  // ll_new_node also call this fn
 	op_data = ll_prep_md_op_data(NULL, dir, NULL, dchild->d_name.name,
 				     dchild->d_name.len, mode, LUSTRE_OPC_MKDIR,
 				     NULL);
 	if (IS_ERR(op_data))
 		RETURN(PTR_ERR(op_data));
 
+  // extra_lock_flags set from ll_mkdir_policy_get
+  // ll_new_node also set this but here only process the PARENT_LOCKED mode
 	if (extra_lock_flags & LDLM_FL_INTENT_PARENT_LOCKED)
 		op_data->op_bias |= MDS_WBC_LOCKLESS;
 
@@ -1991,25 +2033,34 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	}
 
 
+  // do the intent lock op to the target?? do the lock req, return what locks?
 	rc = md_intent_lock(sbi->ll_md_exp, op_data, &mkdir_it,
 			    &request, &ll_md_blocking_ast, extra_lock_flags);
 	if (rc)
 		GOTO(out_fini, rc);
 
 	/* dir layout may change */
+  //TODO unlock sem and let dir layout changed by someone
 	ll_unlock_md_op_lsm(op_data);
 
+  // update times from mdt_body from server 
 	ll_update_times(request, dir);
 
+  // #define OBD_FAIL_LLITE_NEWNODE_PAUSE		    0x140a
+  // timeout cfs_fail_val
 	CFS_FAIL_TIMEOUT(OBD_FAIL_LLITE_NEWNODE_PAUSE, cfs_fail_val);
 
+  // abvoe ll_new_node also init inode with dentry
 	rc = ll_prep_inode(&inode, &request->rq_pill, dchild->d_sb, &mkdir_it);
 	if (rc)
 		GOTO(out_fini, rc);
 
 	if (pol == MKDIR_POL_EXCL)
+	  //NOTE: ll_new_nod use:  err = ll_new_inode_init(dir, dchild, inode);
+    // cache mode, do what? 
 		wbc_intent_inode_init(dir, inode, &mkdir_it);
 
+  //omit
 	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
 	    pol == MKDIR_POL_INTENT) {
 		/* must be done before d_instantiate, because it calls
@@ -2042,8 +2093,10 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	if (mkdir_it.it_lock_mode || pol == MKDIR_POL_EXCL) {
 		__u64 bits = 0;
 
+    //result it 
 		LASSERT(it_disposition(&mkdir_it, DISP_LOOKUP_NEG));
 		ll_set_lock_data(sbi->ll_md_exp, inode, &mkdir_it, &bits);
+    //returned lookup lock, 
 		if (bits & MDS_INODELOCK_LOOKUP || pol == MKDIR_POL_EXCL)
 			d_lustre_revalidate(dchild);
 	}
@@ -2333,6 +2386,7 @@ const struct inode_operations ll_dir_inode_operations = {
 	.create		= ll_create_nd,
 	/* We need all these non-raw things for NFSD, to not patch it. */
 	.unlink		= ll_unlink,
+  //who call?? vfs
 	.mkdir		= ll_mkdir,
 	.rmdir		= ll_rmdir,
 	.symlink	= ll_symlink,

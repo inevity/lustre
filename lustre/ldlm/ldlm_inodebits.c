@@ -34,6 +34,7 @@
  * Author: Phil Schwan <phil@clusterfs.com>
  */
 
+// ibits lock type:  inode bitmap lock type
 /**
  * This file contains implementation of IBITS lock type
  *
@@ -153,8 +154,8 @@ restart:
  * \retval 1 if the lock is compatible to all locks in \a queue
  *
  * IBITS locks in granted queue are organized in bunches of
- * same-mode/same-bits locks called "skip lists". The First lock in the
- * bunch contains a pointer to the end of the bunch.  This allows us to
+ * same-mode/same-bits locks called "skip lists".  The First lock in the
+ * bunch(same class things) contains a pointer to the end of the bunch.  This allows us to
  * skip an entire bunch when iterating the list in search for conflicting
  * locks if first lock of the bunch is not conflicting with us.
  */
@@ -336,7 +337,7 @@ skip_work_list:
 
 /**
  * Process a granting attempt for IBITS lock.
- * Must be called with ns lock held
+ * Must be called with ns  lock held
  *
  * This function looks for any conflicts for \a lock in the granted or
  * waiting queues. The lock is granted if no conflicts are found in

@@ -117,6 +117,7 @@ struct ll_trunc_sem {
 	atomic_t	ll_trunc_waiters;
 };
 
+
 struct ll_inode_info {
 	__u32				lli_inode_magic;
 	rwlock_t			lli_lock;
@@ -504,6 +505,7 @@ static inline void obd_connect_set_enc(struct obd_connect_data *data)
 void ll_inode_size_lock(struct inode *inode);
 void ll_inode_size_unlock(struct inode *inode);
 
+
 static inline struct ll_inode_info *ll_i2info(struct inode *inode)
 {
 	return container_of(inode, struct ll_inode_info, lli_vfs_inode);
@@ -514,6 +516,7 @@ static inline struct pcc_inode *ll_i2pcci(struct inode *inode)
 	return ll_i2info(inode)->lli_pcc_inode;
 }
 
+// cache read read-ahead
 /* default to use at least 16M for fast read if possible */
 #define RA_REMAIN_WINDOW_MIN			MiB_TO_PAGES(16UL)
 
@@ -526,7 +529,7 @@ static inline struct pcc_inode *ll_i2pcci(struct inode *inode)
 /* default read-ahead full files smaller than limit on the second read */
 #define SBI_DEFAULT_READ_AHEAD_WHOLE_MAX	MiB_TO_PAGES(2UL)
 
-/* default range pages */
+/* default range pages for read-ahead */
 #define SBI_DEFAULT_RA_RANGE_PAGES		MiB_TO_PAGES(1ULL)
 
 /* Min range pages */
@@ -596,6 +599,7 @@ struct ra_io_arg {
 #define LL_HIST_MAX 28
 #define LL_HIST_START 12 /* buckets start at 2^12 = 4k */
 #define LL_PROCESS_HIST_MAX 10
+//pp per_process_info
 struct per_process_info {
 	pid_t pid;
 	struct obd_histogram pp_r_hist;
@@ -944,6 +948,7 @@ struct ll_file_data {
 void llite_tunables_unregister(void);
 int llite_tunables_register(void);
 
+//ll_info2i ll_inode_info to inode 
 static inline struct inode *ll_info2i(struct ll_inode_info *lli)
 {
         return &lli->lli_vfs_inode;
@@ -1629,6 +1634,7 @@ static inline int ll_file_nolock(const struct file *file)
 	return ((fd->fd_flags & LL_FILE_IGNORE_LOCK) ||
 		test_bit(LL_SBI_NOLCK, ll_i2sbi(inode)->ll_flags));
 }
+
 
 static inline void ll_set_lock_data(struct obd_export *exp, struct inode *inode,
                                     struct lookup_intent *it, __u64 *bits)

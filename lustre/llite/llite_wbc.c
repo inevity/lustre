@@ -519,7 +519,9 @@ static inline void wbc_prep_exlock_common(struct md_op_item *item, int it_op)
 	struct ldlm_enqueue_info *einfo = &item->mop_einfo;
 
 	item->mop_it.it_op = it_op;
+  // intent lock type Intent BITS??
 	einfo->ei_type = LDLM_IBITS;
+  //enquei info : lock mode
 	einfo->ei_mode = it_to_lock_mode(&item->mop_it);
 	einfo->ei_cb_bl = ll_md_blocking_ast;
 	einfo->ei_cb_cp = ldlm_completion_ast;
@@ -2284,36 +2286,48 @@ void wbc_intent_inode_init(struct inode *dir, struct inode *inode,
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 
 	ENTRY;
-
+  //true pass
 	LASSERT(it->it_op == IT_CREAT || it->it_op == IT_LOOKUP);
 	spin_lock(&inode->i_lock);
 	if (it->it_lock_mode == LCK_EX) {
+    // set before 
+
 		struct wbc_super *super = ll_i2wbcs(dir);
 
+    //parent inode no EX protect
 		LASSERT(!wbc_inode_has_protected(dwbci));
+    //set cache mode /flush mode from paretnt super 
 		wbci->wbci_cache_mode = super->wbcs_conf.wbcc_cache_mode;
 		wbci->wbci_flush_mode = super->wbcs_conf.wbcc_flush_mode;
 		/*
 		 * Set this newly created WBC directory with the state of
 		 * Protected(P) | Sync(S) | Root(R) | Complete(C).
 		 */
+    // ALL state here
 		wbci->wbci_flags = WBC_STATE_FL_ROOT | WBC_STATE_FL_PROTECTED |
 				   WBC_STATE_FL_SYNC | WBC_STATE_FL_COMPLETE;
 		wbc_super_root_add(inode);
+    //TODO who update/set the it->it_lock_handle
 		wbci->wbci_lock_handle.cookie = it->it_lock_handle;
 	} else {
 		LASSERT(it->it_lock_mode == 0 &&
 			wbc_inode_has_protected(dwbci));
+
+	  //LCK_MINMODE	= 0, it_lock_mode = 0; 
+    //and paretnt have ex lock
 		wbci->wbci_cache_mode = dwbci->wbci_cache_mode;
 		wbci->wbci_flush_mode = dwbci->wbci_flush_mode;
+    //diff above: no root , no complete becasue parent ex lock
 		wbci->wbci_flags = WBC_STATE_FL_PROTECTED | WBC_STATE_FL_SYNC;
 	}
 
 	spin_unlock(&inode->i_lock);
+  //set memfs inode op, later do what?
 	wbc_inode_operations_set(inode, inode->i_mode, inode->i_rdev);
 	RETURN_EXIT;
 }
 
+// TBF token bucket filter
 /*
  * Customizable rule based auto WBC.
  * Define various auto caching rule for WBC on a client similar to TBF or PCC.
@@ -2321,46 +2335,82 @@ void wbc_intent_inode_init(struct inode *dir, struct inode *inode,
  * obtain EX WBC lock from MDS and keep exclusive access on the directory
  * under the protection of the EX lock on the client.
  * The rule can be combination of uid/gid/projid/fname or jobid.
- * Moerover, it would better to return the customized WBC cache specification
+ * Moerover, it would better to return the  customized WBC cache specification
  * here to set the cache mode and flush mode for the newly created directory.
  */
+//TODO which is dir, which is to mk, dir is parent.
 enum lu_mkdir_policy
 ll_mkdir_policy_get(struct ll_sb_info *sbi, struct inode *dir,
 		    struct dentry *dentry, umode_t mode,
 		    __u64 *extra_lock_flags)
 {
+  //wbc super struct
+  //get wbc_conf
 	struct wbc_conf *conf = &ll_i2wbcs(dir)->wbcs_conf;
+  //wbcc wbc config.
+  //cache rule
 	struct cfs_rule *rule = &conf->wbcc_rule;
+  //dir inode
 	struct wbc_inode *wbci = ll_i2wbci(dir);
 	struct cfs_matcher matcher;
 	bool excl_cache;
 
 	if (conf->wbcc_cache_mode == WBC_MODE_NONE) {
+    //no cache 
 		excl_cache = false;
 	} else if (rule->rl_conds_str == NULL) {
+    // rl_conds_str rule conds str?
 		excl_cache = true;
 	} else {
 		matcher.mc_uid = from_kuid(&init_user_ns, current_uid());
 		matcher.mc_gid = from_kgid(&init_user_ns, current_gid());
 		matcher.mc_projid = ll_i2info(dir)->lli_projid;
+    // mkdir dentry
 		matcher.mc_name = &dentry->d_name;
 
 		excl_cache = cfs_rule_match(rule, &matcher);
 	}
+  //Look like if not none for the cache mode, will default exec_cache true when 
+  //rl_conds_str == NULL
 
-	if (!excl_cache) {
+	if (!excl_cache) { //no exel cache computed
+                     //so no extra lock flag 
+                     //and if set intent mkdir_enabled, using MKDIR_POL_INTENT,
+                     //    if not set = disable intent mkdir, 
+                     //    using MKDIR_POL_REINT(log diff) 
+                     //so no cache, no exclusive cache 
+                     //   intent mkidr 
+                     //   reint mkdir(default previous) 
 		*extra_lock_flags = 0;
 		return sbi->ll_intent_mkdir_enabled ?
 		       MKDIR_POL_INTENT : MKDIR_POL_REINT;
 	}
 
+
+  //processing the exclusive cache case now: 
+  
+  //paretn dir is protetec, with wbc ex lock  
 	if (wbc_inode_has_protected(wbci)) {
+    //dir inode have Protected
+	  // The file or directory is under the protection of subtree
+	  // WBC EX lock: Protected(P).
+    // the dir is under  the subtree wbc ex lock's protectionn 
+    //
+    // cached in client or sync state.
+    // # define LASSERT(e) ((void)sizeof!!(e))
+    // Need not completed.
 		LASSERT(!wbc_inode_complete(wbci));
+
+    // Intent with parent dir locked by the client already. Currently used by WBC.
 		*extra_lock_flags = LDLM_FL_INTENT_PARENT_LOCKED;
 	} else {
+    // if paretn not have wbc ex lock 
 		LASSERT(wbc_inode_none(wbci));
+    // Intent with requesting to grant WBC EX lock to the client for the file.
+    // TODO how pass the intent to server?
 		*extra_lock_flags = LDLM_FL_INTENT_EXLOCK_UPDATE;
 	}
+  //SO look like if cache ,use excl cache(also send intent), and nocache use intent or reint. 
 
 	return MKDIR_POL_EXCL;
 }
@@ -2372,22 +2422,32 @@ int ll_new_inode_init(struct inode *dir, struct dentry *dchild,
 	int rc = 0;
 
 	if (wbc_inode_has_protected(dwbci)) {
+    //the dentry child 
 		struct wbc_inode *wbci = ll_i2wbci(inode);
 
 		LASSERT(!wbc_inode_complete(dwbci));
 		spin_lock(&inode->i_lock);
+    // inherent pareent cache mode, cache where
 		wbci->wbci_cache_mode = dwbci->wbci_cache_mode;
+    // inherent pareent flush mode
 		wbci->wbci_flush_mode = dwbci->wbci_flush_mode;
+    //commted state
 		wbci->wbci_flags = WBC_STATE_FL_PROTECTED | WBC_STATE_FL_SYNC;
 		spin_unlock(&inode->i_lock);
+
+    //newed inode init
 		wbc_inode_operations_set(inode, inode->i_mode, inode->i_rdev);
 
+    //setup dentry and  not putcache ,
 		if (ll_d_setup(dchild, false)) {
 			if (d_unhashed(dchild))
+        //update
 				d_add(dchild, inode);
 			else
+        //new instantiated
 				d_instantiate(dchild, inode);
 
+      //enable to valid, also race 
 			d_lustre_revalidate(dchild);
 		}
 	} else {

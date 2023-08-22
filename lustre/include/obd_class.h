@@ -410,6 +410,8 @@ void la_from_obdo(struct lu_attr *la, const struct obdo *dst, u64 valid);
 void obdo_cpy_md(struct obdo *dst, const struct obdo *src, u64 valid);
 void obdo_to_ioobj(const struct obdo *oa, struct obd_ioobj *ioobj);
 
+
+// find the impl m_ op
 #define OBP(dev, op)    (dev)->obd_type->typ_dt_ops->o_ ## op
 #define MDP(dev, op)    (dev)->obd_type->typ_md_ops->m_ ## op
 
@@ -1337,6 +1339,7 @@ enum mps_stat_idx {
 	LPROC_MD_CREATE,
 	LPROC_MD_ENQUEUE,
 	LPROC_MD_GETATTR,
+
 	LPROC_MD_INTENT_LOCK,
 	LPROC_MD_INTENT_LOCK_ASYNC,
 	LPROC_MD_REINT_ASYNC,
@@ -1409,6 +1412,7 @@ static inline int md_close(struct obd_export *exp, struct md_op_data *op_data,
 	return MDP(exp->exp_obd, close)(exp, op_data, mod, request);
 }
 
+// why impl in header
 static inline int md_create(struct obd_export *exp, struct md_op_data *op_data,
 			    const void *data, size_t datalen, umode_t mode,
 			    uid_t uid, gid_t gid, kernel_cap_t cap_effective,
@@ -1424,6 +1428,8 @@ static inline int md_create(struct obd_export *exp, struct md_op_data *op_data,
 	lprocfs_counter_incr(exp->exp_obd->obd_md_stats,
 			     LPROC_MD_CREATE);
 
+  //how impl for the md op by the obd 
+  //TODO 
 	return MDP(exp->exp_obd, create)(exp, op_data, data, datalen, mode,
 					 uid, gid, cap_effective, rdev,
 					 cr_flags, request);
@@ -1462,6 +1468,7 @@ static inline int md_getattr_name(struct obd_export *exp,
 	return MDP(exp->exp_obd, getattr_name)(exp, op_data, request);
 }
 
+
 static inline int md_intent_lock(struct obd_export *exp,
 				 struct md_op_data *op_data,
 				 struct lookup_intent *it,
@@ -1478,10 +1485,13 @@ static inline int md_intent_lock(struct obd_export *exp,
 	lprocfs_counter_incr(exp->exp_obd->obd_md_stats,
 			     LPROC_MD_INTENT_LOCK);
 
+  //op is intent lock, it call as lookup_intent,reqp reqpointer   
+  //TODO impl detail 
 	return MDP(exp->exp_obd, intent_lock)(exp, op_data, it, reqp,
 					      cb_blocking, extra_lock_flags);
 }
 
+// vs md_intent_lock
 static inline int md_intent_lock_async(struct obd_export *exp,
 				       struct md_op_item *item,
 				       struct ptlrpc_request_set *rqset)

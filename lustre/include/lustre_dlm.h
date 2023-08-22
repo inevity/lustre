@@ -66,8 +66,11 @@ extern struct kset *ldlm_svc_kset;
 /* if client lock is unused for that time it can be cancelled if any other
  * client shows interest in that lock, e.g. glimpse is occured. */
 #define LDLM_DIRTY_AGE_LIMIT (10)
+
+// ast
 #define LDLM_DEFAULT_PARALLEL_AST_LIMIT 1024
 #define LDLM_DEFAULT_LRU_SHRINK_BATCH (16)
+
 #define LDLM_DEFAULT_SLV_RECALC_PCT (10)
 
 /**
@@ -100,7 +103,7 @@ enum ldlm_side {
 };
 
 /**
- * The blocking callback is overloaded to perform two functions.  These flags
+ * The blocking callback is overloaded  to perform two functions.  These flags
  * indicate which operation should be performed.
  */
 #define LDLM_CB_BLOCKING    1
@@ -109,7 +112,7 @@ enum ldlm_side {
 /**
  * \name Lock Compatibility Matrix.
  *
- * A lock has both a type (extent, flock, inode bits, or plain) and a mode.
+ * A lock has both a type (extent, flock, inode bits/ibit, or plain) and a mode.
  * Lock types are described in their respective implementation files:
  * ldlm_{extent,flock,inodebits,plain}.c.
  *
@@ -118,12 +121,12 @@ enum ldlm_side {
  *
  * - EX: Exclusive mode. Before a new file is created, MDS requests EX lock
  *   on the parent.
- * - PW: Protective Write (normal write) mode. When a client requests a write
+ * - PW: Protective  Write (normal write) mode. When a client requests a write
  *   lock from an OST, a lock with PW mode will be issued.
  * - PR: Protective Read (normal read) mode. When a client requests a read from
  *   an OST, a lock with PR mode will be issued. Also, if the client opens a
  *   file for execution, it is granted a lock with PR mode.
- * - CW: Concurrent Write mode. The type of lock that the MDS grants if a client
+ * - CW: Concurrent  Write mode. The type of lock that the MDS grants if a client
  *   requests a write lock during a file open operation.
  * - CR Concurrent Read mode. When a client performs a path lookup, MDS grants
  *   an inodebit lock with the CR mode on the intermediate path component.
@@ -178,6 +181,7 @@ static inline int lockmode_compat(enum ldlm_mode exist_mode,
    -
 */
 
+// lr locking rules ? below
 /**
  * Locking rules for LDLM:
  *
@@ -392,7 +396,8 @@ enum ldlm_namespace_flags {
  * two in-memory locks. One on the server and one on the client. The locks are
  * linked by a special cookie by which one node can tell to the other which lock
  * it actually means during communications. Such locks are called remote locks.
- * The locks held by server only without any reference to a client are called
+ *
+ * The locks held by server  only without any reference to a client are called
  * local locks.
  */
 struct ldlm_namespace {
@@ -787,6 +792,7 @@ struct ldlm_lock {
 	 * When this is possible, rcu must be used to stablise
 	 * the resource while we lock and check it hasn't been changed.
 	 */
+  //detail 
 	struct ldlm_resource	*l_resource;
 	/**
 	 * List item for client side LRU list.
@@ -837,6 +843,7 @@ struct ldlm_lock {
 	 * and then once more when the last user went away and the lock is
 	 * cancelled (could happen recursively).
 	 */
+
 	ldlm_blocking_callback	l_blocking_ast;
 	/**
 	 * Lock glimpse handler.
@@ -1046,11 +1053,12 @@ struct lustre_handle_array {
  * responsible for creation of a mapping between objects it wants to be
  * protected and resource names.
  *
- * A resource can only hold locks of a single lock type, though there may be
+ * A resource can only hold locks of a single lock type1, though there may be
  * multiple ldlm_locks on a single resource, depending on the lock type and
  * whether the locks are conflicting or not.
  */
 struct ldlm_resource {
+  //lr ldlm_resource
 	struct ldlm_ns_bucket	*lr_ns_bucket;
 
 	/**
@@ -1238,6 +1246,7 @@ struct ldlm_ast_work {
 	void		       *w_data;
 	int			w_datalen;
 };
+
 
 /**
  * Common ldlm_enqueue parameters
@@ -1604,6 +1613,7 @@ static inline enum ldlm_mode ldlm_lock_match(struct ldlm_namespace *ns,
 					     enum ldlm_mode mode,
 					     struct lustre_handle *lh)
 {
+  //skip list match
 	return ldlm_lock_match_with_skip(ns, flags, 0, res_id, type, policy,
 					 mode, lh, 0);
 }

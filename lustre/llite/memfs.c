@@ -62,6 +62,7 @@ static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
 
 	down_read(&wbci->wbci_rw_sem);
 
+  //state machines
 	if (!wbc_inode_has_protected(wbci) || !wbc_inode_complete(wbci))
 		RETURN(0);
 
@@ -361,6 +362,7 @@ static struct dentry *memfs_lookup_nd(struct inode *parent,
 	RETURN(de);
 }
 
+// memfs mkdir impl
 int memfs_mkdir(struct inode *dir, struct dentry *dchild, umode_t mode)
 {
 	int rc;
@@ -1845,6 +1847,7 @@ static const struct address_space_operations memfs_aops = {
 	.write_end	= memfs_write_end,
 };
 
+// memfs op
 void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev)
 {
 	switch (mode & S_IFMT) {

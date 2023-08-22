@@ -132,6 +132,7 @@ int mdc_set_lock_data(struct obd_export *exp, const struct lustre_handle *lockh,
 	RETURN(0);
 }
 
+
 enum ldlm_mode mdc_lock_match(struct obd_export *exp, __u64 flags,
 			      const struct lu_fid *fid, enum ldlm_type type,
 			      union ldlm_policy_data *policy,
@@ -1164,25 +1165,32 @@ static int mdc_enqueue_base(struct obd_export *exp,
 	int rc;
 
 	ENTRY;
+  //inode bits lock 
 	LASSERTF(!it || einfo->ei_type == LDLM_IBITS, "lock type %d\n",
 		 einfo->ei_type);
 	fid_build_reg_res_name(&op_data->op_fid1, &res_id);
 
+  //******
 	if (it != NULL) {
 		LASSERT(policy == NULL);
 
 		saved_flags |= LDLM_FL_HAS_INTENT;
+
 		if (it->it_op & (IT_GETATTR | IT_READDIR |
 				 IT_CREAT | IT_WBC_EXLOCK))
+      // return update lock 
 			policy = &update_policy;
+      // return layout lock 
 		else if (it->it_op & IT_LAYOUT)
 			policy = &layout_policy;
 		else if (it->it_op & IT_GETXATTR)
 			policy = &getxattr_policy;
 		else
+      // return lookup lock 
 			policy = &lookup_policy;
 	}
 
+  //recon +1
 	generation = obd->u.cli.cl_import->imp_generation;
 	if (!it || (it->it_op & (IT_OPEN | IT_CREAT)))
 		acl_bufsize = min_t(__u32, imp->imp_connect_data.ocd_max_easize,
@@ -1192,34 +1200,36 @@ static int mdc_enqueue_base(struct obd_export *exp,
 
 resend:
 	flags = saved_flags;
-	if (it == NULL) {
+	if (it == NULL) {// FLOCK lock when on intent 
 		/* The only way right now is FLOCK. */
 		LASSERTF(einfo->ei_type == LDLM_FLOCK, "lock type %d\n",
 			 einfo->ei_type);
 		res_id.name[3] = LDLM_FLOCK;
+    //set req
 		req = ldlm_enqueue_pack(exp, 0);
-	} else if (it->it_op & IT_OPEN) {
+	} else if (it->it_op & IT_OPEN) { // opened file intent
 		req = mdc_intent_open_pack(exp, it, op_data, acl_bufsize);
-	} else if (it->it_op & (IT_GETATTR | IT_LOOKUP)) {
+	} else if (it->it_op & (IT_GETATTR | IT_LOOKUP)) { //it lookup and getattr?
 		req = mdc_intent_getattr_pack(exp, it, op_data, acl_bufsize);
-	} else if (it->it_op & IT_READDIR) {
-		req = mdc_enqueue_pack(exp, 0);
+	} else if (it->it_op & IT_READDIR) { //readdir 
+		req = mdc_enqueue_pack(exp, 0); //why no diff in fun name
 	} else if (it->it_op & IT_LAYOUT) {
 		if (!imp_connect_lvb_type(imp))
 			RETURN(-EOPNOTSUPP);
 		req = mdc_intent_layout_pack(exp, it, op_data);
 		lvb_type = LVB_T_LAYOUT;
-	} else if (it->it_op & IT_GETXATTR) {
+	} else if (it->it_op & IT_GETXATTR) { 
 		req = mdc_intent_getxattr_pack(exp, it, op_data);
-	} else if (it->it_op == IT_CREAT) {
+	} else if (it->it_op == IT_CREAT) { // create flag, mkdir intent impl.
 		req = mdc_intent_create_pack(exp, it, op_data, acl_bufsize,
 					     extra_lock_flags);
 	} else if (it->it_op == IT_SETATTR) {
 		req = mdc_intent_setattr_pack(exp, it, op_data,
 					      extra_lock_flags);
-	} else if (it->it_op == IT_WBC_EXLOCK) {
+	} else if (it->it_op == IT_WBC_EXLOCK) { // exclock wbc 
 		LASSERT(extra_lock_flags & LDLM_FL_INTENT_EXLOCK_UPDATE);
 		/* Enqueue lock only, no intent. */
+    //set no intent, and just no intent result return. 
 		flags &= ~LDLM_FL_HAS_INTENT;
 		req = mdc_wbc_exlock_pack(exp, op_data, extra_lock_flags);
 	} else {
@@ -1248,6 +1258,7 @@ resend:
 	if (einfo->ei_cb_gl == NULL)
 		einfo->ei_cb_gl = mdc_ldlm_glimpse_ast;
 
+  //rpc req lock impl  
 	rc = ldlm_cli_enqueue(exp, &req, einfo, &res_id, policy, &flags, NULL,
 			      0, lvb_type, lockh, async);
 	if (!it) {
@@ -1268,6 +1279,7 @@ resend:
 		RETURN(rc);
 	}
 
+  // async impl in c 
 	if (async) {
 		it->it_request = req;
 		RETURN(rc);
@@ -1284,11 +1296,13 @@ resend:
 		RETURN(rc);
 	}
 
+
 	lockrep = req_capsule_server_get(&req->rq_pill, &RMF_DLM_REP);
 	LASSERT(lockrep != NULL);
 
 	lockrep->lock_policy_res2 =
 		ptlrpc_status_ntoh(lockrep->lock_policy_res2);
+
 
 	/* Retry infinitely when the server returns -EINPROGRESS for the
 	 * intent operation, when server returns -EINPROGRESS for acquiring
@@ -1464,6 +1478,7 @@ out:
 	return rc;
 }
 
+
 int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
 			struct lu_fid *fid, __u64 *bits)
 {
@@ -1483,10 +1498,11 @@ int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
 		fid_build_reg_res_name(fid, &res_id);
 		switch (it->it_op) {
 		case IT_GETATTR:
+      //lookup lock, update lock, perm lock just lock/perm enough
 			/* File attributes are held under multiple bits:
-			 * nlink is under lookup lock, size and times are
-			 * under UPDATE lock and recently we've also got
-			 * a separate permissions lock for owner/group/acl that
+			 * nlink is under lookup lock , size and times are
+			 * under UPDATE lock  and recently we've also got
+			 * a  separate permissions lock for owner/group/acl that
 			 * were protected by lookup lock before.
 			 * Getattr must provide all of that information,
 			 * so we need to ensure we have all of those locks.
@@ -1548,6 +1564,7 @@ int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
  * The server will return to us, in it_disposition, an indication of
  * exactly what it_status refers to.
  *
+ *
  * If DISP_OPEN_OPEN is set, then it_status refers to the open() call,
  * otherwise if DISP_OPEN_CREATE is set, then it status is the
  * creation failure mode.  In either case, one of DISP_LOOKUP_NEG or
@@ -1557,6 +1574,8 @@ int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
  * Else, if DISP_LOOKUP_EXECD then it_status is the rc of the
  * child lookup.
  */
+
+//exp target side,
 int mdc_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 		    struct lookup_intent *it, struct ptlrpc_request **reqp,
 		    ldlm_blocking_callback cb_blocking, __u64 extra_lock_flags)
@@ -1585,7 +1604,7 @@ int mdc_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 	    (it->it_op & (IT_LOOKUP | IT_GETATTR | IT_READDIR)) &&
 	    !(op_data->op_bias & MDS_FID_OP)) {
 		/* We could just return 1 immediately, but since we should only
-		 * be called in revalidate_it if we already have a lock, let's
+		 * be called in revalidate_it(?) if we already have a lock, let's
 		 * verify that.
 		 */
 		it->it_lock_handle = 0;
@@ -1607,6 +1626,7 @@ int mdc_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 		}
 	}
 
+  //do rpc to mdt? 
 	rc = mdc_enqueue_base(exp, &einfo, NULL, it, op_data, &lockh,
 			      extra_lock_flags, 0);
 	if (rc < 0)

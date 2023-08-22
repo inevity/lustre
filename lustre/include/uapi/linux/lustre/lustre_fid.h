@@ -335,6 +335,7 @@ static inline void fid_be_to_cpu(struct lu_fid *dst, const struct lu_fid *src)
 	dst->f_ver = __be32_to_cpu(fid_ver(src));
 }
 
+// normal 
 static inline bool fid_is_sane(const struct lu_fid *fid)
 {
 	return fid && ((fid_seq(fid) >= FID_SEQ_START && !fid_ver(fid)) ||

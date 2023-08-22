@@ -46,8 +46,10 @@ struct cfs_rule {
 struct cfs_matcher {
 	__u32		 mc_uid;
 	__u32		 mc_gid;
+
 	__u32		 mc_projid;
 	__u64		 mc_size;
+  //cache what name
 	struct qstr	*mc_name;
 };
 

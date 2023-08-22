@@ -79,6 +79,7 @@
 #define ldlm_set_intent_parent_locked(_l)   LDLM_SET_FLAG((_l), 1ULL <<  6)
 #define ldlm_clear_intent_parent_locked(_l) LDLM_CLEAR_FLAG((_l), 1ULL <<  6)
 
+
 /** Intent with requesting to grant WBC EX lock to the client for the file. */
 #define LDLM_FL_INTENT_EXLOCK_UPDATE	0x0000000000000080ULL /* bit   7 */
 #define ldlm_is_intent_exlock_update(_l)    LDLM_TEST_FLAG((_l), 1ULL <<  7)

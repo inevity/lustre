@@ -129,6 +129,8 @@ again:
  * - allocates cl_object if necessary,
  * - updated layout, if object was already here.
  */
+// CLIO lustre client io system 
+// TODO deep 
 int cl_file_inode_init(struct inode *inode, struct lustre_md *md)
 {
 	struct lu_env        *env;

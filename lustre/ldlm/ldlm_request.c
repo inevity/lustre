@@ -253,7 +253,7 @@ EXPORT_SYMBOL(ldlm_completion_ast_async);
  *       been granted;
  *
  *     - when ldlm_lock_match(LDLM_FL_LVB_READY) is about to wait until lock
- *       gets correct lvb;
+ *       gets correct lvb ;
  *
  *     - to force all locks when resource is destroyed (cleanup_resource());
  *
@@ -969,6 +969,7 @@ EXPORT_SYMBOL(ldlm_enqueue_pack);
  * request was created in ldlm_cli_enqueue and it is the async request,
  * pass it to the caller in \a reqp.
  */
+
 int ldlm_cli_enqueue(struct obd_export *exp, struct ptlrpc_request **reqp,
 		     struct ldlm_enqueue_info *einfo,
 		     const struct ldlm_res_id *res_id,

@@ -2723,6 +2723,7 @@ static int __ptlrpc_req_finished(struct ptlrpc_request *request, int locked)
 	RETURN(!count);
 }
 
+
 /**
  * Drops one reference count for a request.
  */
@@ -2731,6 +2732,7 @@ void ptlrpc_req_finished(struct ptlrpc_request *request)
 	__ptlrpc_req_finished(request, 0);
 }
 EXPORT_SYMBOL(ptlrpc_req_finished);
+
 
 /**
  * Returns xid of a \a request

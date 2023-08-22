@@ -162,11 +162,14 @@ static int ll_d_init(struct dentry *de)
 }
 #else /* !HAVE_D_INIT */
 
+//dcache usage? how kernel vs userspace 
 bool ll_d_setup(struct dentry *de, bool do_put)
 {
 	struct ll_dentry_data *lld;
 	bool success = true;
 
+  //mean updated?
+  //race 
 	if (de->d_fsdata)
 		return success;
 

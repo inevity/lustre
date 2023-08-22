@@ -542,6 +542,7 @@ static int osc_ldlm_blocking_ast(struct ldlm_lock *dlmlock,
 	RETURN(result);
 }
 
+
 int osc_ldlm_glimpse_ast(struct ldlm_lock *dlmlock, void *data)
 {
 	struct ptlrpc_request	*req  = data;

@@ -961,6 +961,7 @@ struct ptlrpc_body_v2 {
  *
  * If we eventually have separate connect data for different types, which we
  * almost certainly will, then perhaps we stick a union in here. */
+
 struct obd_connect_data {
 	__u64 ocd_connect_flags; /* OBD_CONNECT_* per above */
 	__u32 ocd_version;	 /* lustre release version number */
@@ -1727,12 +1728,14 @@ enum mds_reint_op {
 #define DISP_OPEN_STRIPE     0x08000000
 #define DISP_OPEN_DENY	     0x10000000
 
+
 /* INODE LOCK PARTS */
 enum mds_ibits_locks {
 	MDS_INODELOCK_LOOKUP	= 0x000001, /* For namespace, dentry etc.  Was
 					     * used to protect permission (mode,
 					     * owner, group, etc) before 2.4. */
 	MDS_INODELOCK_UPDATE	= 0x000002, /* size, links, timestamps */
+  //for opened files 
 	MDS_INODELOCK_OPEN	= 0x000004, /* For opened files */
 	MDS_INODELOCK_LAYOUT	= 0x000008, /* for layout */
 
@@ -1746,7 +1749,9 @@ enum mds_ibits_locks {
 	 * UPDATE|PERM, and remote MDT (where name entry is) grants LOOKUP_LOCK.
 	 */
 	MDS_INODELOCK_PERM	= 0x000010,
+  //
 	MDS_INODELOCK_XATTR	= 0x000020, /* non-permission extended attrs */
+  //data lock for data on MDT files 
 	MDS_INODELOCK_DOM	= 0x000040, /* Data for Data-on-MDT files */
 	/* Do not forget to increase MDS_INODELOCK_NUMBITS when adding bits */
 };
@@ -1820,6 +1825,7 @@ enum md_transient_state {
 	MS_RESTORE	= (1 << 0),	/* restore is running */
 };
 
+//mbo mdt_body 
 struct mdt_body {
 	struct lu_fid mbo_fid1;
 	struct lu_fid mbo_fid2;
@@ -1861,6 +1867,7 @@ struct mdt_body {
 	__u64	mbo_padding_10;
 }; /* 216 */
 
+//mio mdt_ioepoch
 struct mdt_ioepoch {
 	struct lustre_handle mio_open_handle;
 	__u64 mio_unused1; /* was ioepoch */
@@ -2419,6 +2426,7 @@ struct ldlm_res_id {
 
 /* lock types */
 enum ldlm_mode {
+  //defuoat reset 
 	LCK_MINMODE	= 0,
 	LCK_EX		= 1,
 	LCK_PW		= 2,
@@ -2433,6 +2441,8 @@ enum ldlm_mode {
 
 #define LCK_MODE_NUM    8
 
+
+// lock big class
 enum ldlm_type {
 	LDLM_PLAIN	= 10,
 	LDLM_EXTENT	= 11,
@@ -2454,6 +2464,7 @@ static inline bool ldlm_extent_equal(const struct ldlm_extent *ex1,
 {
 	return ex1->start == ex2->start && ex1->end == ex2->end;
 }
+
 
 struct ldlm_inodebits {
 	__u64 bits;
@@ -2501,6 +2512,9 @@ union ldlm_gl_desc {
 	struct ldlm_gl_barrier_desc	barrier_desc;
 };
 
+
+//??
+//ll_mkdir use IT_CREAT
 enum ldlm_intent_flags {
 	IT_OPEN        = 0x00000001,
 	IT_CREAT       = 0x00000002,

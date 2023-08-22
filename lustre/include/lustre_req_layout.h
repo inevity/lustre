@@ -60,6 +60,7 @@ enum req_location {
 /* Maximal number of fields (buffers) in a request message. */
 #define REQ_MAX_FIELD_NR 12
 
+//req res wrapper
 struct req_capsule {
         struct ptlrpc_request   *rc_req;
 	/** Request message - what client sent */

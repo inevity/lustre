@@ -38,8 +38,12 @@
 #include <obd_rule.h>
 
 enum lu_mkdir_policy {
+  //cached
 	MKDIR_POL_REINT,
+  //clientserver mode
 	MKDIR_POL_INTENT,
+  //exc
+  //POL policy
 	MKDIR_POL_EXCL,
 };
 
@@ -190,6 +194,7 @@ struct wbc_conf {
 	__u64			wbcc_mdt_iavail_low;
 
 	/* Auto writeback caching rule */
+  //cofngi filesystem rule
 	struct cfs_rule		wbcc_rule;
 };
 
@@ -198,7 +203,9 @@ struct wbc_super {
 	__u64			 wbcs_generation;
 	struct wbc_conf		 wbcs_conf;
 	struct dentry		*wbcs_debugfs_dir;
+  //
 	struct list_head	 wbcs_roots;
+	// if (wbc_flush_mode_lazy(wbci))
 	struct list_head	 wbcs_lazy_roots;
 
 	/* For cache shrinking and reclaimation. */
@@ -294,6 +301,7 @@ struct writeback_control_ext {
 	size_t wb_tcand_bytes;		/* bytes written by this candidate */
 #endif
 };
+
 
 struct wbc_inode {
 	__u32			wbci_flags;
@@ -424,6 +432,7 @@ static inline bool wbc_flush_mode_aging(struct wbc_inode *wbci)
 
 static inline bool wbc_inode_has_protected(struct wbc_inode *wbci)
 {
+  //FL mean flag
 	return wbci->wbci_flags & WBC_STATE_FL_PROTECTED;
 }
 

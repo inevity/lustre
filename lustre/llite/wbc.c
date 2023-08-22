@@ -38,6 +38,7 @@
 
 void wbc_super_root_add(struct inode *inode)
 {
+  //get wbc super info 
 	struct wbc_super *super = ll_i2wbcs(inode);
 	struct wbc_inode *wbci = ll_i2wbci(inode);
 
@@ -1098,6 +1099,7 @@ void wbc_inode_init(struct wbc_inode *wbci)
 	INIT_LIST_HEAD(&wbci->wbci_data_lru);
 	init_rwsem(&wbci->wbci_rw_sem);
 }
+
 
 void wbc_dentry_init(struct dentry *dentry)
 {

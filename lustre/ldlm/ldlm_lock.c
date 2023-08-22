@@ -595,6 +595,7 @@ EXPORT_SYMBOL(ldlm_lock2handle);
  * if \a flags: atomically get the lock and set the flags.
  *              Return NULL if flag already set
  */
+
 struct ldlm_lock *__ldlm_handle2lock(const struct lustre_handle *handle,
 				     __u64 flags)
 {

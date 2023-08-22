@@ -491,6 +491,8 @@ retry:
 
 	op_data->op_bias &= ~MDS_CROSS_REF;
 
+
+  //also call md_intent_lock to mdc_intent_lock
 	rc = md_intent_lock(tgt->ltd_exp, op_data, it, reqp, cb_blocking,
 			    extra_lock_flags);
 	if (rc < 0)
@@ -559,6 +561,7 @@ int lmv_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 		LL_IT2STR(it), PFID(&op_data->op_fid2),
 		(int)op_data->op_namelen, op_data->op_name,
 		PFID(&op_data->op_fid1));
+
 
 	if (it->it_op & (IT_LOOKUP | IT_GETATTR | IT_LAYOUT | IT_GETXATTR))
 		rc = lmv_intent_lookup(exp, op_data, it, reqp, cb_blocking,
