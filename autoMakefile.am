@@ -49,7 +49,7 @@ cscope-recursive:
 cscope:
 	$(RM) $(top_srcdir)/cscope*.out $(top_srcdir)/cscope.files
 	$(FIND_TAG_FILES_CMD) > cscope.files
-	cscope -bRq
+	cscope -bkRq
 
 mkid:
 	$(FIND_TAG_FILES_CMD) | xargs mkid
