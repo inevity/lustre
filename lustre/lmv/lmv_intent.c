@@ -546,6 +546,7 @@ retry:
 	RETURN(rc);
 }
 
+//aysnc: just have exp, op_data, and reqset, not indivail req, also no other arg
 int lmv_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 		    struct lookup_intent *it, struct ptlrpc_request **reqp,
 		    ldlm_blocking_callback cb_blocking,
@@ -555,6 +556,7 @@ int lmv_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 	ENTRY;
 
 	LASSERT(it != NULL);
+  // fid1 parent
 	LASSERT(fid_is_sane(&op_data->op_fid1));
 
 	CDEBUG(D_INODE, "INTENT LOCK '%s' for "DFID" '%.*s' on "DFID"\n",
@@ -652,6 +654,7 @@ int lmv_intent_lock_async(struct obd_export *exp,
 	CDEBUG(D_INODE, "OPEN_INTENT with fid1="DFID", fid2="DFID","
 	       " name='%s' -> mds #%u\n", PFID(&op_data->op_fid1),
 	       PFID(&op_data->op_fid2), op_data->op_name, tgt->ltd_index);
+
 
 	rc = md_intent_lock_async(tgt->ltd_exp, item, rqset);
 	RETURN(rc);

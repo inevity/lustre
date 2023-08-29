@@ -114,7 +114,8 @@ static int ll_set_inode(struct inode *inode, void *opaque)
  * Get an inode by inode number(@hash), which is already instantiated by
  * the intent lookup).
  */
-// been instantiated by intent lookup, how impl and use?
+
+// inode been instantiated by intent lookup, how impl and use?
 struct inode *ll_iget(struct super_block *sb, ino_t hash,
                       struct lustre_md *md)
 {
@@ -239,7 +240,8 @@ static int ll_dom_lock_cancel(struct inode *inode, struct ldlm_lock *lock)
 	cl_env_put(env, &refcheck);
 	RETURN(rc);
 }
-
+// ll client lock cancel bitlocks
+// core 
 static void ll_lock_cancel_bits(struct ldlm_lock *lock, __u64 to_cancel)
 {
 	struct inode *inode = ll_inode_from_resource_lock(lock);
@@ -471,6 +473,8 @@ int ll_md_need_convert(struct ldlm_lock *lock)
 	return !!(bits);
 }
 
+
+// client
 int ll_md_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *ld,
 		       void *data, int flag)
 {
@@ -514,6 +518,7 @@ int ll_md_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *ld,
 		/* Nothing to do for non-granted locks */
 		if (!ldlm_is_granted(lock))
 			break;
+
 
 		/* If 'ld' is supplied then bits to be cancelled are passed
 		 * implicitly by lock converting and cancel_bits from 'ld'
@@ -849,6 +854,7 @@ out:
 
 	return rc;
 }
+
 
 static struct dentry *ll_lookup_it(struct inode *parent, struct dentry *dentry,
 				   struct lookup_intent *it,
@@ -1777,6 +1783,7 @@ again:
 			GOTO(err_exit, err);
 	}
 
+  // just wbc file, aim to  init dentry  
 	err = ll_new_inode_init(dir, dchild, inode);
 	if (err)
 		GOTO(err_exit, err);
@@ -1999,11 +2006,12 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	 * LDLM_FL_NO_LRU.
 	 */
 	pol = ll_mkdir_policy_get(sbi, dir, dchild, mode, &extra_lock_flags);
-	if (pol == MKDIR_POL_REINT) { //no cache, reint policy
-    // TODO familar
+	if (pol == MKDIR_POL_REINT) { //no wbc cache, reint policy
+    // no wbc enable mkdir, no intent
 		mode = (mode & (S_IRWXUGO | S_ISVTX)) | S_IFDIR;
     // LUSTRE_OPC_MKDIR md op code 
     // dentry and inode fill
+    // almost same as below, send to remote
 		rc = ll_new_node(dir, dchild, NULL, mode, 0, LUSTRE_OPC_MKDIR);
 		GOTO(out_tally, rc);
 	}
@@ -2019,7 +2027,9 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 
   // extra_lock_flags set from ll_mkdir_policy_get
   // ll_new_node also set this but here only process the PARENT_LOCKED mode
+  // update op bias from extra lock flags
 	if (extra_lock_flags & LDLM_FL_INTENT_PARENT_LOCKED)
+    // init = null 
 		op_data->op_bias |= MDS_WBC_LOCKLESS;
 
 	if (test_bit(LL_SBI_FILE_SECCTX, sbi->ll_flags) &&
@@ -2033,7 +2043,9 @@ static int ll_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	}
 
 
-  // do the intent lock op to the target?? do the lock req, return what locks?
+  // flush write_inode use async rpc, but here mkdir use sync return needed exlock
+  // do the intent lock op to the target! do the lock req, return what locks?
+  // lmv and mdc_intent_lock
 	rc = md_intent_lock(sbi->ll_md_exp, op_data, &mkdir_it,
 			    &request, &ll_md_blocking_ast, extra_lock_flags);
 	if (rc)

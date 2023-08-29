@@ -271,6 +271,7 @@ static void ll_free_sbi(struct super_block *sb)
 	EXIT;
 }
 
+// mount 
 static int client_common_fill_super(struct super_block *sb, char *md, char *dt)
 {
 	struct inode *root = NULL;
@@ -3133,6 +3134,7 @@ void ll_open_cleanup(struct super_block *sb, struct req_capsule *pill)
 	EXIT;
 }
 
+
 int ll_prep_inode(struct inode **inode, struct req_capsule *pill,
 		  struct super_block *sb, struct lookup_intent *it)
 {
@@ -3189,7 +3191,7 @@ int ll_prep_inode(struct inode **inode, struct req_capsule *pill,
 			GOTO(out, rc = -EINVAL);
 		}
 
-    //to get inode
+    //to get inode by inumber
 		*inode = ll_iget(sb, cl_fid_build_ino(fid1, api32), &md);
 		if (IS_ERR(*inode)) {
                         lmd_clear_acl(&md);

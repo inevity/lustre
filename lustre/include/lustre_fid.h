@@ -588,6 +588,7 @@ int client_fid_fini(struct obd_device *obd);
 
 struct ldlm_namespace;
 
+
 /*
  * Build (DLM) resource name from FID.
  *

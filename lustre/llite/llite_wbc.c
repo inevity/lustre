@@ -347,13 +347,18 @@ out_unrsv_free:
 void wbcfs_inode_operations_switch(struct inode *inode)
 {
 	if (S_ISDIR(inode->i_mode)) {
+    //dir content op
 		inode->i_fop = &ll_dir_operations;
+    //dir inode op
 		inode->i_op = &ll_dir_inode_operations;
 	} else if (S_ISREG(inode->i_mode)) {
 		struct ll_sb_info *sbi = ll_i2sbi(inode);
 
+    //file inode op
 		inode->i_op = &ll_file_inode_operations;
+    //file content op, sbi what?
 		inode->i_fop = sbi->ll_fop;
+    //file readwrite op from ll pageop 
 		inode->i_mapping->a_ops = &ll_aops;
 	} else if (S_ISLNK(inode->i_mode)) {
 		inode->i_op = &ll_fast_symlink_inode_operations;
@@ -514,6 +519,8 @@ static void wbc_fini_op_item(struct md_op_item *item, int ioret)
 	OBD_FREE_PTR(item);
 }
 
+
+//set wbc exlock 
 static inline void wbc_prep_exlock_common(struct md_op_item *item, int it_op)
 {
 	struct ldlm_enqueue_info *einfo = &item->mop_einfo;
@@ -1105,6 +1112,7 @@ int wbc_do_setattr(struct inode *inode, unsigned int valid)
 	ll_prep_md_op_data(op_data, inode, NULL, NULL, 0, 0,
 			   LUSTRE_OPC_ANY, NULL);
 	op_data->op_bias |= MDS_WBC_LOCKLESS;
+
 
 	rc = md_setattr(sbi->ll_md_exp, op_data, NULL, 0, &request);
 	if (rc) {
@@ -1883,19 +1891,25 @@ static int wbc_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 		LASSERT(ctx->ioc_rqset == NULL);
 		/* fall through */
 	case WBC_FLUSH_POL_RQSET:
-		if (wbc_decomplete_lock_keep(ll_i2wbci(dir), wbcx)) {
+		if (wbc_decomplete_lock_keep(ll_i2wbci(dir), wbcx)) { // keep lock 
+      // why need this lockless create, NOT EXLOCK CREATE Or another mop opc
+      // lock keep = 1, so no need  relock 
 			LASSERT(item->mop_opc == MD_OP_CREATE_LOCKLESS);
+      // TODO why async  
+      // wbc lockess create/setattr/link op
 			rc = md_reint_async(sbi->ll_md_exp, item,
 					    ctx->ioc_rqset);
-		} else {
+		} else { // drop lock to flush 
 			LASSERT(item->mop_opc == MD_OP_CREATE_EXLOCK ||
 				item->mop_opc == MD_OP_SETATTR_EXLOCK ||
 				item->mop_opc == MD_OP_EXLOCK_ONLY);
+      // wbc exlock intent lock to flush  
 			rc = md_intent_lock_async(sbi->ll_md_exp, item,
 						  ctx->ioc_rqset);
 		}
 		break;
 	case WBC_FLUSH_POL_BATCH:
+    // batch flush, later  
 		rc = md_batch_add(sbi->ll_md_exp, ctx->ioc_batch, item);
 		break;
 	default:
@@ -1927,6 +1941,7 @@ int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 	if (IS_ERR(item))
 		RETURN(PTR_ERR(item));
 
+  // Here md opc need exlock 
 	if (md_opcode_need_exlock(opc))
 		item->mop_einfo.ei_mode = LCK_EX;
 
@@ -2094,6 +2109,7 @@ static int wbc_lock_evict_file(struct dentry *dentry)
 	d_lustre_invalidate(dentry);
 	wbc_inode_unreserve_dput(inode, dentry);
 
+  //Have unreser ,why latter set inode fop, later clean??
 	spin_lock(&inode->i_lock);
 	wbcfs_inode_operations_switch(inode);
 	wbci->wbci_flags = WBC_STATE_FL_NONE;
@@ -2258,6 +2274,7 @@ void wbc_inode_lock_callback(struct inode *inode, struct ldlm_lock *lock,
 		RETURN_EXIT;
 
 
+  // lnet client evicted
 	if (wbc_lock_import_evicted(lock)) {
 		(void) wbc_lock_evict_cache(inode, lock);
 		RETURN_EXIT;
@@ -2331,7 +2348,7 @@ void wbc_intent_inode_init(struct inode *dir, struct inode *inode,
 /*
  * Customizable rule based auto WBC.
  * Define various auto caching rule for WBC on a client similar to TBF or PCC.
- * When a newly creating directory meets the rule condition, it can try to
+ * When a newly creating directory meets the rule condition,  it can try to
  * obtain EX WBC lock from MDS and keep exclusive access on the directory
  * under the protection of the EX lock on the client.
  * The rule can be combination of uid/gid/projid/fname or jobid.

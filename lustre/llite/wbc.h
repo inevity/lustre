@@ -38,11 +38,11 @@
 #include <obd_rule.h>
 
 enum lu_mkdir_policy {
-  //cached
+  //no intent, origin 
 	MKDIR_POL_REINT,
-  //clientserver mode
+  //clientserver mode with intent 
 	MKDIR_POL_INTENT,
-  //exc
+  //exlock poliy 
   //POL policy
 	MKDIR_POL_EXCL,
 };
@@ -577,7 +577,8 @@ static inline bool wbc_cache_too_much_pages(struct wbc_conf *conf)
 	return false;
 }
 
-/* wbc.c */
+/* wbc.c */ 
+// portal 
 void wbc_super_root_add(struct inode *inode);
 void wbc_super_root_del(struct inode *inode);
 int wbc_reserve_inode(struct wbc_super *super);
@@ -586,6 +587,7 @@ void wbc_reserved_inode_lru_add(struct inode *inode);
 void wbc_reserved_inode_lru_del(struct inode *inode);
 void wbc_inode_data_lru_add(struct inode *inode, struct file *file);
 void wbc_inode_data_lru_del(struct inode *inode);
+
 void wbc_free_inode(struct inode *inode);
 void wbc_inode_unreserve_dput(struct inode *inode, struct dentry *dentry);
 void wbc_sync_io_init(struct wbc_sync_io *anchor, int nr);
@@ -604,10 +606,13 @@ int wbc_make_dir_decomplete(struct inode *dir, struct dentry *parent,
 			    unsigned int unrsv_children);
 int wbc_make_data_commit(struct dentry *dentry);
 int wbc_make_inode_assimilated(struct inode *inode);
+
 int wbc_super_init(struct wbc_super *super);
 void wbc_super_fini(struct wbc_super *super);
 void wbc_inode_init(struct wbc_inode *wbci);
 void wbc_dentry_init(struct dentry *dentry);
+
+
 int wbc_cmd_handle(struct wbc_super *super, struct wbc_cmd *cmd);
 int wbc_cmd_parse_and_handle(char *buffer, unsigned long count,
 			     struct wbc_super *super);
@@ -616,23 +621,28 @@ int wbc_rule_parse_and_handle(char *buffer, unsigned long count,
 
 /* memfs.c */
 void wbc_inode_operations_set(struct inode *inode, umode_t mode, dev_t dev);
+//page cache accouts
 bool wbc_inode_acct_page(struct inode *inode, long nr_pages);
 void wbc_inode_unacct_pages(struct inode *inode, long nr_pages);
 
 /* llite_wbc.c */
 void wbcfs_inode_operations_switch(struct inode *inode);
+// new node , call by the memfs_mkdir etc 
 int wbcfs_d_init(struct dentry *de);
+
 int wbc_do_setattr(struct inode *inode, unsigned int valid);
 int wbc_flush_default_lsm_md(struct inode *inode);
 int wbc_do_remove(struct inode *dir, struct dentry *dchild, bool rmdir);
 int wbcfs_commit_cache_pages(struct inode *inode);
 int wbcfs_inode_flush_lockless(struct inode *inode,
 			       struct writeback_control_ext *wbcx);
+
 int wbcfs_context_init(struct super_block *sb, struct wbc_context *ctx,
 		       bool lazy_init);
 int wbcfs_context_fini(struct super_block *sb, struct wbc_context *ctx);
 int wbcfs_context_prepare(struct super_block *sb, struct wbc_context *ctx);
 int wbcfs_context_commit(struct super_block *sb, struct wbc_context *ctx);
+
 int wbcfs_flush_dir_child(struct wbc_context *ctx, struct inode *dir,
 			  struct dentry *dchild, struct ldlm_lock *lock,
 			  struct writeback_control_ext *wbcx, bool no_layout);
@@ -641,8 +651,8 @@ void wbcfs_file_release_local(struct inode *inode, struct file *file);
 int wbcfs_dcache_dir_open(struct inode *inode, struct file *file);
 int wbcfs_dcache_dir_close(struct inode *inode, struct file *file);
 int wbcfs_setattr_data_object(struct inode *inode, struct iattr *attr);
-void wbc_free_inode_pages_final(struct inode *inode,
-				struct address_space *mapping);
+// void wbc_free_inode_pages_final(struct inode *inode,
+// 				struct address_space *mapping);
 bool wbc_file_fail_evicted(struct file *file);
 
 void wbc_tunables_init(struct super_block *sb);

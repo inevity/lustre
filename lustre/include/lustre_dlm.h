@@ -1264,6 +1264,7 @@ struct ldlm_enqueue_info {
 	u64		ei_inodebits;	/** lock inode bits **/
 	unsigned int	ei_enq_slave:1;	/** whether enqueue slave stripes */
 	unsigned int	ei_req_slot:1;	/** whether acquire rpc slot */
+
 	unsigned int	ei_mod_slot:1;	/** whether acquire mod rpc slot */
 };
 

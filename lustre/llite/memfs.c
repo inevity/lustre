@@ -52,6 +52,7 @@ static int wbc_iavail_low_check(struct inode *dir)
 				    conf->wbcc_mdt_iavail_low);
 }
 
+// per fop, for mkdir mknode create_nd, symlink  
 static int wbc_cache_enter(struct inode *dir, struct dentry *dchild)
 {
 	struct wbc_inode *wbci = ll_i2wbci(dir);
@@ -110,6 +111,7 @@ wbc_dirent_account_dec(struct inode *dir, struct dentry *dchild)
 	ll_d2wbcd(dchild->d_parent)->wbcd_dirent_num--;
 }
 
+
 static int wbc_prep_lustre_md(struct ll_sb_info *sbi, struct inode *inode,
 			      struct md_op_data *op_data)
 {
@@ -135,6 +137,7 @@ static int wbc_prep_lustre_md(struct ll_sb_info *sbi, struct inode *inode,
  * These are the methods to create virtual entries for MD WBC.
  * Borrowing heavily from ramfs code.
  */
+//just creat inode on client wbc  
 static struct inode *wbc_get_inode(struct inode *dir, int mode, dev_t dev,
 				   struct md_op_data *op_data)
 {
@@ -214,6 +217,7 @@ static struct inode *wbc_get_inode(struct inode *dir, int mode, dev_t dev,
 	RETURN(inode);
 }
 
+//memfs, have wbc prefix
 static int wbc_new_node(struct inode *dir, struct dentry *dchild,
 			const char *tgt, umode_t mode, int rdev, __u32 opc)
 {
@@ -547,7 +551,7 @@ static int memfs_rename(struct inode *src, struct dentry *src_dchild,
 }
 
 /*
- * Find page in cache, or allocate.
+ * Find page in page cache, or allocate.
  */
 static int memfs_write_getpage(struct inode *inode, pgoff_t index,
 			       struct page **pagep)

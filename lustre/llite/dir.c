@@ -59,6 +59,7 @@
 
 #include "llite_internal.h"
 
+
 /*
  * (new) readdir implementation overview.
  *
@@ -85,26 +86,26 @@
  *
  *     . hash is not unique, so it cannot, strictly speaking, be used as an
  *     entry cookie. ext3/htree has the same problem and lustre implementation
- *     mimics their solution: seekdir(hash) positions directory at the first
+ *     mimics their solution : seekdir(hash) positions directory at the first
  *     entry with the given hash.
  *
  * Client side.
  *
  * 0. caching
  *
- * Client caches directory pages using hash of the first entry as an index. As
+ * Client caches directory  pages using hash of the first entry as an index. As
  * noted above hash is not unique, so this solution doesn't work as is:
- * special processing is needed for "page hash chains" (i.e., sequences of
+ * special processing is needed! for "page hash chains" (i.e., sequences of
  * pages filled with entries all having the same hash value).
  *
- * First, such chains have to be detected. To this end, server returns to the
+ * First, such chains have to be detected.  To this end, server returns to the
  * client the hash of the first entry on the page next to one returned. When
- * client detects that this hash is the same as hash of the first entry on the
- * returned page, page hash collision has to be handled. Pages in the
- * hash chain, except first one, are termed "overflow pages".
+ * client detects that this hash  is the same as hash of the first entry on the
+ * returned page , page hash collision has to be handled. Pages in the
+ * hash chain, except first one, are termed "overflow pages". 
  *
  * Proposed (unimplimented) solution to index uniqueness problem is to
- * not cache overflow pages.  Instead, when page hash collision is
+ *  not cache overflow pages.  Instead, when page hash collision is
  * detected, all overflow pages from emerging chain should be
  * immediately requested from the server and placed in a special data
  * structure.  This data structure can be used by ll_readdir() to
@@ -114,7 +115,7 @@
  * page hash collision, again read overflow pages in, process next
  * portion of entries and again discard the pages.  This is not as
  * wasteful as it looks, because, given reasonable hash, page hash
- * collisions are extremely rare.
+ * collisions are extremely rare. 
  *
  * 1. directory positioning
  *
@@ -134,7 +135,7 @@
  * page format
  *
  * Page in MDS_READPAGE RPC is packed in LU_PAGE_SIZE, and each page contains
- * a header lu_dirpage which describes the start/end hash, and whether this
+ * a header lu_dirpage which describes the start/end hash, and  whether this
  * page is empty (contains no dir entry) or hash collide with next page.
  * After client receives reply, several pages will be integrated into dir page
  * in PAGE_SIZE (if PAGE_SIZE greater than LU_PAGE_SIZE), and the
@@ -315,6 +316,7 @@ int ll_dir_read(struct inode *inode, __u64 *ppos, struct md_op_data *op_data,
 	RETURN(rc);
 }
 
+//impl detail
 #ifdef HAVE_DIR_CONTEXT
 static int ll_iterate(struct file *filp, struct dir_context *ctx)
 #else

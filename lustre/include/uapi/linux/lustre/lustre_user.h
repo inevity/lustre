@@ -2901,6 +2901,7 @@ enum lu_wbc_dirty_flags {
 	WBC_DIRTY_FL_UPTODATE		= WBC_DIRTY_FL_NONE,
 	/* The file is being flushed. */
 	WBC_DIRTY_FL_FLUSHING		= 0x01,
+
 	/* The file was created in MemFS but not yet flushed to MDT. */
 	WBC_DIRTY_FL_CREAT		= 0x02,
 	/*

@@ -779,6 +779,7 @@ int ldlm_cli_enqueue_fini(struct obd_export *exp, struct req_capsule *pill,
 	}
 
 	if (!is_replay) {
+    // client /server both. 
 		rc = ldlm_lock_enqueue(env, ns, &lock, NULL, ldlm_flags);
 		if (lock->l_completion_ast != NULL) {
 			int err = lock->l_completion_ast(lock, *ldlm_flags,
@@ -965,9 +966,9 @@ EXPORT_SYMBOL(ldlm_enqueue_pack);
  * If a request has some specific initialisation it is passed in \a reqp,
  * otherwise it is created in ldlm_cli_enqueue.
  *
- * Supports sync and async requests, pass \a async flag accordingly. If a
+ * Supports  !!sync and  async requests, pass \a async flag accordingly. If a
  * request was created in ldlm_cli_enqueue and it is the async request,
- * pass it to the caller in \a reqp.
+ * pass it to the caller in \a reqp .
  */
 
 int ldlm_cli_enqueue(struct obd_export *exp, struct ptlrpc_request **reqp,
@@ -1114,6 +1115,7 @@ int ldlm_cli_enqueue(struct obd_export *exp, struct ptlrpc_request **reqp,
 	}
 
 	if (async) {
+    // return here 
 		LASSERT(reqp != NULL);
 		RETURN(0);
 	}
@@ -1580,6 +1582,7 @@ int ldlm_cli_convert(struct ldlm_lock *lock,
 	RETURN(rc);
 }
 EXPORT_SYMBOL(ldlm_cli_convert);
+
 
 /**
  * Client side lock cancel.

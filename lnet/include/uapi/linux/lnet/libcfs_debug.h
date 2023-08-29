@@ -101,6 +101,7 @@ struct ptldebug_header {
 	"snapshot", "", "lmv", "", "sec", "gss", "", "mgc", "mgs",	\
 	"fid", "fld", NULL }
 
+
 /* Debugging masks (32 bits, non-overlapping) */
 #define D_TRACE         0x00000001 /* ENTRY/EXIT markers */
 #define D_INODE         0x00000002

@@ -1409,6 +1409,7 @@ EXPORT_SYMBOL(ldlm_lock_allow_match);
  * keep caller code unchanged), the context failure will be discovered by
  * caller sometime later.
  */
+
 enum ldlm_mode ldlm_lock_match_with_skip(struct ldlm_namespace *ns,
 					 __u64 flags, __u64 skip_flags,
 					 const struct ldlm_res_id *res_id,

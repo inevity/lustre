@@ -91,7 +91,9 @@ static int ll_sync_fs(struct super_block *sb, int wait)
 	return wbc_super_sync_fs(&ll_s2sbi(sb)->ll_wbc_super, wait);
 }
 
+
 /* exported operations */
+// do what, by what?
 const struct super_operations lustre_super_operations =
 {
 	.alloc_inode   = ll_alloc_inode,

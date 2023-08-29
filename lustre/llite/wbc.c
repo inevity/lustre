@@ -63,6 +63,7 @@ void wbc_super_root_del(struct inode *inode)
 	spin_unlock(&super->wbcs_lock);
 }
 
+
 /*
  * Wait for writeback on an inode to complete. Called with i_lock held.
  * Caller must make sure inode cannot go away when we drop i_lock.
@@ -95,6 +96,8 @@ void inode_wait_for_writeback(struct inode *inode)
 	spin_unlock(&inode->i_lock);
 }
 
+// static fn 
+// [annotate the function symbols with information about which locking structures the function will acquire (i.e. lock) and release (i.e. unlock). The purpose of those in particular is debugging locking mechanisms](https://stackoverflow.com/questions/21018778/what-does-static-int-function-acquires-releases-mean)
 static void __wbc_inode_wait_for_writeback(struct inode *inode)
 	__releases(inode->i_lock)
 	__acquires(inode->i_lock)
@@ -264,12 +267,14 @@ static inline void wbc_clear_dirty_for_flush(struct wbc_inode *wbci, long opc,
 
 	if (*dirty_flags)
 		wbci->wbci_dirty_flags |= WBC_DIRTY_FL_FLUSHING;
+  // clear
 	wbci->wbci_dirty_flags &= ~(*dirty_flags);
 }
 
 static inline bool wbc_flush_need_exlock(struct wbc_inode *wbci,
 					 struct writeback_control_ext *wbcx)
 {
+  //drop need exlock, true, or conflict lock 
 	return wbc_mode_lock_drop(wbci) || wbcx->for_callback;
 }
 
@@ -348,14 +353,18 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 
 	ENTRY;
 
+  //keep root exlock when decomp,lazy and aging flush to keep 
+  //wbcx control extension
 	decomp_keep = wbc_decomplete_lock_keep(wbci, wbcx);
 	spin_lock(&inode->i_lock);
 	if (wbc_mode_lock_keep(wbci)) {
+    // conflict dlm lock callback 
 		if (wbcx->for_callback && inode->i_state & I_SYNC)
 			__inode_wait_for_writeback(inode);
 
 		if (!wbcx->for_fsync &&
 		    wbci->wbci_flags & WBC_STATE_FL_WRITEBACK)
+      // file writebacking
 			__wbc_inode_wait_for_writeback(inode);
 	} else if (wbc_mode_lock_drop(wbci)) {
 		LASSERT(!(inode->i_state & I_SYNC));
@@ -368,37 +377,55 @@ long wbc_flush_opcode_get(struct inode *inode, struct dentry *dchild,
 	 */
 
 	if (wbc_inode_none(wbci)) {
+    // no wbc inode, noe state inode
 		opc = MD_OP_NONE;
-	} else if (wbc_inode_was_flushed(wbci)) {
+	} else if (wbc_inode_was_flushed(wbci)) { // have been synced.
 		if (decomp_keep) {
 			LASSERT(dchild != NULL);
 			opc = MD_OP_NONE;
 			if (wbcx->unrsv_children_decomp)
 				wbc_inode_unreserve_dput(inode, dchild);
-		} else if (wbc_inode_attr_dirty(wbci)) {
+		} else if (wbc_inode_attr_dirty(wbci)) { // drop the exlock case 
+      //iattr dirty since in memfs or laste mdt flushed 
+      //drop or conflic lock mean true, so opc is setattr_exlock, or Setattr
+      //lockless, because attr dirty, only neet setattr. 
 			opc = wbc_flush_need_exlock(wbci, wbcx) ?
 			      MD_OP_SETATTR_EXLOCK : MD_OP_SETATTR_LOCKLESS;
 			wbc_clear_dirty_for_flush(wbci, opc, valid,
 						  dirty_flags);
+
 		} else if (wbc_flush_need_exlock(wbci, wbcx)) {
+      //flush drop need exlock true, or conflict lock 
+      //attr not dirty, only need flush and exlock(drop or conflict lock)
 			opc = MD_OP_EXLOCK_ONLY;
 		} else {
+
+      // This is the opcode to check whether the file contains dirty
+      // uncommittedmattrs such as file attributes, default LVM EA, XATTR
+      // for the lockless updates.
+      // MD_OP_MULTI_LOCKLESS	= 7,
+      //
 			opc = MD_OP_MULTI_LOCKLESS;
 			wbc_clear_dirty_for_flush(wbci, opc,
 						  valid, dirty_flags);
 			if (*dirty_flags == 0)
 				opc = MD_OP_NONE;
 		}
-	} else {
+	} else { // inode have been not synced/flushed, now flush drop or conflic lock
+    // MD op is CREATE_EXLOCK, if not need exlock(drop or not conflict), 
+    // just lockless. 
+ 
 		/*
 		 * TODO: Update the metadata attributes on MDT together with
 		 * the file creation.
 		 */
+    // when flush here? have set opc, later will call !
 		opc = wbc_flush_need_exlock(wbci, wbcx) ?
 		      MD_OP_CREATE_EXLOCK : MD_OP_CREATE_LOCKLESS;
 		wbc_clear_dirty_for_flush(wbci, opc, valid, dirty_flags);
 	}
 
+  // doing writebacking(mdop nome create/setattr exlock/lockless;mullti_lockless
 	if (opc != MD_OP_NONE)
 		wbci->wbci_flags |= WBC_STATE_FL_WRITEBACK;
 	spin_unlock(&inode->i_lock);
@@ -1179,6 +1206,7 @@ int wbc_super_sync_fs(struct wbc_super *super, int wait)
 	return __wbc_super_shrink_roots(super, &super->wbcs_lazy_roots);
 }
 
+// to disk 
 int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	struct writeback_control_ext *wbcx =
@@ -1189,6 +1217,8 @@ int wbc_write_inode(struct inode *inode, struct writeback_control *wbc)
 	ENTRY;
 
 	/* The inode was flush to MDT due to LRU lock shrinking? */
+  // who call write_inode, if no wbc exlock, do nothing 
+  // sync/flush?
 	if (!wbc_inode_has_protected(wbci))
 		RETURN(0);
 

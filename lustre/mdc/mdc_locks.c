@@ -863,6 +863,7 @@ mdc_wbc_exlock_pack(struct obd_export *exp, struct md_op_data *op_data,
 		    __u64 extra_lock_flags)
 {
 	bool parent_locked = extra_lock_flags & LDLM_FL_INTENT_PARENT_LOCKED;
+  // ?
 	int canceloff = LDLM_ENQUEUE_CANCEL_OFF;
 	struct ptlrpc_request *req;
 	LIST_HEAD(cancels);
@@ -877,6 +878,7 @@ mdc_wbc_exlock_pack(struct obd_export *exp, struct md_op_data *op_data,
 	if (parent_locked)
 		canceloff += 1;
 
+  //equeue lock cancel prep?
 	rc = ldlm_prep_elc_req(exp, req, LUSTRE_DLM_VERSION, LDLM_ENQUEUE,
 			       canceloff, NULL, 0);
 	if (rc) {
@@ -1165,17 +1167,23 @@ static int mdc_enqueue_base(struct obd_export *exp,
 	int rc;
 
 	ENTRY;
-  //inode bits lock 
+  //must be inode bits lock 
+  //assert true ok, false panic 
+  //if it = null ,true, ok 
+  //if it notnull, then inode lock, then ok , 
+  //               then not inode lock, then panic 
 	LASSERTF(!it || einfo->ei_type == LDLM_IBITS, "lock type %d\n",
 		 einfo->ei_type);
 	fid_build_reg_res_name(&op_data->op_fid1, &res_id);
 
-  //******
+  //****** inode lock now 
 	if (it != NULL) {
+    // have not set ppolicy
 		LASSERT(policy == NULL);
 
 		saved_flags |= LDLM_FL_HAS_INTENT;
 
+    // IT_WBC_EXLOCK need update lock 
 		if (it->it_op & (IT_GETATTR | IT_READDIR |
 				 IT_CREAT | IT_WBC_EXLOCK))
       // return update lock 
@@ -1192,6 +1200,7 @@ static int mdc_enqueue_base(struct obd_export *exp,
 
   //recon +1
 	generation = obd->u.cli.cl_import->imp_generation;
+  // no it or it with open/create 
 	if (!it || (it->it_op & (IT_OPEN | IT_CREAT)))
 		acl_bufsize = min_t(__u32, imp->imp_connect_data.ocd_max_easize,
 				    XATTR_SIZE_MAX);
@@ -1200,11 +1209,13 @@ static int mdc_enqueue_base(struct obd_export *exp,
 
 resend:
 	flags = saved_flags;
+  //no it = flock lock
 	if (it == NULL) {// FLOCK lock when on intent 
 		/* The only way right now is FLOCK. */
 		LASSERTF(einfo->ei_type == LDLM_FLOCK, "lock type %d\n",
 			 einfo->ei_type);
 		res_id.name[3] = LDLM_FLOCK;
+
     //set req
 		req = ldlm_enqueue_pack(exp, 0);
 	} else if (it->it_op & IT_OPEN) { // opened file intent
@@ -1220,17 +1231,21 @@ resend:
 		lvb_type = LVB_T_LAYOUT;
 	} else if (it->it_op & IT_GETXATTR) { 
 		req = mdc_intent_getxattr_pack(exp, it, op_data);
+
 	} else if (it->it_op == IT_CREAT) { // create flag, mkdir intent impl.
 		req = mdc_intent_create_pack(exp, it, op_data, acl_bufsize,
 					     extra_lock_flags);
 	} else if (it->it_op == IT_SETATTR) {
 		req = mdc_intent_setattr_pack(exp, it, op_data,
 					      extra_lock_flags);
+
 	} else if (it->it_op == IT_WBC_EXLOCK) { // exclock wbc 
+    // parent not have root exlock 
 		LASSERT(extra_lock_flags & LDLM_FL_INTENT_EXLOCK_UPDATE);
 		/* Enqueue lock only, no intent. */
-    //set no intent, and just no intent result return. 
+    // set no intent, and just no intent result return. 
 		flags &= ~LDLM_FL_HAS_INTENT;
+    // just lock, no intent
 		req = mdc_wbc_exlock_pack(exp, op_data, extra_lock_flags);
 	} else {
 		LBUG();
@@ -1248,6 +1263,7 @@ resend:
 
 	einfo->ei_req_slot = !(op_data->op_cli_flags & CLI_NO_SLOT);
 	/* FIXME: Igonre RPC slot for asynchronous RPC here for WBC? */
+  //TODO xx 
 	einfo->ei_mod_slot = !(mdc_skip_mod_rpc_slot(it) || async);
 
 	/* With Data-on-MDT the glimpse callback is needed too.
@@ -1281,6 +1297,7 @@ resend:
 
   // async impl in c 
 	if (async) {
+    // return 
 		it->it_request = req;
 		RETURN(rc);
 	}
@@ -1529,12 +1546,14 @@ int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
 			break;
 		}
 
+    // find matching lock in granted, fill the lockh
 		mode = mdc_lock_match(exp, LDLM_FL_BLOCK_GRANTED, fid,
 				      LDLM_IBITS, &policy,
 				      LCK_CR | LCK_CW | LCK_PR |
 				      LCK_PW | LCK_EX, &lockh);
 	}
 
+  //found = 1
 	if (mode) {
 		it->it_lock_handle = lockh.cookie;
 		it->it_lock_mode = mode;
@@ -1543,6 +1562,7 @@ int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
 		it->it_lock_mode = 0;
 	}
 
+  // why !!
 	RETURN(!!mode);
 }
 
@@ -1559,7 +1579,7 @@ int mdc_revalidate_lock(struct obd_export *exp, struct lookup_intent *it,
  *
  * One additional note: if CREATE or OPEN succeeded, we add an extra
  * reference to the request because we need to keep it around until
- * ll_create/ll_open gets called.
+ * ll_create/ll_open  gets called.
  *
  * The server will return to us, in it_disposition, an indication of
  * exactly what it_status refers to.
@@ -1580,6 +1600,7 @@ int mdc_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 		    struct lookup_intent *it, struct ptlrpc_request **reqp,
 		    ldlm_blocking_callback cb_blocking, __u64 extra_lock_flags)
 {
+  //lock info
 	struct ldlm_enqueue_info einfo = {
 		.ei_type	= LDLM_IBITS,
 		.ei_mode	= it_to_lock_mode(it),
@@ -1600,14 +1621,18 @@ int mdc_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 
 	lockh.cookie = 0;
 	/* MDS_FID_OP is not a revalidate case */
+  // MDS_FID_OP case will not to call mdc_revalidate_lock
+  // fid is normal.
 	if (fid_is_sane(&op_data->op_fid2) &&
 	    (it->it_op & (IT_LOOKUP | IT_GETATTR | IT_READDIR)) &&
 	    !(op_data->op_bias & MDS_FID_OP)) {
+    // ???
 		/* We could just return 1 immediately, but since we should only
 		 * be called in revalidate_it(?) if we already have a lock, let's
 		 * verify that.
 		 */
 		it->it_lock_handle = 0;
+    //=1, found matching lock, 
 		rc = mdc_revalidate_lock(exp, it, &op_data->op_fid2, NULL);
 		/* Only return failure if it was not GETATTR by cfid
 		 * (from inode_revalidate()).
@@ -1781,6 +1806,7 @@ out:
 	RETURN(0);
 }
 
+// ??
 int mdc_intent_lock_async(struct obd_export *exp,
 			  struct md_op_item *item,
 			  struct ptlrpc_request_set *rqset)
@@ -1817,6 +1843,7 @@ int mdc_intent_lock_async(struct obd_export *exp,
 
 	/* For case if upper layer did not alloc fid, do it now. */
 	if (!fid_is_sane(&op_data->op_fid2) && it->it_op & IT_CREAT) {
+    // range req
 		rc = mdc_fid_alloc(NULL, exp, &op_data->op_fid2, op_data);
 		if (rc < 0) {
 			CERROR("Can't alloc new fid, rc %d\n", rc);
@@ -1824,18 +1851,24 @@ int mdc_intent_lock_async(struct obd_export *exp,
 		}
 	}
 
+  // mdc_enqueue_base with 1 async 
 	rc = mdc_enqueue_base(exp, &item->mop_einfo, NULL, it, op_data,
 			      &item->mop_lockh, item->mop_lock_flags, 1);
 	if (rc < 0)
 		RETURN(rc);
 
+  // async rpc req need it_request not null
 	LASSERT(it->it_request != NULL);
+//   Call completion handler for rpc if any, return it's status or original
+//   rc if there was no handler defined for this request.
+// rep interprest
 	it->it_request->rq_interpret_reply = mdc_intent_lock_async_interpret;
 	aa = ptlrpc_req_async_args(aa, it->it_request);
 	aa->ita_exp = exp;
 	aa->ita_item = item;
 
 	if (rqset) {
+    // add req to reqset
 		ptlrpc_set_add_req(rqset, it->it_request);
 		ptlrpc_check_set(NULL, rqset);
 	} else {

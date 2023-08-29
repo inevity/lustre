@@ -1000,6 +1000,7 @@ typedef int (*md_op_item_cb_t)(struct req_capsule *pill,
 			       struct md_op_item *item,
 			       int rc);
 
+
 enum md_item_opcode {
 	MD_OP_NONE		= 0,
 	MD_OP_GETATTR		= 1,
@@ -1014,6 +1015,7 @@ enum md_item_opcode {
 	 * for the lockless updates.
 	 */
 	MD_OP_MULTI_LOCKLESS	= 7,
+
 	MD_OP_MAX,
 };
 
@@ -1238,6 +1240,7 @@ struct obd_client_handle {
 	struct lustre_handle	 och_open_handle;
 	struct lu_fid		 och_fid;
 	struct md_open_data	*och_mod;
+
 	struct lustre_handle	 och_lease_handle; /* open lock for lease */
 	__u32			 och_magic;
 	int			 och_flags;

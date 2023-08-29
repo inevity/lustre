@@ -1340,9 +1340,13 @@ enum mps_stat_idx {
 	LPROC_MD_ENQUEUE,
 	LPROC_MD_GETATTR,
 
+  // normal client server mode, but with intent lock  
 	LPROC_MD_INTENT_LOCK,
+  // wbc intent lock   
 	LPROC_MD_INTENT_LOCK_ASYNC,
+  // no lockess flush, normal client server mode 
 	LPROC_MD_REINT_ASYNC,
+
 	LPROC_MD_LINK,
 	LPROC_MD_RENAME,
 	LPROC_MD_SETATTR,
@@ -1508,6 +1512,7 @@ static inline int md_intent_lock_async(struct obd_export *exp,
 	return MDP(exp->exp_obd, intent_lock_async)(exp, item, rqset);
 }
 
+// check log 
 static inline int md_reint_async(struct obd_export *exp,
 				 struct md_op_item *item,
 				 struct ptlrpc_request_set *rqset)
