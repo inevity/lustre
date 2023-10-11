@@ -247,6 +247,7 @@ struct obd_export {
 	__u64			exp_last_committed;
 	/** When was last request received */
 	time64_t		exp_last_request_time;
+
 	/** On replay all requests waiting for replay are linked here */
 	struct list_head	exp_req_replay_queue;
 	/**

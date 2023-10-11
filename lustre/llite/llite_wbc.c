@@ -31,6 +31,7 @@
 #define DEBUG_SUBSYSTEM S_LLITE
 
 #include <lustre_swab.h>
+// import the wbc header, so here just impl 
 #include "llite_internal.h"
 
 static inline int wbc_ioctl_unreserve(struct dentry *dchild,
@@ -2242,6 +2243,7 @@ static int wbc_lock_evict_cache(struct inode *inode, struct ldlm_lock *lock)
 
 	ENTRY;
 
+  // no dentry cached, just refc inc for the found dentry for the inode. 
 	dentry = d_find_any_alias(inode);
 	if (dentry == NULL)
 		RETURN(0);
@@ -2253,10 +2255,12 @@ static int wbc_lock_evict_cache(struct inode *inode, struct ldlm_lock *lock)
 	else /* TODO: Add symbol link support */
 		rc = -EOPNOTSUPP;
 
+  // dput dentry for hash ,first dec refc.
 	dput(dentry);
 	RETURN(rc);
 }
 
+// just call when cancel lock ex 
 void wbc_inode_lock_callback(struct inode *inode, struct ldlm_lock *lock,
 			     bool *cached)
 {

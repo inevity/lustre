@@ -5831,6 +5831,7 @@ static int mdt_llog_open(struct tgt_session_info *tsi)
 #define OST_BRW_READ	OST_READ
 #define OST_BRW_WRITE	OST_WRITE
 
+
 static struct tgt_handler mdt_tgt_handlers[] = {
 TGT_RPC_HANDLER(MDS_FIRST_OPC,
 		0,			MDS_CONNECT,	mdt_tgt_connect,

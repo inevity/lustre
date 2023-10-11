@@ -278,6 +278,7 @@ int ll_md_real_close(struct inode *inode, fmode_t fmode)
 	ENTRY;
 
 	if (fmode & FMODE_WRITE) {
+    // open mode 
 		och_p = &lli->lli_mds_write_och;
 		och_usecount = &lli->lli_open_fd_write_count;
 	} else if (fmode & FMODE_EXEC) {
@@ -304,6 +305,7 @@ int ll_md_real_close(struct inode *inode, fmode_t fmode)
 	if (och != NULL) {
 		/* There might be a race and this handle may already
 		 * be closed. */
+    // close handle!!!!
 		rc = ll_close_inode_openhandle(inode, och, 0, NULL);
 	}
 
@@ -5051,6 +5053,7 @@ int ll_have_md_lock(struct inode *inode, __u64 *bits, enum ldlm_mode l_req_mode)
 {
 	struct lustre_handle lockh;
 	union ldlm_policy_data policy;
+  //if reset mode, mode is cr|cw|pr|pw, or speiced reqmode.
 	enum ldlm_mode mode = (l_req_mode == LCK_MINMODE) ?
 			      (LCK_CR | LCK_CW | LCK_PR | LCK_PW) : l_req_mode;
 	struct lu_fid *fid;
@@ -5065,12 +5068,16 @@ int ll_have_md_lock(struct inode *inode, __u64 *bits, enum ldlm_mode l_req_mode)
         CDEBUG(D_INFO, "trying to match res "DFID" mode %s\n", PFID(fid),
                ldlm_lockname[mode]);
 
+  // blocking lock? async lock?
 	flags = LDLM_FL_BLOCK_GRANTED | LDLM_FL_CBPENDING | LDLM_FL_TEST_LOCK;
 	for (i = 0; i < MDS_INODELOCK_NUMBITS && *bits != 0; i++) {
+    // according to canneld lock type, set the policy lock data.
 		policy.l_inodebits.bits = *bits & BIT(i);
 		if (policy.l_inodebits.bits == 0)
 			continue;
 
+    // if match, find lockh. 
+    // to the remote op
 		if (md_lock_match(ll_i2mdexp(inode), flags, fid, LDLM_IBITS,
 				  &policy, mode, &lockh)) {
 			struct ldlm_lock *lock;
@@ -5079,6 +5086,7 @@ int ll_have_md_lock(struct inode *inode, __u64 *bits, enum ldlm_mode l_req_mode)
 			if (lock) {
 				*bits &=
 					~(lock->l_policy_data.l_inodebits.bits);
+        // just release the tmp lock ref.
 				LDLM_LOCK_PUT(lock);
 			} else {
 				*bits &= ~policy.l_inodebits.bits;

@@ -1524,6 +1524,7 @@ static int ptlrpc_invalidate_import_thread(void *data)
 	RETURN(0);
 }
 
+
 /**
  * This is the state machine for client-side recovery on import.
  *
@@ -1536,11 +1537,12 @@ static int ptlrpc_invalidate_import_thread(void *data)
  * After sending all request from the list we change import state to
  * IMP_REPLAY_LOCKS and re-request all the locks we believe we have from server
  * and also all the locks we don't yet have and wait for server to grant us.
+ *
  * After that we send a special "replay completed" request and change import
  * state to IMP_REPLAY_WAIT.
  * Upon receiving reply to that "replay completed" RPC we enter IMP_RECOVER
- * state and resend all requests from sending list.
- * After that we promote import to FULL state and send all delayed requests
+ * state and resend all requests from  sending list.
+ * After that we promote import to  FULL state and send all  delayed requests
  * and import is fully operational after that.
  *
  */

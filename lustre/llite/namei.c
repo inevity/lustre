@@ -241,7 +241,7 @@ static int ll_dom_lock_cancel(struct inode *inode, struct ldlm_lock *lock)
 	RETURN(rc);
 }
 // ll client lock cancel bitlocks
-// core 
+// core TODO   
 static void ll_lock_cancel_bits(struct ldlm_lock *lock, __u64 to_cancel)
 {
 	struct inode *inode = ll_inode_from_resource_lock(lock);
@@ -251,6 +251,7 @@ static void ll_lock_cancel_bits(struct ldlm_lock *lock, __u64 to_cancel)
 
 	ENTRY;
 
+  // must have inode for client lock
 	if (!inode) {
 		/* That means the inode is evicted most likely and may cause
 		 * the skipping of lock cleanups below, so print the message
@@ -272,17 +273,20 @@ static void ll_lock_cancel_bits(struct ldlm_lock *lock, __u64 to_cancel)
 	}
 
 
+  // ilock lock xattr 
 	if (bits & MDS_INODELOCK_XATTR) {
 		ll_xattr_cache_empty(inode);
 		bits &= ~MDS_INODELOCK_XATTR;
 	}
 
-	/* For OPEN locks we differentiate between lock modes
+	/* For OPEN locks: we differentiate between lock modes
 	 * LCK_CR, LCK_CW, LCK_PR - bug 22891 */
 	if (bits & MDS_INODELOCK_OPEN)
+    //bits, to cancel which lock, 
 		ll_have_md_lock(inode, &bits, lock->l_req_mode);
 
 	if (bits & MDS_INODELOCK_OPEN) {
+    // how ?
 		fmode_t fmode;
 
 		switch (lock->l_req_mode) {
@@ -302,14 +306,18 @@ static void ll_lock_cancel_bits(struct ldlm_lock *lock, __u64 to_cancel)
 
 		ll_md_real_close(inode, fmode);
 
+    // clearn open bits
 		bits &= ~MDS_INODELOCK_OPEN;
 	}
 
+  // Those to_canceled locks no need differentiate between lock modes.
 	if (bits & (MDS_INODELOCK_LOOKUP | MDS_INODELOCK_UPDATE |
 		    MDS_INODELOCK_LAYOUT | MDS_INODELOCK_PERM |
 		    MDS_INODELOCK_DOM))
 		ll_have_md_lock(inode, &bits, LCK_MINMODE);
 
+  
+  // For ex mode inode update lock, need special handle
 	/* root WBC EX lock */
 	if (lock->l_req_mode == LCK_EX && bits & MDS_INODELOCK_UPDATE) {
 		bool cached;
@@ -483,9 +491,11 @@ int ll_md_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *ld,
 
 	ENTRY;
 
+  // just two flags cbbloking vs cb cancel
 	switch (flag) {
 	case LDLM_CB_BLOCKING:
 	{
+    // async cancel lock
 		__u64 cancel_flags = LCF_ASYNC;
 
 		/* if lock convert is not needed then still have to
@@ -496,14 +506,17 @@ int ll_md_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *ld,
 		if (!ll_md_need_convert(lock)) {
 			lock_res_and_lock(lock);
 			lock->l_policy_data.l_inodebits.cancel_bits =
+          // origin lock bits 
 					lock->l_policy_data.l_inodebits.bits;
 			unlock_res_and_lock(lock);
 		}
 		rc = ldlm_cli_convert(lock, cancel_flags);
 		if (!rc)
 			RETURN(0);
+
 		/* continue with cancel otherwise */
 		ldlm_lock2handle(lock, &lockh);
+    //client lock cancel
 		rc = ldlm_cli_cancel(&lockh, cancel_flags);
 		if (rc < 0) {
 			CDEBUG(D_INODE, "ldlm_cli_cancel: rc = %d\n", rc);
@@ -522,7 +535,7 @@ int ll_md_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *ld,
 
 		/* If 'ld' is supplied then bits to be cancelled are passed
 		 * implicitly by lock converting and cancel_bits from 'ld'
-		 * should be used. Otherwise full cancel is being performed
+		 * should be used.  Otherwise full cancel is being performed
 		 * and lock inodebits are used.
 		 *
 		 * Note: we cannot rely on cancel_bits in lock itself at this
@@ -1868,6 +1881,7 @@ static int ll_mknod(struct user_namespace *mnt_userns, struct inode *dir,
 
 	RETURN(err);
 }
+
 
 /*
  * Plain create. Intent create is handled in atomic_open.

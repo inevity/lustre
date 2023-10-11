@@ -431,13 +431,16 @@ static int tgt_handle_request0(struct tgt_session_info *tsi,
 	/* pack reply if reply format is fixed */
 	if (rc == 0 && h->th_flags & HAS_REPLY) {
 		/* Pack reply */
+    // Field RMF_MDT_MD present in the req[RCL_SERVER] 
 		if (req_capsule_has_field(tsi->tsi_pill, &RMF_MDT_MD,
 					  RCL_SERVER))
+            //RCL req_capsule_location ?
 			req_capsule_set_size(tsi->tsi_pill, &RMF_MDT_MD,
 					     RCL_SERVER,
 					     tsi->tsi_mdt_body->mbo_eadatasize);
 		if (req_capsule_has_field(tsi->tsi_pill, &RMF_LOGCOOKIES,
 					  RCL_SERVER))
+      // set RMF_LOGCOOKIES filed buffer size = 0
 			req_capsule_set_size(tsi->tsi_pill, &RMF_LOGCOOKIES,
 					     RCL_SERVER, 0);
 		if (req_capsule_has_field(tsi->tsi_pill, &RMF_ACL, RCL_SERVER))
@@ -463,17 +466,23 @@ static int tgt_handle_request0(struct tgt_session_info *tsi,
 			req_capsule_set_size(tsi->tsi_pill, &RMF_FILE_ENCCTX,
 					     RCL_SERVER, 0);
 
+    //pack req/reply?
 		rc = req_capsule_server_pack(tsi->tsi_pill);
 	}
 
 	if (likely(rc == 0)) {
+    // enter here likey rc = 0 ???? 
 		/*
-		 * Process request, there can be two types of rc:
+		 * Process request, there can be  two types of rc:
 		 * 1) errors with msg unpack/pack, other failures outside the
 		 * operation itself. This is counted as serious errors;
 		 * 2) errors during fs operation, should be placed in rq_status
 		 * only
 		 */
+    // process req using th_act
+    // Here xxx,here only tgt_enqueue? 
+    // not believe the cscope define.
+    // Here, anyway
 		rc = h->th_act(tsi);
 		if (!is_serious(rc) &&
 		    !req->rq_no_reply && req->rq_reply_state == NULL) {
@@ -545,6 +554,7 @@ static int tgt_filter_recovery_request(struct ptlrpc_request *req,
 		RETURN(0);
 	}
 }
+
 
 /*
  * Handle recovery. Return:
@@ -642,6 +652,7 @@ static struct tgt_handler *tgt_handler_find_check(struct ptlrpc_request *req)
 	}
 
 	LASSERT(opc >= s->tos_opc_start && opc < s->tos_opc_end);
+  // comp handler
 	h = s->tos_hs + (opc - s->tos_opc_start);
 	if (unlikely(h->th_opc == 0)) {
 		CERROR("%s: unsupported opcode 0x%x\n", tgt_name(tgt), opc);
@@ -725,7 +736,7 @@ out:
 
 	RETURN(rc);
 }
-
+// recover req handler
 int tgt_request_handle(struct ptlrpc_request *req)
 {
 	struct tgt_session_info	*tsi = tgt_ses_info(req->rq_svc_thread->t_env);
@@ -1392,6 +1403,7 @@ static struct ldlm_callback_suite tgt_dlm_cbs = {
 	.lcs_glimpse	= ldlm_server_glimpse_ast
 };
 
+
 int tgt_enqueue(struct tgt_session_info *tsi)
 {
 	struct ptlrpc_request *req = tgt_ses_req(tsi);
@@ -1403,6 +1415,7 @@ int tgt_enqueue(struct tgt_session_info *tsi)
 	 * tsi->tsi_dlm_cbs was set by the *_req_handle() function.
 	 */
 	LASSERT(tsi->tsi_dlm_req != NULL);
+
 	rc = ldlm_handle_enqueue(tsi->tsi_exp->exp_obd->obd_namespace,
 				 &req->rq_pill, tsi->tsi_dlm_req, &tgt_dlm_cbs);
 	if (rc)

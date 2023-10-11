@@ -1200,7 +1200,9 @@ static struct tgt_handler mgs_obd_handlers[] = {
 TGT_OBD_HDL(0,	OBD_PING,	tgt_obd_ping),
 };
 
+//only one index?
 static struct tgt_handler mgs_dlm_handlers[] = {
+// ? struct 
 [LDLM_ENQUEUE - LDLM_FIRST_OPC] = {
 	.th_name = "LDLM_ENQUEUE",
 	/* don't use th_fail_id for MGS to don't interfere with MDS tests.

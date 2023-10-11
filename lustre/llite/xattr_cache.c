@@ -43,6 +43,7 @@
  * using a hash or a tree structure instead of list for faster lookups.
  */
 struct ll_xattr_entry {
+  // embed list/instrusive list
 	struct list_head	xe_list;    /* protected with
 					     * lli_xattrs_list_rwsem */
 	char			*xe_name;   /* xattr name, \0-terminated */

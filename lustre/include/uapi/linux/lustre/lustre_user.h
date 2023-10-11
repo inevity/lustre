@@ -300,11 +300,12 @@ struct obd_statfs_info {
 	bool		os_enable_pre;		/* enable pre create logic */
 };
 
+
 /**
  * File IDentifier.
  *
  * FID is a cluster-wide unique identifier of a file or an object (stripe).
- * FIDs are never reused.
+ * FIDs are never  reused.
  **/
 struct lu_fid {
        /**
@@ -1558,6 +1559,7 @@ enum la_valid {
 			      MDS_OPEN_PCC | MDS_OP_WITH_FID)
 
 
+
 /********* Changelogs **********/
 /** Changelog record types */
 enum changelog_rec_type {
@@ -1796,6 +1798,7 @@ struct changelog_ext_nid {
 	__u64 extra;
 	__u32 padding;
 };
+
 
 /* Changelog extra extension to include low 32 bits of MDS_OPEN_* flags. */
 struct changelog_ext_openmode {

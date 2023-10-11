@@ -33,7 +33,7 @@
 
 /** \defgroup lustreidl lustreidl
  *
- * Lustre wire protocol definitions.
+ * Lustre wire protocol definitions idl.
  *
  * ALL structs passing over the wire should be declared here.  Structs
  * that are used in interfaces with userspace should go in lustre_user.h.
@@ -2443,6 +2443,7 @@ enum ldlm_mode {
 
 
 // lock big class
+//
 enum ldlm_type {
 	LDLM_PLAIN	= 10,
 	LDLM_EXTENT	= 11,
@@ -2558,8 +2559,9 @@ struct ldlm_lock_desc {
 #define LDLM_ENQUEUE_CANCEL_OFF 1
 
 struct ldlm_request {
+  // #define LDLM_FL_LOCK_CHANGED            0x0000000000000001ULL // bit   0
 	__u32 lock_flags;		/* LDLM_FL_*, see lustre_dlm_flags.h */
-	__u32 lock_count;		/* number of locks in lock_handle[] */
+	__u32 lock_count;		/*  number of locks in lock_handle[] */
 	struct ldlm_lock_desc lock_desc;/* lock descriptor */
 	struct lustre_handle lock_handle[LDLM_LOCKREQ_HANDLES];
 };

@@ -94,14 +94,17 @@ static int ll_sync_fs(struct super_block *sb, int wait)
 
 /* exported operations */
 // do what, by what?
+// partion init, how ? 
 const struct super_operations lustre_super_operations =
 {
 	.alloc_inode   = ll_alloc_inode,
 	.destroy_inode = ll_destroy_inode,
 	.drop_inode    = ll_drop_inode,
 	.write_inode   = ll_write_inode,
+
 	.evict_inode   = ll_delete_inode,
 	.put_super     = ll_put_super,
+
 	.sync_fs       = ll_sync_fs,
 	.statfs        = ll_statfs,
 	.umount_begin  = ll_umount_begin,

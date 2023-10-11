@@ -49,6 +49,7 @@
 
 #include "vvp_internal.h"
 #include "pcc.h"
+// import the wbc.h header file
 #include "wbc.h"
 #include "foreign_symlink.h"
 
@@ -274,6 +275,7 @@ struct ll_inode_info {
 
 	struct rw_semaphore		lli_xattrs_list_rwsem;
 	struct mutex			lli_xattrs_enq_lock;
+  // cache list for xattr
 	struct list_head		lli_xattrs; /* ll_xattr_entry->xe_list */
 	struct list_head		lli_lccs; /* list of ll_cl_context */
 
@@ -1615,6 +1617,7 @@ dentry_may_statahead(struct inode *dir, struct dentry *dentry)
 	 * bypass interacting with statahead cache by checking
 	 * 'lld_sa_generation == lli->lli_sa_generation'.
 	 */
+  // dentry fsdata 
 	ldd = ll_d2d(dentry);
 	if (ldd != NULL && lli->lli_sa_generation &&
 	    ldd->lld_sa_generation == lli->lli_sa_generation)
@@ -1684,6 +1687,7 @@ static inline int d_lustre_invalid(const struct dentry *dentry)
  * ll_prune_negative_children(); otherwise dput() of the last refcount will
  * unhash this dentry and kill it.
  */
+// inner lustre usage, this d is dentry, not dcache. 
 static inline void d_lustre_invalidate(struct dentry *dentry)
 {
 	CDEBUG(D_DENTRY, "invalidate dentry %pd (%p) parent %p inode %p refc %d\n",
@@ -1696,6 +1700,7 @@ static inline void d_lustre_invalidate(struct dentry *dentry)
 	spin_unlock(&dentry->d_lock);
 }
 
+// inner lustre usage 
 static inline void d_lustre_revalidate(struct dentry *dentry)
 {
 	spin_lock(&dentry->d_lock);

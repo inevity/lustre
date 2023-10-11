@@ -205,6 +205,7 @@ enum cfs_hash_tag {
  * locations; additions must take care to only insert into the new bucket.
  */
 
+
 struct cfs_hash {
 	/** serialize with rehash, or serialize all operations if
 	 * the hash-table has CFS_HASH_NO_BKTLOCK */
@@ -485,6 +486,7 @@ cfs_hash_keycmp(struct cfs_hash *hs, const void *key, struct hlist_node *hnode)
 {
 	return hs->hs_ops->hs_keycmp(key, hnode);
 }
+
 
 static inline void *
 cfs_hash_object(struct cfs_hash *hs, struct hlist_node *hnode)

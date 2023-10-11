@@ -498,6 +498,7 @@ int ldlm_inodebits_drop(struct ldlm_lock *lock, __u64 to_drop)
 }
 EXPORT_SYMBOL(ldlm_inodebits_drop);
 
+
 /* convert single lock */
 int ldlm_cli_inodebits_convert(struct ldlm_lock *lock,
 			       enum ldlm_cancel_flags cancel_flags)

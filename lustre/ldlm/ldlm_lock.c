@@ -625,10 +625,12 @@ struct ldlm_lock *__ldlm_handle2lock(const struct lustre_handle *handle,
 		RETURN(lock);
 	}
 
+  //lock res and set?
 	lock_res_and_lock(lock);
 
 	LASSERT(lock->l_resource != NULL);
 
+  //add lu_ref to some context?
 	lu_ref_add_atomic(&lock->l_reference, "handle", lock);
 	if (unlikely(ldlm_is_destroyed(lock))) {
 		unlock_res_and_lock(lock);
@@ -1660,6 +1662,7 @@ int ldlm_fill_lvb(struct ldlm_lock *lock, struct req_capsule *pill,
  * Create and fill in new LDLM lock with specified properties.
  * Returns a referenced lock
  */
+
 struct ldlm_lock *ldlm_lock_create(struct ldlm_namespace *ns,
 				   const struct ldlm_res_id *res_id,
 				   enum ldlm_type type,
@@ -1750,6 +1753,7 @@ static enum ldlm_error ldlm_lock_enqueue_helper(struct ldlm_lock *lock,
 }
 #endif
 
+
 /**
  * Enqueue (request) a lock.
  *
@@ -1760,6 +1764,7 @@ static enum ldlm_error ldlm_lock_enqueue_helper(struct ldlm_lock *lock,
  * set, skip all the enqueueing and delegate lock processing to intent policy
  * function.
  */
+// server get?  how client call ?? 
 enum ldlm_error ldlm_lock_enqueue(const struct lu_env *env,
 				  struct ldlm_namespace *ns,
 				  struct ldlm_lock **lockp,
@@ -1835,6 +1840,7 @@ enum ldlm_error ldlm_lock_enqueue(const struct lu_env *env,
 	    lock->l_resource->lr_type == LDLM_EXTENT)
 		OBD_SLAB_ALLOC_PTR_GFP(node, ldlm_interval_slab, GFP_NOFS);
 
+  // reconstruct lock?
 	reconstruct = !local && lock->l_resource->lr_type == LDLM_FLOCK &&
 		      !(*flags & LDLM_FL_TEST_LOCK);
 	if (reconstruct) {
@@ -1896,6 +1902,7 @@ enum ldlm_error ldlm_lock_enqueue(const struct lu_env *env,
 			ldlm_grant_lock(lock, NULL);
 		GOTO(out, rc = ELDLM_OK);
 #ifdef HAVE_SERVER_SUPPORT
+  // server impl
 	} else if (*flags & LDLM_FL_REPLAY) {
 		if (*flags & LDLM_FL_BLOCK_WAIT) {
 			ldlm_resource_add_lock(res, &res->lr_waiting, lock);

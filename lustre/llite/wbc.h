@@ -75,12 +75,12 @@ enum wbc_remove_policy {
  * - The directory or file is under the protection of a root EX WBC lock;
  * - The directory contains the Complete children subdirs;
  * - Results of readdir() and lookup() operations under this directory can
- *   directly be obtained from client-side MemFS. All metadata operations
+ *   directly be obtained from client-side MemFS.  All metadata operations
  *   can be performed on MemFS without communication with the server.
  * For directories, it needs to be handled specially for the readdir() call
  * once it has opened.
  * Currently the mechanism adopted by MemFS (tmpfs) is to simply scan the
- * in-memory children dentries of the directory in dcache linearly to fill the
+ * in-memory children dentries of the directory in  dcache linearly to fill the
  * content returned to readdir call: ->dcache_readdir().
  * While Lustre new readdir implementation is much complex. It does readdir in
  * hash order and uses hash of a file name as a telldir/seekdir cookie stored
@@ -129,6 +129,7 @@ enum wbc_flush_policy {
 	WBC_FLUSH_POL_DEFAULT	= WBC_FLUSH_POL_PTLRPCD,
 };
 
+// data on pcc 
 enum wbc_dop_policy {
 	/*
 	 * Instantiate the file with HSM released state and create the
@@ -226,6 +227,7 @@ struct wbc_sync_io {
 	wait_queue_head_t	wsi_waitq;
 };
 
+// 
 union wbc_engine {
 	struct lu_batch			*ioe_batch;
 	struct ptlrpc_request_set	*ioe_rqset;
@@ -240,6 +242,7 @@ struct wbc_context {
 	union wbc_engine	ioc_engine;
 };
 
+// ? how use?
 #define ioc_batch	ioc_engine.ioe_batch
 #define ioc_rqset	ioc_engine.ioe_rqset
 
@@ -308,7 +311,7 @@ struct wbc_inode {
 	/* Archive ID of PCC backend to store Data on PCC (DOP) */
 	__u32			wbci_archive_id;
 	/*
-	 * Cache mode and flush mode should be a command information shared
+	 * Cache mode and flush mode should be a ?command information shared
 	 * by the whole subtree under the root WBC directory.
 	 */
 	enum lu_wbc_cache_mode	wbci_cache_mode;
@@ -316,6 +319,7 @@ struct wbc_inode {
 	enum lu_wbc_dirty_flags	wbci_dirty_flags;
 	unsigned int		wbci_dirty_attr;
 	struct list_head	wbci_root_list;
+  // ? log?
 	struct list_head	wbci_rsvd_lru;
 	struct list_head	wbci_data_lru;
 	struct lustre_handle	wbci_lock_handle;

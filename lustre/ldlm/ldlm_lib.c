@@ -1678,6 +1678,7 @@ static void target_request_copy_put(struct ptlrpc_request *req)
 	ptlrpc_server_drop_request(req);
 }
 
+
 static int target_exp_enqueue_req_replay(struct ptlrpc_request *req)
 {
 	__u64 transno = lustre_msg_get_transno(req->rq_reqmsg);
@@ -2372,6 +2373,7 @@ static struct ptlrpc_request *target_next_final_ping(struct obd_device *obd)
 	return req;
 }
 
+
 static void handle_recovery_req(struct ptlrpc_thread *thread,
 				struct ptlrpc_request *req,
 				svc_handler_t handler)
@@ -2540,7 +2542,7 @@ static void drop_duplicate_replay_req(struct lu_env *env,
 		  libcfs_nid2str(req->rq_peer.nid));
 
 	/*
-	 * Right now, only for MDS reint operation update replay and
+	 * Right now, only for  MDS reint operation update replay and
 	 * normal request replay can have the same transno
 	 */
 	if (lustre_msg_get_opc(req->rq_reqmsg) == MDS_REINT) {
@@ -2561,6 +2563,7 @@ static void drop_duplicate_replay_req(struct lu_env *env,
 
 #define WATCHDOG_TIMEOUT (obd_timeout * 10)
 
+// xxx
 static void replay_request_or_update(struct lu_env *env,
 				     struct lu_target *lut,
 				     struct target_recovery_data *trd,
@@ -2640,6 +2643,7 @@ static void replay_request_or_update(struct lu_env *env,
 
 			ptlrpc_watchdog_init(&thread->t_watchdog,
 					     WATCHDOG_TIMEOUT);
+
 			handle_recovery_req(thread, req,
 					    trd->trd_recovery_handler);
 			ptlrpc_watchdog_disable(&thread->t_watchdog);
@@ -2705,6 +2709,7 @@ abort:
 	} while (1);
 }
 
+//
 static int target_recovery_thread(void *arg)
 {
 	struct lu_target *lut = arg;
@@ -3126,6 +3131,7 @@ int target_queue_recovery_request(struct ptlrpc_request *req,
 	}
 	LASSERT(req->rq_export->exp_req_replay_needed);
 
+  //drop dup replay req
 	if (target_exp_enqueue_req_replay(req)) {
 		DEBUG_REQ(D_ERROR, req, "dropping resent queued req");
 		target_request_copy_put(req);
@@ -3153,6 +3159,7 @@ int target_queue_recovery_request(struct ptlrpc_request *req,
 		}
 	}
 added:
+
 	if (!inserted)
 		list_add_tail(&req->rq_list, &obd->obd_req_replay_queue);
 

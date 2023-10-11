@@ -752,6 +752,7 @@ void ldlm_convert_policy_to_local(struct obd_export *exp, enum ldlm_type type,
 				  const union ldlm_wire_policy_data *wpolicy,
 				  union ldlm_policy_data *lpolicy);
 
+
 enum lvb_type {
 	LVB_T_NONE	= 0,
 	LVB_T_OST	= 1,
@@ -767,7 +768,7 @@ enum lvb_type {
 /**
  * LDLM lock structure
  *
- * Represents a single LDLM lock and its state in memory. Each lock is
+ * Represents a single LDLM lock and its state in memory . Each lock is
  * associated with a single ldlm_resource, the object which is being
  * locked. There may be multiple ldlm_locks on a single resource,
  * depending on the lock type and whether the locks are conflicting or
@@ -778,9 +779,9 @@ struct ldlm_lock {
 	 * Local lock handle.
 	 * When remote side wants to tell us about a lock, they address
 	 * it by this opaque handle.  The handle does not hold a
-	 * reference on the ldlm_lock, so it can be safely passed to
+	 * reference  on the ldlm_lock, so it can be safely passed to
 	 * other threads or nodes. When the lock needs to be accessed
-	 * from the handle, it is looked up again in the lock table, and
+	 * from the handle, it is looked up  again in the lock table, and
 	 * may no longer exist.
 	 *
 	 * Must be first in the structure.
@@ -795,12 +796,12 @@ struct ldlm_lock {
   //detail 
 	struct ldlm_resource	*l_resource;
 	/**
-	 * List item for client side LRU list.
+	 * List item for  client side LRU list.
 	 * Protected by ns_lock in struct ldlm_namespace.
 	 */
 	struct list_head	l_lru;
 	/**
-	 * Linkage to resource's lock queues according to current lock state.
+	 * Linkage  to resource's lock queues according to current lock state.
 	 * (could be granted or waiting)
 	 * Protected by lr_lock in struct ldlm_resource.
 	 */
@@ -808,6 +809,9 @@ struct ldlm_lock {
 	/**
 	 * Internal structures per lock type..
 	 */
+  // see ldlm_resource,same
+	// Interval trees (only for extent locks) for all modes of
+	// this resource
 	union {
 		struct ldlm_interval	*l_tree_node;
 		struct ldlm_ibits_node  *l_ibits_node;
@@ -826,6 +830,7 @@ struct ldlm_lock {
 	 * Requested mode.
 	 * Protected by lr_lock.
 	 */
+  // LK_CW etc
 	enum ldlm_mode		l_req_mode;
 	/**
 	 * Granted mode, also protected by lr_lock.
@@ -843,6 +848,7 @@ struct ldlm_lock {
 	 * and then once more when the last user went away and the lock is
 	 * cancelled (could happen recursively).
 	 */
+  // notification to client?
 
 	ldlm_blocking_callback	l_blocking_ast;
 	/**
@@ -850,6 +856,7 @@ struct ldlm_lock {
 	 * Glimpse handler is used to obtain LVB updates from a client by
 	 * server
 	 */
+  // send to client? how 
 	ldlm_glimpse_callback	l_glimpse_ast;
 
 	/**
@@ -857,16 +864,18 @@ struct ldlm_lock {
 	 * This is a pointer to actual client export for locks that were granted
 	 * to clients. Used server-side.
 	 */
+  // use by server 
 	struct obd_export	*l_export;
 	/**
 	 * Lock connection export.
 	 * Pointer to server export on a client.
 	 */
+  // use by client 
 	struct obd_export	*l_conn_export;
 
 	/**
 	 * Remote lock handle.
-	 * If the lock is remote, this is the handle of the other side lock
+	 * If the lock is  remote, this is the handle of the other side lock
 	 * (l_handle)
 	 */
 	struct lustre_handle	l_remote_handle;
@@ -875,12 +884,14 @@ struct ldlm_lock {
 	 * Representation of private data specific for a lock type.
 	 * Examples are: extent range for extent lock or bitmask for ibits locks
 	 */
+  // private type for lock, flock/extent/inodelock 
 	union ldlm_policy_data	l_policy_data;
 
 	/**
 	 * Lock state flags. Protected by lr_lock.
 	 * \see lustre_dlm_flags.h where the bits are defined.
 	 */
+  // xxx 
 	__u64			l_flags;
 
 	/**
@@ -894,6 +905,7 @@ struct ldlm_lock {
 	 * it's no longer in use.  If the lock is not granted, a process sleeps
 	 * on this waitq to learn when it becomes granted.
 	 */
+  //both usage 
 	wait_queue_head_t	l_waitq;
 
 	/**
@@ -920,12 +932,14 @@ struct ldlm_lock {
 	/** Private storage for lock user. Opaque to LDLM. */
 	void			*l_ast_data;
 
+  //end client?
 	union {
 	/**
 	 * Seconds. It will be updated if there is any activity related to
-	 * the lock at client, e.g. enqueue the lock. For server it is the
-	 * time when blocking ast was sent.
+	 * the lock at  client, e.g. enqueue the lock. For server it is the
+	 * time when blocking ast was  sent.
 	 */
+    //How send blocking ast?
 		time64_t	l_activity;
 		time64_t	l_blast_sent;
 	};
@@ -942,6 +956,7 @@ struct ldlm_lock {
 	 * Used by Commit on Share (COS) code. Currently only used for
 	 * inodebits locks on MDS.
 	 */
+  //TODO commit on share?
 	__u64			l_client_cookie;
 
 	/**
@@ -971,12 +986,13 @@ struct ldlm_lock {
 	 * attempt to send blocking AST more than once, an assertion would be
 	 * hit. \see ldlm_work_bl_ast_lock
 	 */
+  //run mean send 
 	int			l_bl_ast_run;
 	/** List item ldlm_add_ast_work_item() for case of blocking ASTs. */
 	struct list_head	l_bl_ast;
 	/** List item ldlm_add_ast_work_item() for case of completion ASTs. */
 	struct list_head	l_cp_ast;
-	/** For ldlm_add_ast_work_item() for "revoke" AST used in COS. */
+	/** For ldlm_add_ast_work_item() for "revoke" rk AST used in COS. */
 	struct list_head	l_rk_ast;
 
 	/**
@@ -989,6 +1005,7 @@ struct ldlm_lock {
 	 * Protected by lr_lock, linkages to "skip lists".
 	 * For more explanations of skip lists see ldlm/ldlm_inodebits.c
 	 */
+  // skip lists
 	struct list_head	l_sl_mode;
 	struct list_head	l_sl_policy;
 
@@ -1046,14 +1063,15 @@ struct lustre_handle_array {
 	struct lustre_handle	ha_handles[0];
 };
 
+
 /**
  * LDLM resource description.
  * Basically, resource is a representation for a single object.
- * Object has a name which is currently 4 64-bit integers. LDLM user is
+ * Object has a name which is currently  4 64-bit integers. LDLM user is
  * responsible for creation of a mapping between objects it wants to be
  * protected and resource names.
  *
- * A resource can only hold locks of a single lock type1, though there may be
+ * A resource can  only hold locks of a single lock type1, though there may be
  * multiple ldlm_locks on a single resource, depending on the lock type and
  * whether the locks are conflicting or not.
  */
@@ -1064,7 +1082,7 @@ struct ldlm_resource {
 	/**
 	 * List item for list in namespace hash.
 	 * protected by ns_lock.
-	 * Shared with linkage for RCU-delayed free.
+	 * Shared with linkage? for RCU-delayed free.
 	 */
 	union {
 		struct hlist_node	lr_hash;
@@ -1106,17 +1124,18 @@ struct ldlm_resource {
 		 * used only on server side.
 		 */
 		time64_t	lr_contention_time;
+
 		/**
 		 * Associated inode, used only on client side.
 		 */
 		struct inode	*lr_lvb_inode;
 	};
 
-	/** Type of locks this resource can hold. Only one type per resource. */
+	/** Type of locks this resource can hold.  Only one type per resource. */
 	enum ldlm_type		lr_type; /* LDLM_{PLAIN,EXTENT,FLOCK,IBITS} */
 
 	/**
-	 * Server-side-only lock value block elements.
+	 * Server-side-only  lock value block elements.
 	 * To serialize lvbo_init.
 	 */
 	int			lr_lvb_len;
@@ -1659,6 +1678,7 @@ static inline void ldlm_svc_get_eopc(const struct ldlm_request *dlm_req,
 
 	switch (lock_type) {
 	case LDLM_PLAIN:
+    // COUNTER
 		op = PTLRPC_LAST_CNTR + LDLM_PLAIN_ENQUEUE;
 		break;
 	case LDLM_EXTENT:

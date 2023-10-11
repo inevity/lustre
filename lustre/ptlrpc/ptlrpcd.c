@@ -421,6 +421,7 @@ static int ptlrpcd_check(struct lu_env *env, struct ptlrpcd_ctl *pc)
 	RETURN(rc || test_bit(LIOD_STOP, &pc->pc_flags));
 }
 
+
 /**
  * Main ptlrpcd thread.
  * ptlrpc's code paths like to execute in process context, so we have this
@@ -486,6 +487,7 @@ static int ptlrpcd(void *arg)
 		lu_context_enter(env.le_ses);
 
 		add_wait_queue(&set->set_waitq, &wait);
+
 		while (!ptlrpcd_check(&env, pc)) {
 			int ret;
 

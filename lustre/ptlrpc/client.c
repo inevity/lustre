@@ -1789,6 +1789,7 @@ static inline int ptlrpc_set_producer(struct ptlrpc_request_set *set)
  *
  * NOTE: This function contains a potential schedule point (cond_resched()).
  */
+
 int ptlrpc_check_set(const struct lu_env *env, struct ptlrpc_request_set *set)
 {
 	struct ptlrpc_request *req, *next;
@@ -3066,6 +3067,7 @@ void ptlrpc_retain_replayable_request(struct ptlrpc_request *req,
 				continue;
 		}
 
+
 		list_add(&req->rq_replay_list, &iter->rq_replay_list);
 		return;
 	}
@@ -3248,6 +3250,7 @@ static int ptlrpc_replay_interpret(const struct lu_env *env,
 
 	RETURN(rc);
 }
+
 
 /**
  * Prepares and queues request for replay.

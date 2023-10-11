@@ -1278,6 +1278,7 @@ static int mdt_lock_root_xattr(struct mdt_thread_info *info,
 	return 0;
 }
 
+
 int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 {
 	struct mdt_device *mdt = info->mti_mdt;

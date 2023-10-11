@@ -34,6 +34,7 @@
 #include <lustre_compat.h>
 #include <linux/security.h>
 #include <linux/swap.h>
+// import wbc header 
 #include "llite_internal.h"
 
 void wbc_super_root_add(struct inode *inode)

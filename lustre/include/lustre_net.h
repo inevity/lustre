@@ -42,6 +42,7 @@
  */
 
 
+
 #ifndef _LUSTRE_NET_H
 #define _LUSTRE_NET_H
 
@@ -260,6 +261,7 @@
 #define LDLM_BL_THREADS   LDLM_NTHRS_AUTO_INIT
 #define LDLM_CLIENT_NBUFS 1
 #define LDLM_SERVER_NBUFS 64
+
 #define LDLM_BUFSIZE      (8 * 1024)
 #define LDLM_MAXREQSIZE   (5 * 1024)
 #define LDLM_MAXREPSIZE   (1024)
@@ -1541,6 +1543,7 @@ static inline int thread_test_and_clear_flags(struct ptlrpc_thread *thread,
         return 0;
 }
 
+
 /**
  * Request buffer descriptor structure.
  * This is a structure that contains one posted request buffer for service.
@@ -2612,6 +2615,7 @@ static inline struct ptlrpc_service *
 ptlrpc_req2svc(struct ptlrpc_request *req)
 {
 	LASSERT(req->rq_rqbd != NULL);
+  //rpc server scp sereric ?
 	return req->rq_rqbd->rqbd_svcpt->scp_service;
 }
 

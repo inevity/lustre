@@ -1486,6 +1486,9 @@ struct inode *ll_inode_from_resource_lock(struct ldlm_lock *lock)
 
 	/* NOTE: we depend on atomic igrab() -bzzz */
 	lock_res_and_lock(lock);
+  // who set, no this member? 
+  // Nice design, void convert? 
+  // oh just jump error
 	if (lock->l_resource->lr_lvb_inode) {
 		struct ll_inode_info * lli;
 		lli = ll_i2info(lock->l_resource->lr_lvb_inode);

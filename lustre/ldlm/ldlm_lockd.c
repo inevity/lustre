@@ -1226,21 +1226,28 @@ EXPORT_SYMBOL(ldlm_request_lock);
 
 /**
  * Main server-side entry point into LDLM for enqueue. This is called by ptlrpc
- * service threads to carry out client lock enqueueing requests.
+ * service threads to carry out  client lock enqueueing requests.
  */
+// tgt seesion have : ptlrpc req, and ldlm_request  
+// set ldlm_callback_suite by the req handler
 int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 			struct req_capsule *pill,
+      //idl represent ldlm_request
 			const struct ldlm_request *dlm_req,
 			const struct ldlm_callback_suite *cbs)
 {
 	struct ldlm_reply *dlm_rep;
 	__u64 flags;
+  // normal state, just not grant
 	enum ldlm_error err = ELDLM_OK;
+  // lock memory repr
 	struct ldlm_lock *lock = NULL;
 	void *cookie = NULL;
 	int rc = 0;
 	struct ldlm_resource *res = NULL;
+  //rpc req
 	struct ptlrpc_request *req = pill->rc_req;
+  //localcontext(not in stack) and session context, 
 	const struct lu_env *env = req->rq_svc_thread->t_env;
 	int first = LDLM_ENQUEUE_CANCEL_OFF;
 
@@ -1251,6 +1258,9 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 	flags = ldlm_flags_from_wire(dlm_req->lock_flags);
 
 	/* The root WBC EX lock is revoking. */
+  //both parent ex lock and child update exlock ,so this client need revoking ex lock
+  //client trigger to revoke the lock 
+  //retry wbc ex lock revoking ,first++
 	if (req_capsule_ptlreq(pill) && !req_is_replay(req) &&
 	    flags & LDLM_FL_INTENT_PARENT_LOCKED &&
 	    flags & LDLM_FL_INTENT_EXLOCK_UPDATE) {
@@ -1258,9 +1268,13 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 
 		LASSERT(req_capsule_ptlreq(pill));
 
+    // why 
 		if (dlm_req->lock_count < 2)
 			GOTO(out, rc = err_serious(-EPROTO));
 
+    // get memlock from dlm_req lock_handle[1] 
+    // The first handle is what?
+    // get a lock ref according the lock handle
 		lock = ldlm_handle2lock(&dlm_req->lock_handle[1]);
 		if (!lock)
 			GOTO(out, rc = err_serious(-EPROTO));
@@ -1277,6 +1291,7 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 
 		/* XXX Check parent resource */
 		/* Prolong the lock in case it is blocked. */
+    // blocking or cancel packet was queued for sending on which target?
 		if (lock->l_flags & LDLM_FL_AST_SENT) {
 			time64_t timeout;
 
@@ -1288,16 +1303,22 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 		first++;
 	}
 
+  // set adapto tmieout cancel?
+  // why Cancel all the locks whose handles are packed into ldlm_request
 	if (req_capsule_ptlreq(pill))
 		ldlm_request_cancel(req, dlm_req, first, LATF_SKIP);
 
 	LASSERT(req->rq_export);
 
-	/* for intent enqueue the stat will be updated inside intent policy */
+	/* for intent enqueue  the stat will be updated inside intent policy */
+  // srv mean rpc service
 	if (ptlrpc_req2svc(req)->srv_stats != NULL &&
 	    !(dlm_req->lock_flags & LDLM_FL_HAS_INTENT))
+    //update op count by lock type without intent
+    //extra op count 
 		ldlm_svc_get_eopc(dlm_req, ptlrpc_req2svc(req)->srv_stats);
 
+  //network id and addr
 	if (req->rq_export->exp_nid_stats &&
 	    req->rq_export->exp_nid_stats->nid_ldlm_stats)
 		lprocfs_counter_incr(req->rq_export->exp_nid_stats->nid_ldlm_stats,
@@ -1355,12 +1376,13 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 		GOTO(out, rc);
 	}
 
+  // THis is the remote handle mean
 	lock->l_remote_handle = dlm_req->lock_handle[0];
 	LDLM_DEBUG(lock, "server-side enqueue handler, new lock created");
 
 	/*
 	 * Initialize resource lvb but not for a lock being replayed since
-	 * Client already got lvb sent in this case.
+	 * Client already got lvb sent  in this case.
 	 * This must occur early since some policy methods assume resource
 	 * lvb is available (lr_lvb_data != NULL).
 	 */
@@ -1415,6 +1437,7 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 
 existing_lock:
 	cookie = req;
+  // no intent 
 	if (!(flags & LDLM_FL_HAS_INTENT) && req_capsule_ptlreq(pill)) {
 		/* based on the assumption that lvb size never changes during
 		 * resource life time otherwise it need resource->lr_lock's
@@ -1425,11 +1448,13 @@ existing_lock:
 		if (OBD_FAIL_CHECK(OBD_FAIL_LDLM_ENQUEUE_EXTENT_ERR))
 			GOTO(out, rc = -ENOMEM);
 
+    //pack reply?
 		rc = req_capsule_server_pack(pill);
 		if (rc)
 			GOTO(out, rc);
 	}
 
+  // nonbockiong, if intent, delegate to  policy func 
 	err = ldlm_lock_enqueue(env, ns, &lock, cookie, &flags);
 	if (err) {
 		if ((int)err < 0)
@@ -1437,8 +1462,10 @@ existing_lock:
 		GOTO(out, err);
 	}
 
+  // get dlm reponse result
 	dlm_rep = req_capsule_server_get(pill, &RMF_DLM_REP);
 
+  //file the lock from dlm_rep
 	ldlm_lock2desc(lock, &dlm_rep->lock_desc);
 	ldlm_lock2handle(lock, &dlm_rep->lock_handle);
 
@@ -1449,13 +1476,16 @@ existing_lock:
 	 * We never send a blocking AST until the lock is granted, but
 	 * we can tell it right now
 	 */
+  //TODO xxx
+  //right now seed a blocking ast
 	lock_res_and_lock(lock);
 
 	/*
 	 * Now take into account flags to be inherited from original lock
-	 * request both in reply to client and in our own lock flags.
+	 * request both in  reply to client and in our own lock flags.
 	 */
 	dlm_rep->lock_flags = ldlm_flags_to_wire(flags);
+  // lock is ourself side
 	lock->l_flags |= flags & LDLM_FL_INHERIT_MASK;
 
 	/*
@@ -1486,6 +1516,7 @@ existing_lock:
 				bl_lock->l_policy_data.l_inodebits.bits;
 		}
 		dlm_rep->lock_flags |= ldlm_flags_to_wire(LDLM_FL_AST_SENT);
+
 		if (ldlm_is_granted(lock)) {
 			/*
 			 * Only cancel lock if it was granted, because it would
@@ -1509,6 +1540,7 @@ existing_lock:
 	EXIT;
 out:
 	if (req_capsule_ptlreq(pill)) {
+    // ??
 		req->rq_status = rc ?: err; /* return either error - b=11190 */
 		if (!req->rq_packed_final) {
 			int rc1 = lustre_pack_reply(req, 1, NULL, NULL);

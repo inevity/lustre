@@ -180,6 +180,7 @@ struct obd_import {
 	/** work struct for destruction of import */
 	struct work_struct	  imp_zombie_work;
 
+
         /**
          * Lists of requests that are retained for replay, waiting for a reply,
          * or waiting for recovery to complete, respectively.

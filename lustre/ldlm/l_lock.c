@@ -43,6 +43,11 @@
  * enqueue reply. We rely on rcu_assign_pointer(lock->l_resource, new_res)
  * being an atomic operation.
  */
+//TODO rcu usage 
+//1. rcu read lock;  get lock res, , lock res, then ldlm_set_res_locked, rcu
+//ulock, return res.
+//if !eq lock->l_resource, ust rcu_read_lock and return, 
+//rcu protech  
 struct ldlm_resource *lock_res_and_lock(struct ldlm_lock *lock)
 {
 	struct ldlm_resource *res;
@@ -50,6 +55,7 @@ struct ldlm_resource *lock_res_and_lock(struct ldlm_lock *lock)
 	rcu_read_lock();
 	while (1) {
 		res = rcu_dereference(lock->l_resource);
+    //spin lock the res->lock
 		lock_res(res);
 		if (res == lock->l_resource) {
 			ldlm_set_res_locked(lock);

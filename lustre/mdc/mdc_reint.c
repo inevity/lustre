@@ -136,6 +136,7 @@ mdc_reint_create_pack(struct obd_export *exp, struct md_op_data *op_data,
 }
 
 /* mdc_setattr does its own semaphore handling */
+// dispatch 
 static int mdc_reint(struct ptlrpc_request *request, int level)
 {
         int rc;
